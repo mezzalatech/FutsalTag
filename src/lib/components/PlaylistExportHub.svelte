@@ -101,20 +101,54 @@
     try {
       // If running inside Tauri desktop app
       if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window && projectStore.videoFilePath) {
-        const item = currentPlaylist.items[selectedItemIndex] || currentPlaylist.items[0];
-        exportStatusMessage = `Merender klip dengan FFmpeg hardware acceleration...`;
-        exportProgress = 50;
+        if (exportMode === 'single_compilation' && currentPlaylist.items.length > 1) {
+          exportStatusMessage = `Memotong ${currentPlaylist.items.length} klip playlist dengan mode cepat...`;
+          exportProgress = 20;
 
-        const resultPath = await invoke<string>('render_video_clip_ffmpeg', {
-          inputPath: projectStore.videoFilePath,
-          startTime: item.tagEvent.startTime,
-          duration: item.tagEvent.endTime - item.tagEvent.startTime,
-          outputPath: `teleslator_export_${Date.now()}.mp4`,
-        });
+          // Render each clip to a temporary clip file
+          const renderedClips: string[] = [];
+          for (let i = 0; i < currentPlaylist.items.length; i++) {
+            const item = currentPlaylist.items[i];
+            const tempClipPath = `futsaltag_clip_${i}_${Date.now()}.mp4`;
+            await invoke<string>('render_video_clip_ffmpeg', {
+              inputPath: projectStore.videoFilePath,
+              outputPath: tempClipPath,
+              startSec: item.tagEvent.startTime,
+              durationSec: item.tagEvent.endTime - item.tagEvent.startTime,
+              fastCopy: true,
+            });
+            renderedClips.push(tempClipPath);
+            exportProgress = 20 + Math.floor(((i + 1) / currentPlaylist.items.length) * 60);
+          }
 
-        exportProgress = 100;
-        exportStatusMessage = `Selesai! Klip tersimpan di: ${resultPath}`;
-        exportSuccessPath = resultPath;
+          exportStatusMessage = 'Menggabungkan seluruh klip ke kompilasi presentasi...';
+          const finalPath = `FutsalTag_Pro_Playlist_Presentasi_${Date.now()}.mp4`;
+          await invoke<string>('concat_playlist_ffmpeg', {
+            clipPaths: renderedClips,
+            outputPath: finalPath,
+          });
+
+          exportProgress = 100;
+          exportStatusMessage = `Selesai! Kompilasi video tersimpan di: ${finalPath}`;
+          exportSuccessPath = finalPath;
+        } else {
+          const item = currentPlaylist.items[selectedItemIndex] || currentPlaylist.items[0];
+          exportStatusMessage = `Merender klip ${item.title}...`;
+          exportProgress = 50;
+
+          const singlePath = `FutsalTag_Pro_${item.tagEvent.category.replace(/[^a-zA-Z0-9]/g, '_')}_${Date.now()}.mp4`;
+          const resultPath = await invoke<string>('render_video_clip_ffmpeg', {
+            inputPath: projectStore.videoFilePath,
+            outputPath: singlePath,
+            startSec: item.tagEvent.startTime,
+            durationSec: item.tagEvent.endTime - item.tagEvent.startTime,
+            fastCopy: true,
+          });
+
+          exportProgress = 100;
+          exportStatusMessage = `Selesai! Klip tersimpan di: ${resultPath}`;
+          exportSuccessPath = singlePath;
+        }
       } else {
         // Fallback simulation for browser demo mode
         for (let p = 20; p <= 100; p += 20) {
@@ -124,7 +158,7 @@
           if (p === 80) exportStatusMessage = 'Menerapkan pause jeda freeze-frame...';
         }
         exportStatusMessage = 'Ekspor Video Berhasil! File siap diunduh.';
-        exportSuccessPath = `Teleslator_${exportMode}_${Date.now()}.mp4`;
+        exportSuccessPath = `FutsalTag_Pro_${exportMode}_${Date.now()}.mp4`;
       }
     } catch (err: any) {
       exportStatusMessage = `Gagal ekspor: ${err?.message || err}`;
@@ -152,7 +186,7 @@
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement('a');
     link.setAttribute('href', encodedUri);
-    link.setAttribute('download', `teleslator_statistika_futsal_${Date.now()}.csv`);
+    link.setAttribute('download', `FutsalTag_Pro_Statistik_${Date.now()}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);

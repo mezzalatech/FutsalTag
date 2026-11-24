@@ -114,7 +114,7 @@
       <span>MOMEN & ONCE SPORT BROADCAST WORKFLOW</span>
     </div>
     <h1 class="hero-title">
-      Selamat Datang di <span class="highlight">TELESLATOR</span>
+      Selamat Datang di <span class="highlight">FUTSALTAG PRO</span>
     </h1>
     <p class="hero-desc">
       Platform analisis video futsal profesional, auto pre/post roll tagging, telestrasi siaran TV, dan papan taktik standar FIFA (40m x 20m).

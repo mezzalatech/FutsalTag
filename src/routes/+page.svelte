@@ -37,7 +37,7 @@
 </script>
 
 <svelte:head>
-  <title>Teleslator - Futsal Video Analyser, Telestrator & Coach Board</title>
+  <title>FutsalTag Pro - Futsal Video Analyser, Telestrator & Coach Board</title>
 </svelte:head>
 
 <div class="app-container">
@@ -49,7 +49,7 @@
       </div>
       <div class="brand-text">
         <div class="brand-title-wrap">
-          <span class="brand-title">TELESLATOR</span>
+          <span class="brand-title">FUTSALTAG</span>
           <span class="brand-tag">PRO</span>
         </div>
         <span class="brand-sub">MOMEN & ONCE SPORT WORKFLOW</span>

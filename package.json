@@ -1,7 +1,7 @@
 {
-  "name": "tauri-app",
-  "version": "0.1.0",
-  "description": "",
+  "name": "futsaltag-pro",
+  "version": "1.0.0",
+  "description": "FutsalTag Pro - Professional Futsal Video Analyser, Telestrator & Tactical Board",
   "type": "module",
   "scripts": {
     "dev": "vite dev",

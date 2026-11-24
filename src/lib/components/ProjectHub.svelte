@@ -84,6 +84,26 @@
   function loadSampleMatch() {
     projectStore.loadSampleDemo();
   }
+
+  function handleProjectFileOpen(event: Event) {
+    const input = event.target as HTMLInputElement;
+    if (input.files && input.files.length > 0) {
+      const file = input.files[0];
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const text = e.target?.result as string;
+        if (text) {
+          const ok = projectStore.importProjectJson(text);
+          if (ok) {
+            alert(`Berkas proyek "${file.name}" berhasil dimuat!`);
+          } else {
+            alert('Format berkas proyek tidak valid.');
+          }
+        }
+      };
+      reader.readAsText(file);
+    }
+  }
 </script>
 
 <div class="project-hub-container">
@@ -190,6 +210,16 @@
           <PlayCircle size={14} />
           <span>Muat Sampel Demo (Pendekar United vs Blacksteel)</span>
         </button>
+        <label class="btn-load-project" title="Buka Proyek yang Sudah Ada (.futsal)">
+          <FolderOpen size={14} />
+          <span>Buka Berkas Proyek (.futsal / .json)</span>
+          <input
+            type="file"
+            accept=".futsal,.json"
+            onchange={handleProjectFileOpen}
+            style="display: none;"
+          />
+        </label>
       </div>
     </div>
 
@@ -610,6 +640,29 @@
     color: #ffffff;
     border-color: #38bdf8;
     background: #112646;
+  }
+
+  .btn-load-project {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    background: linear-gradient(135deg, rgba(14, 165, 233, 0.1), rgba(30, 64, 175, 0.15));
+    border: 1px dashed #0284c7;
+    color: #38bdf8;
+    padding: 7px;
+    border-radius: 6px;
+    font-size: 10px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .btn-load-project:hover {
+    color: #ffffff;
+    border-color: #38bdf8;
+    background: linear-gradient(135deg, rgba(2, 132, 199, 0.3), rgba(37, 99, 235, 0.3));
+    box-shadow: 0 0 12px rgba(56, 189, 248, 0.3);
   }
 
   .quick-clip-features {

@@ -12,7 +12,28 @@
     Film,
     LayoutGrid,
     ChevronRight,
+    Save,
   } from 'lucide-svelte';
+
+  function handleOpenProjectFile(event: Event) {
+    const input = event.target as HTMLInputElement;
+    if (input.files && input.files.length > 0) {
+      const file = input.files[0];
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const text = e.target?.result as string;
+        if (text) {
+          const ok = projectStore.importProjectJson(text);
+          if (ok) {
+            alert(`Berkas proyek "${file.name}" berhasil dimuat!`);
+          } else {
+            alert('Format berkas proyek tidak valid.');
+          }
+        }
+      };
+      reader.readAsText(file);
+    }
+  }
 </script>
 
 <svelte:head>
@@ -118,10 +139,27 @@
       </button>
     </nav>
 
-    <!-- RIGHT BADGES -->
+    <!-- RIGHT BADGES & PROJECT FILE IO -->
     <div class="header-badges">
+      <label class="btn-header-io" title="Buka Berkas Proyek Futsal (.futsal)">
+        <FolderOpen size={12} />
+        <span>Buka Proyek</span>
+        <input
+          type="file"
+          accept=".futsal,.json"
+          onchange={handleOpenProjectFile}
+          style="display: none;"
+        />
+      </label>
+      <button
+        class="btn-header-io btn-io-save"
+        onclick={() => projectStore.downloadProjectFile()}
+        title="Simpan Proyek & Seluruh Klip ke Berkas (.futsal)"
+      >
+        <Save size={12} />
+        <span>Simpan Proyek</span>
+      </button>
       <span class="badge-fifa">FIFA Futsal (40m x 20m)</span>
-      <span class="badge-version">Momen + Once Studio</span>
     </div>
   </header>
 
@@ -406,6 +444,39 @@
     display: flex;
     align-items: center;
     gap: 8px;
+  }
+
+  .btn-header-io {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    background: #09172c;
+    color: #93c5fd;
+    border: 1px solid #1a355d;
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 10px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .btn-header-io:hover {
+    background: #0e274d;
+    color: #38bdf8;
+    border-color: #38bdf8;
+    box-shadow: 0 0 10px rgba(56, 189, 248, 0.25);
+  }
+
+  .btn-io-save {
+    background: linear-gradient(135deg, rgba(2, 132, 199, 0.25), rgba(30, 64, 175, 0.25));
+    border-color: rgba(56, 189, 248, 0.4);
+    color: #38bdf8;
+  }
+
+  .btn-io-save:hover {
+    background: linear-gradient(135deg, #0284c7, #2563eb);
+    color: #ffffff;
   }
 
   .badge-fifa {

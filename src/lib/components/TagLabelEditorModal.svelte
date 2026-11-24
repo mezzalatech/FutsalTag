@@ -5,7 +5,7 @@
     TagOutcome,
     CourtZone,
     TagRating,
-  } from '$lib/types';
+  } from "$lib/types";
   import {
     X,
     User,
@@ -22,7 +22,7 @@
     Crosshair,
     Layers,
     MapPin,
-  } from 'lucide-svelte';
+  } from "lucide-svelte";
 
   interface Props {
     tag: VideoTagEvent;
@@ -35,65 +35,125 @@
   let { tag, isOpen, onClose, onSave, onDelete }: Props = $props();
 
   // Local draft state
-  let draftTitle = $state('');
-  let draftCategory = $state<TagCategory>('Goal');
+  let draftTitle = $state("");
+  let draftCategory = $state<TagCategory>("Goal");
   let draftStartTime = $state(0);
   let draftEndTime = $state(0);
-  let draftColor = $state('#10b981');
-  let draftPlayerLabel = $state<string>('#9 Pivot');
-  let draftOutcomeLabel = $state<TagOutcome>('Gol / Sukses');
-  let draftZoneLabel = $state<CourtZone>('Area Penalti Lawan');
-  let draftRating = $state<TagRating>('⭐⭐⭐ Bagus');
-  let draftNotes = $state('');
+  let draftColor = $state("#10b981");
+  let draftPlayerLabel = $state<string>("#9 Pivot");
+  let draftOutcomeLabel = $state<TagOutcome>("Gol / Sukses");
+  let draftZoneLabel = $state<CourtZone>("Area Penalti Lawan");
+  let draftRating = $state<TagRating>("⭐⭐⭐ Bagus");
+  let draftNotes = $state("");
   let draftPauseDuration = $state(3.0);
-  let newPlayerInput = $state('');
+  let newPlayerInput = $state("");
 
   let rosterList = $state([
-    '#1 Kiper',
-    '#4 Anchor',
-    '#7 Flank Kiri',
-    '#11 Flank Kanan',
-    '#9 Pivot',
-    '#10 Second Pivot',
-    '#8 Mid Flank',
-    'Tim Lawan',
+    "#1 Kiper",
+    "#4 Anchor",
+    "#7 Flank Kiri",
+    "#11 Flank Kanan",
+    "#9 Pivot",
+    "#10 Second Pivot",
+    "#8 Mid Flank",
+    "Tim Lawan",
   ]);
 
-  const CATEGORIES: { cat: TagCategory; label: string; icon: string; color: string }[] = [
-    { cat: 'Goal', label: 'Gol', icon: '⚽', color: '#10b981' },
-    { cat: 'Shot on Target', label: 'Tembakan On-Target', icon: '🎯', color: '#38bdf8' },
-    { cat: 'Shot Off Target', label: 'Tembakan Gagal', icon: '⭕', color: '#64748b' },
-    { cat: 'Pressing High', label: 'High Pressing', icon: '🔥', color: '#f59e0b' },
-    { cat: 'Transition Attack', label: 'Counter Attack', icon: '⚡', color: '#6366f1' },
-    { cat: 'Transition Defense', label: 'Transisi Bertahan', icon: '🛑', color: '#ef4444' },
-    { cat: 'Kick-in Set Piece', label: 'Kick-In Set Piece', icon: '📐', color: '#ec4899' },
-    { cat: 'Corner Set Piece', label: 'Corner Kick', icon: '🚩', color: '#8b5cf6' },
-    { cat: 'Build-up 3-1', label: 'Rotasi 3-1', icon: '🔄', color: '#0ea5e9' },
-    { cat: 'Build-up 4-0', label: 'Rotasi 4-0 Flat', icon: '↔️', color: '#14b8a6' },
-    { cat: 'Power Play', label: 'Power Play 5v4', icon: '👑', color: '#eab308' },
-    { cat: 'Goalkeeper Save', label: 'Save Kiper', icon: '🧤', color: '#06b6d4' },
-    { cat: 'Foul', label: 'Pelanggaran / Peluit', icon: '⚠️', color: '#f97316' },
+  const CATEGORIES: {
+    cat: TagCategory;
+    label: string;
+    icon: string;
+    color: string;
+  }[] = [
+    { cat: "Goal", label: "Gol", icon: "⚽", color: "#10b981" },
+    {
+      cat: "Shot on Target",
+      label: "Tembakan On-Target",
+      icon: "🎯",
+      color: "#38bdf8",
+    },
+    {
+      cat: "Shot Off Target",
+      label: "Tembakan Gagal",
+      icon: "⭕",
+      color: "#64748b",
+    },
+    {
+      cat: "Pressing High",
+      label: "High Pressing",
+      icon: "🔥",
+      color: "#f59e0b",
+    },
+    {
+      cat: "Transition Attack",
+      label: "Counter Attack",
+      icon: "⚡",
+      color: "#6366f1",
+    },
+    {
+      cat: "Transition Defense",
+      label: "Transisi Bertahan",
+      icon: "🛑",
+      color: "#ef4444",
+    },
+    {
+      cat: "Kick-in Set Piece",
+      label: "Kick-In Set Piece",
+      icon: "📐",
+      color: "#ec4899",
+    },
+    {
+      cat: "Corner Set Piece",
+      label: "Corner Kick",
+      icon: "🚩",
+      color: "#8b5cf6",
+    },
+    { cat: "Build-up 3-1", label: "Rotasi 3-1", icon: "🔄", color: "#0ea5e9" },
+    {
+      cat: "Build-up 4-0",
+      label: "Rotasi 4-0 Flat",
+      icon: "↔️",
+      color: "#14b8a6",
+    },
+    {
+      cat: "Power Play",
+      label: "Power Play 5v4",
+      icon: "👑",
+      color: "#eab308",
+    },
+    {
+      cat: "Goalkeeper Save",
+      label: "Save Kiper",
+      icon: "🧤",
+      color: "#06b6d4",
+    },
+    {
+      cat: "Foul",
+      label: "Pelanggaran / Peluit",
+      icon: "⚠️",
+      color: "#f97316",
+    },
   ];
 
   const OUTCOMES: TagOutcome[] = [
-    'Gol / Sukses',
-    'Terblok / Diselamatkan',
-    'Keluar / Gagal',
-    'Turnover',
+    "Gol / Sukses",
+    "Terblok / Diselamatkan",
+    "Keluar / Gagal",
+    "Turnover",
   ];
 
   const ZONES: CourtZone[] = [
-    'Area Penalti Lawan',
-    'Flank Kiri',
-    'Flank Kanan',
-    'Area Tengah',
-    'Area Bertahan Sendiri',
+    "Area Penalti Lawan",
+    "Flank Kiri",
+    "Flank Kanan",
+    "Area Tengah",
+    "Area Bertahan Sendiri",
   ];
 
   const RATINGS: TagRating[] = [
-    '⭐⭐⭐ Bagus',
-    '⚠️ Evaluasi',
-    '❌ Kesalahan Fatal',
+    "⭐⭐⭐ Bagus",
+    "⚠️ Evaluasi",
+    "❌ Kesalahan Fatal",
   ];
 
   // Sync draft when tag prop changes
@@ -104,11 +164,11 @@
       draftStartTime = tag.startTime;
       draftEndTime = tag.endTime;
       draftColor = tag.color;
-      draftPlayerLabel = tag.playerLabel || '#9 Pivot';
-      draftOutcomeLabel = tag.outcomeLabel || 'Gol / Sukses';
-      draftZoneLabel = tag.zoneLabel || 'Area Penalti Lawan';
-      draftRating = tag.rating || '⭐⭐⭐ Bagus';
-      draftNotes = tag.notes || '';
+      draftPlayerLabel = tag.playerLabel || "#9 Pivot";
+      draftOutcomeLabel = tag.outcomeLabel || "Gol / Sukses";
+      draftZoneLabel = tag.zoneLabel || "Area Penalti Lawan";
+      draftRating = tag.rating || "⭐⭐⭐ Bagus";
+      draftNotes = tag.notes || "";
       draftPauseDuration = tag.pauseDuration || 3.0;
     }
   });
@@ -135,12 +195,12 @@
     if (newPlayerInput.trim() && !rosterList.includes(newPlayerInput.trim())) {
       rosterList.push(newPlayerInput.trim());
       draftPlayerLabel = newPlayerInput.trim();
-      newPlayerInput = '';
+      newPlayerInput = "";
     }
   }
 
-  function adjustTime(type: 'start' | 'end', delta: number) {
-    if (type === 'start') {
+  function adjustTime(type: "start" | "end", delta: number) {
+    if (type === "start") {
       draftStartTime = Math.max(0, draftStartTime + delta);
       if (draftStartTime >= draftEndTime) draftStartTime = draftEndTime - 0.5;
     } else {
@@ -152,7 +212,12 @@
 {#if isOpen}
   <div class="modal-backdrop" onclick={onClose} role="presentation">
     <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <div class="editor-drawer" onclick={(e) => e.stopPropagation()} role="dialog" tabindex="-1">
+    <div
+      class="editor-drawer"
+      onclick={(e) => e.stopPropagation()}
+      role="dialog"
+      tabindex="-1"
+    >
       <!-- DRAWER HEADER (DEEP SAPPHIRE BLUE) -->
       <header class="drawer-header">
         <div class="header-title-box">
@@ -161,7 +226,9 @@
           </div>
           <div>
             <h2 class="drawer-title">FORM TAGGING & LABELING TAKTIS</h2>
-            <span class="drawer-subtitle">Once Sport Professional Action & Player Metadata Inspector</span>
+            <span class="drawer-subtitle"
+              >Once Sport Professional Action & Player Metadata Inspector</span
+            >
           </div>
         </div>
 
@@ -196,7 +263,7 @@
                 onclick={() => {
                   draftCategory = item.cat;
                   draftColor = item.color;
-                  if (!draftTitle || draftTitle.includes('(')) {
+                  if (!draftTitle || draftTitle.includes("(")) {
                     draftTitle = `${item.label} (${draftStartTime.toFixed(1)}s - ${draftEndTime.toFixed(1)}s)`;
                   }
                 }}
@@ -237,13 +304,17 @@
               bind:value={newPlayerInput}
               class="input-new-player"
               onkeydown={(e) => {
-                if (e.key === 'Enter') {
+                if (e.key === "Enter") {
                   e.preventDefault();
                   handleAddPlayer();
                 }
               }}
             />
-            <button type="button" class="btn-add-player" onclick={handleAddPlayer}>
+            <button
+              type="button"
+              class="btn-add-player"
+              onclick={handleAddPlayer}
+            >
               <Plus size={14} />
               <span>Tambah</span>
             </button>
@@ -328,8 +399,16 @@
               <span class="time-label">Mulai (Start):</span>
               <span class="time-val">{draftStartTime.toFixed(2)}s</span>
               <div class="adjust-btns">
-                <button type="button" class="btn-micro" onclick={() => adjustTime('start', -0.5)}>-0.5s</button>
-                <button type="button" class="btn-micro" onclick={() => adjustTime('start', 0.5)}>+0.5s</button>
+                <button
+                  type="button"
+                  class="btn-micro"
+                  onclick={() => adjustTime("start", -0.5)}>-0.5s</button
+                >
+                <button
+                  type="button"
+                  class="btn-micro"
+                  onclick={() => adjustTime("start", 0.5)}>+0.5s</button
+                >
               </div>
             </div>
 
@@ -338,22 +417,34 @@
               <span class="time-label">Selesai (End):</span>
               <span class="time-val">{draftEndTime.toFixed(2)}s</span>
               <div class="adjust-btns">
-                <button type="button" class="btn-micro" onclick={() => adjustTime('end', -0.5)}>-0.5s</button>
-                <button type="button" class="btn-micro" onclick={() => adjustTime('end', 0.5)}>+0.5s</button>
+                <button
+                  type="button"
+                  class="btn-micro"
+                  onclick={() => adjustTime("end", -0.5)}>-0.5s</button
+                >
+                <button
+                  type="button"
+                  class="btn-micro"
+                  onclick={() => adjustTime("end", 0.5)}>+0.5s</button
+                >
               </div>
             </div>
 
             <!-- Total Duration -->
             <div class="time-adjust-card card-total">
               <span class="time-label">Total Durasi Klip:</span>
-              <span class="time-val text-sky-400">{(draftEndTime - draftStartTime).toFixed(1)}s</span>
+              <span class="time-val text-sky-400"
+                >{(draftEndTime - draftStartTime).toFixed(1)}s</span
+              >
               <span class="sub-hint">Auto Pre/Post Roll</span>
             </div>
           </div>
 
           <!-- Freeze Pause Duration Slider -->
           <div class="freeze-slider-row">
-            <span class="freeze-title">Jeda Freeze-Frame saat Presentasi / Gambar:</span>
+            <span class="freeze-title"
+              >Jeda Freeze-Frame saat Presentasi / Gambar:</span
+            >
             <input
               type="range"
               min="1"
@@ -362,7 +453,8 @@
               bind:value={draftPauseDuration}
               class="blue-slider"
             />
-            <span class="freeze-val">{draftPauseDuration.toFixed(1)} Detik</span>
+            <span class="freeze-val">{draftPauseDuration.toFixed(1)} Detik</span
+            >
           </div>
         </section>
 
@@ -388,7 +480,7 @@
             type="button"
             class="btn-delete"
             onclick={() => {
-              if (confirm('Yakin ingin menghapus klip ini?')) {
+              if (confirm("Yakin ingin menghapus klip ini?")) {
                 onDelete(tag.id);
                 onClose();
               }
@@ -437,7 +529,9 @@
     background: radial-gradient(circle at 50% 0%, #0f2444 0%, #08101d 100%);
     border: 1px solid #1e3b68;
     border-radius: 14px;
-    box-shadow: 0 25px 50px -12px rgba(2, 6, 23, 0.9), 0 0 24px rgba(14, 165, 233, 0.15);
+    box-shadow:
+      0 25px 50px -12px rgba(2, 6, 23, 0.9),
+      0 0 24px rgba(14, 165, 233, 0.15);
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -579,7 +673,11 @@
   }
 
   .category-chip.active {
-    background: linear-gradient(135deg, rgba(2, 132, 199, 0.3), rgba(37, 99, 235, 0.4));
+    background: linear-gradient(
+      135deg,
+      rgba(2, 132, 199, 0.3),
+      rgba(37, 99, 235, 0.4)
+    );
     border-color: #38bdf8;
     color: #38bdf8;
     box-shadow: 0 0 10px rgba(56, 189, 248, 0.2);
@@ -715,7 +813,11 @@
   }
 
   .choice-btn.active {
-    background: linear-gradient(135deg, rgba(2, 132, 199, 0.25), rgba(37, 99, 235, 0.35));
+    background: linear-gradient(
+      135deg,
+      rgba(2, 132, 199, 0.25),
+      rgba(37, 99, 235, 0.35)
+    );
     border-color: #38bdf8;
     color: #38bdf8;
   }

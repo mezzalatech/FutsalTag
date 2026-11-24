@@ -229,6 +229,61 @@ class ProjectStore {
     }
   }
 
+  // Export the entire match project as a single .futsal (JSON) structure
+  exportProjectJson(): string {
+    const projectData = {
+      format: 'futsaltag-project',
+      version: '1.0',
+      exportedAt: new Date().toISOString(),
+      matchInfo: {
+        title: this.videoTitle,
+        duration: this.duration,
+        videoFilePath: this.videoFilePath,
+      },
+      tags: this.tags,
+      playlists: this.playlists,
+    };
+    return JSON.stringify(projectData, null, 2);
+  }
+
+  // Download / Save project file (.futsal)
+  downloadProjectFile(filename?: string) {
+    const json = this.exportProjectJson();
+    const name = (filename || this.videoTitle || 'proyek_futsal')
+      .replace(/[^a-zA-Z0-9_-]/g, '_')
+      .toLowerCase();
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${name}.futsal`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  // Import / Load project from JSON content or file
+  importProjectJson(jsonStr: string): boolean {
+    try {
+      const data = JSON.parse(jsonStr);
+      if (data.matchInfo) {
+        this.videoTitle = data.matchInfo.title || this.videoTitle;
+        this.duration = data.matchInfo.duration || this.duration;
+        this.videoFilePath = data.matchInfo.videoFilePath || this.videoFilePath;
+      }
+      if (Array.isArray(data.tags)) {
+        this.tags = data.tags;
+      }
+      if (Array.isArray(data.playlists) && data.playlists.length > 0) {
+        this.playlists = data.playlists;
+      }
+      this.stage = 'tagging';
+      return true;
+    } catch (err) {
+      console.error('Gagal memuat berkas proyek:', err);
+      return false;
+    }
+  }
+
   resetProject() {
     this.videoSrc = null;
     this.videoFilePath = null;

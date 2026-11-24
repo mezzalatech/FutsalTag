@@ -3,12 +3,14 @@
   import { X, Play, Download, BarChart2, Table } from 'lucide-svelte';
 
   interface Props {
+    isOpen?: boolean;
     tags: VideoTagEvent[];
     onClose: () => void;
-    onPlayClips: (clips: VideoTagEvent[], title: string) => void;
+    onPlayClips?: (clips: VideoTagEvent[], title: string) => void;
+    onPlayTag?: (tag: VideoTagEvent) => void;
   }
 
-  let { tags, onClose, onPlayClips }: Props = $props();
+  let { isOpen = true, tags, onClose, onPlayClips, onPlayTag }: Props = $props();
 
   const PLAYERS = ['#1 Kiper', '#4 Anchor', '#7 Flank Kiri', '#11 Flank Kanan', '#9 Pivot', 'Tim Lawan'];
   const CATEGORIES: Array<{ label: string; cat: TagCategory }> = [
@@ -41,7 +43,11 @@
   function handleCellClick(player: string, catObj: { label: string; cat: TagCategory }) {
     const clips = getClips(player, catObj.cat);
     if (clips.length > 0) {
-      onPlayClips(clips, `${player} - ${catObj.label} (${clips.length} Klip)`);
+      if (onPlayClips) {
+        onPlayClips(clips, `${player} - ${catObj.label} (${clips.length} Klip)`);
+      } else if (onPlayTag) {
+        onPlayTag(clips[0]);
+      }
       onClose();
     }
   }
@@ -49,7 +55,11 @@
   function handleRowClick(player: string) {
     const clips = getPlayerTotal(player);
     if (clips.length > 0) {
-      onPlayClips(clips, `Semua Aksi: ${player} (${clips.length} Klip)`);
+      if (onPlayClips) {
+        onPlayClips(clips, `Semua Aksi: ${player} (${clips.length} Klip)`);
+      } else if (onPlayTag) {
+        onPlayTag(clips[0]);
+      }
       onClose();
     }
   }
@@ -57,7 +67,11 @@
   function handleColClick(catObj: { label: string; cat: TagCategory }) {
     const clips = getCategoryTotal(catObj.cat);
     if (clips.length > 0) {
-      onPlayClips(clips, `Semua Kejadian: ${catObj.label} (${clips.length} Klip)`);
+      if (onPlayClips) {
+        onPlayClips(clips, `Semua Kejadian: ${catObj.label} (${clips.length} Klip)`);
+      } else if (onPlayTag) {
+        onPlayTag(clips[0]);
+      }
       onClose();
     }
   }
@@ -83,6 +97,7 @@
   }
 </script>
 
+{#if isOpen}
 <div class="modal-backdrop" onclick={onClose} role="presentation">
   <div class="modal-card" onclick={(e) => e.stopPropagation()} role="dialog">
     <!-- MODAL HEADER -->
@@ -185,6 +200,7 @@
     </div>
   </div>
 </div>
+{/if}
 
 <style>
   .modal-backdrop {

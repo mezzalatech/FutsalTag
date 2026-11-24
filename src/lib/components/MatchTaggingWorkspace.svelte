@@ -564,15 +564,17 @@
   </div>
 
   <!-- STATS MATRIX MODAL -->
-  <StatsMatrixModal
-    isOpen={showStatsMatrix}
-    onClose={() => (showStatsMatrix = false)}
-    tags={projectStore.tags}
-    onPlayTag={(tag) => {
-      showStatsMatrix = false;
-      playClipLoop(tag);
-    }}
-  />
+  {#if showStatsMatrix}
+    <StatsMatrixModal
+      isOpen={showStatsMatrix}
+      onClose={() => (showStatsMatrix = false)}
+      tags={projectStore.tags}
+      onPlayTag={(tag) => {
+        showStatsMatrix = false;
+        playClipLoop(tag);
+      }}
+    />
+  {/if}
 </div>
 
 <style>

@@ -46,6 +46,7 @@
     RotateCcw,
     AlertTriangle,
     Eye,
+    X,
   } from 'lucide-svelte';
 
   // --- REFS & STATE ---
@@ -73,6 +74,9 @@
   let inPoint = $state<number | null>(null);
   let outPoint = $state<number | null>(null);
   let activeLoopClip = $state<VideoTagEvent | null>(null);
+  let activeClipQueue = $state<VideoTagEvent[]>([]);
+  let activeQueueIndex = $state<number>(0);
+  let activeQueueTitle = $state<string>('');
 
   // Filters & Search
   let searchQuery = $state('');
@@ -163,6 +167,22 @@
     if (!videoEl) return;
     currentTime = videoEl.currentTime;
 
+    // Sequential Queue Playback (e.g. from Cross-Tabulation Matrix)
+    if (activeClipQueue.length > 0 && activeQueueIndex < activeClipQueue.length) {
+      const currentQueueClip = activeClipQueue[activeQueueIndex];
+      if (currentTime >= currentQueueClip.endTime) {
+        if (activeQueueIndex + 1 < activeClipQueue.length) {
+          activeQueueIndex += 1;
+          playQueueCurrentClip();
+        } else {
+          // Loop playlist back to start
+          activeQueueIndex = 0;
+          playQueueCurrentClip();
+        }
+      }
+      return;
+    }
+
     if (activeLoopClip) {
       if (currentTime >= activeLoopClip.endTime) {
         videoEl.currentTime = activeLoopClip.startTime;
@@ -178,6 +198,8 @@
 
   function seekTo(seconds: number) {
     if (!videoEl) return;
+    activeLoopClip = null;
+    activeClipQueue = [];
     videoEl.currentTime = Math.max(0, Math.min(seconds, duration));
     currentTime = videoEl.currentTime;
   }
@@ -267,6 +289,7 @@
 
   function playClipLoop(tag: VideoTagEvent) {
     if (!videoEl) return;
+    activeClipQueue = [];
     activeLoopClip = tag;
     videoEl.currentTime = tag.startTime;
     videoEl.play();
@@ -275,6 +298,32 @@
 
   function stopClipLoop() {
     activeLoopClip = null;
+  }
+
+  function playSequentialClips(clips: VideoTagEvent[], title?: string) {
+    if (!clips || clips.length === 0 || !videoEl) return;
+    activeLoopClip = null;
+    activeClipQueue = [...clips];
+    activeQueueIndex = 0;
+    activeQueueTitle = title || `${clips.length} Klip Terpilih`;
+    playQueueCurrentClip();
+  }
+
+  function playQueueCurrentClip() {
+    if (!videoEl || activeQueueIndex >= activeClipQueue.length) return;
+    const clip = activeClipQueue[activeQueueIndex];
+    videoEl.currentTime = clip.startTime;
+    videoEl.play();
+    isPlaying = true;
+    notifyUser(`[${activeQueueIndex + 1}/${activeClipQueue.length}] ${clip.title}`);
+  }
+
+  function stopSequentialQueue() {
+    activeClipQueue = [];
+    activeQueueIndex = 0;
+    activeQueueTitle = '';
+    if (videoEl) videoEl.pause();
+    isPlaying = false;
   }
 
   function formatTime(sec: number): string {
@@ -429,6 +478,56 @@
                 <button class="btn-sample-inline" onclick={() => projectStore.loadSampleDemo()}>
                   Muat Video Sampel Demo
                 </button>
+              </div>
+            {/if}
+
+            <!-- PLAYLIST QUEUE FLOATING BANNER -->
+            {#if activeClipQueue.length > 0}
+              <div class="queue-status-banner">
+                <div class="flex items-center gap-2">
+                  <Play size={12} class="text-sky-400 animate-pulse" />
+                  <span class="text-xs font-bold text-white tracking-wide">
+                    Playlist Matriks: {activeQueueTitle}
+                  </span>
+                  <span class="queue-counter">
+                    ({activeQueueIndex + 1} / {activeClipQueue.length})
+                  </span>
+                </div>
+                <div class="flex items-center gap-1.5">
+                  <button
+                    class="btn-queue-step"
+                    onclick={() => {
+                      if (activeQueueIndex > 0) {
+                        activeQueueIndex -= 1;
+                        playQueueCurrentClip();
+                      }
+                    }}
+                    disabled={activeQueueIndex === 0}
+                    title="Klip Sebelumnya"
+                  >
+                    <SkipBack size={11} />
+                  </button>
+                  <button
+                    class="btn-queue-step"
+                    onclick={() => {
+                      if (activeQueueIndex + 1 < activeClipQueue.length) {
+                        activeQueueIndex += 1;
+                        playQueueCurrentClip();
+                      }
+                    }}
+                    disabled={activeQueueIndex + 1 >= activeClipQueue.length}
+                    title="Klip Berikutnya"
+                  >
+                    <SkipForward size={11} />
+                  </button>
+                  <button
+                    class="btn-queue-close"
+                    onclick={stopSequentialQueue}
+                    title="Hentikan Playlist Matriks"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
               </div>
             {/if}
 
@@ -1047,6 +1146,10 @@
         showStatsMatrix = false;
         playClipLoop(tag);
       }}
+      onPlayClips={(clips, title) => {
+        showStatsMatrix = false;
+        playSequentialClips(clips, title);
+      }}
     />
   {/if}
 </div>
@@ -1349,6 +1452,86 @@
     font-size: 11px;
     font-weight: 700;
     cursor: pointer;
+  }
+
+  /* PLAYLIST QUEUE FLOATING BANNER */
+  .queue-status-banner {
+    position: absolute;
+    top: 14px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(8, 22, 42, 0.92);
+    border: 1px solid #0284c7;
+    border-radius: 20px;
+    padding: 6px 14px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6), 0 0 16px rgba(14, 165, 233, 0.4);
+    backdrop-filter: blur(8px);
+    z-index: 25;
+    animation: fadeInSlideDown 0.2s ease-out;
+  }
+
+  @keyframes fadeInSlideDown {
+    from {
+      opacity: 0;
+      transform: translate(-50%, -10px);
+    }
+    to {
+      opacity: 1;
+      transform: translate(-50%, 0);
+    }
+  }
+
+  .queue-counter {
+    font-size: 11px;
+    font-weight: 700;
+    color: #38bdf8;
+    font-family: monospace;
+  }
+
+  .btn-queue-step {
+    background: rgba(14, 165, 233, 0.15);
+    border: 1px solid #1e4570;
+    color: #f0f6fc;
+    padding: 4px 6px;
+    border-radius: 4px;
+    font-size: 10px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s ease;
+  }
+
+  .btn-queue-step:hover:not(:disabled) {
+    background: #0284c7;
+    color: #ffffff;
+  }
+
+  .btn-queue-step:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+
+  .btn-queue-close {
+    background: transparent;
+    border: none;
+    color: #94a3b8;
+    padding: 4px 6px;
+    border-radius: 4px;
+    font-size: 11px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s ease;
+  }
+
+  .btn-queue-close:hover {
+    color: #ffffff;
+    background: rgba(239, 68, 68, 0.4);
   }
 
   /* VIDEO OVERLAY TRANSPORT BAR */

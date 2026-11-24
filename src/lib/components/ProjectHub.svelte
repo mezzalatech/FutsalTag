@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { projectStore } from '$lib/stores/projectStore.svelte';
+  import { convertFileSrc } from '@tauri-apps/api/core';
+  import { projectStore, isTauriDesktop } from '$lib/stores/projectStore.svelte';
   import {
     Video,
     Sparkles,
@@ -24,8 +25,75 @@
   let homeColor = $state('#0284c7');
   let awayColor = $state('#ef4444');
   let isDragging = $state(false);
+  let fullVideoInputEl: HTMLInputElement | undefined = $state();
+  let projectFileInputEl: HTMLInputElement | undefined = $state();
+  let quickVideoInputEl: HTMLInputElement | undefined = $state();
 
   const TEAM_COLORS = ['#0284c7', '#ef4444', '#10b981', '#f59e0b', '#ffffff', '#1e293b'];
+
+  async function handleTauriVideoClick(quickTelestrate = false) {
+    if (!isTauriDesktop()) {
+      if (quickTelestrate) {
+        quickVideoInputEl?.click();
+      } else {
+        fullVideoInputEl?.click();
+      }
+      return;
+    }
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog');
+      const selected = await open({
+        title: quickTelestrate ? 'Pilih Klip Video untuk Telestrasi' : 'Pilih Video Pertandingan Futsal',
+        multiple: false,
+        filters: [{ name: 'Video Files', extensions: ['mp4', 'mov', 'mkv', 'webm', 'avi', 'm4v'] }],
+      });
+      if (!selected || typeof selected !== 'string') return;
+      const assetUrl = convertFileSrc(selected);
+      const fileName = selected.split(/[\\/]/).pop() || selected;
+      if (quickTelestrate) {
+        projectStore.loadVideo(assetUrl, selected, `Klip Telestrasi: ${fileName}`, 30);
+        const quickTag = {
+          id: `quick-clip-${Date.now()}`,
+          title: `Telestrasi: ${fileName.replace(/\.[^/.]+$/, '')}`,
+          category: 'Transition Attack' as const,
+          startTime: 0,
+          endTime: 30,
+          color: '#38bdf8',
+          playerLabel: '#9 Pivot',
+          pauseDuration: 3.0,
+          freezeTimestamp: 15.0,
+          drawings: [],
+        };
+        projectStore.addTag(quickTag);
+        projectStore.openClipInTelestrator(quickTag);
+      } else {
+        projectStore.loadVideo(
+          assetUrl,
+          selected,
+          `${homeTeam} vs ${awayTeam} (${matchHalf})`,
+          180
+        );
+        projectStore.setStage('tagging');
+      }
+    } catch (err: any) {
+      alert(`Gagal membuka video: ${err?.message || err}`);
+    }
+  }
+
+  async function handleTauriProjectOpenClick() {
+    if (!isTauriDesktop()) {
+      projectFileInputEl?.click();
+      return;
+    }
+    try {
+      const ok = await projectStore.openProjectFromDisk();
+      if (ok) {
+        alert(`Berkas proyek "${projectStore.videoTitle}" berhasil dimuat!`);
+      }
+    } catch (err: any) {
+      alert(`Gagal membuka berkas proyek: ${err?.message || err}`);
+    }
+  }
 
   function handleFileUpload(event: Event) {
     const input = event.target as HTMLInputElement;
@@ -111,7 +179,7 @@
   <div class="hero-section">
     <div class="hero-badge">
       <Award size={13} />
-      <span>MOMEN & ONCE SPORT BROADCAST WORKFLOW</span>
+      <span>FUTSAL VIDEO ANALYSIS & AI TELESTRATION</span>
     </div>
     <h1 class="hero-title">
       Selamat Datang di <span class="highlight">FUTSALTAG PRO</span>
@@ -196,30 +264,32 @@
 
       <!-- ACTIONS -->
       <div class="card-actions">
-        <label class="btn-primary-action">
+        <button type="button" class="btn-primary-action" onclick={() => handleTauriVideoClick(false)}>
           <Upload size={15} />
           <span>Pilih / Seret Video MP4</span>
-          <input
-            type="file"
-            accept="video/*"
-            onchange={handleFileUpload}
-            style="display: none;"
-          />
-        </label>
-        <button class="btn-sample-action" onclick={loadSampleMatch}>
+        </button>
+        <input
+          bind:this={fullVideoInputEl}
+          type="file"
+          accept="video/*"
+          onchange={handleFileUpload}
+          style="display: none;"
+        />
+        <button type="button" class="btn-sample-action" onclick={loadSampleMatch}>
           <PlayCircle size={14} />
           <span>Muat Sampel Demo (Pendekar United vs Blacksteel)</span>
         </button>
-        <label class="btn-load-project" title="Buka Proyek yang Sudah Ada (.futsal)">
+        <button type="button" class="btn-load-project" title="Buka Proyek yang Sudah Ada (.futsal)" onclick={handleTauriProjectOpenClick}>
           <FolderOpen size={14} />
           <span>Buka Berkas Proyek (.futsal / .json)</span>
-          <input
-            type="file"
-            accept=".futsal,.json"
-            onchange={handleProjectFileOpen}
-            style="display: none;"
-          />
-        </label>
+        </button>
+        <input
+          bind:this={projectFileInputEl}
+          type="file"
+          accept=".futsal,.json"
+          onchange={handleProjectFileOpen}
+          style="display: none;"
+        />
       </div>
     </div>
 
@@ -250,16 +320,17 @@
       </div>
 
       <div class="card-actions">
-        <label class="btn-amber-action">
+        <button type="button" class="btn-amber-action" onclick={() => handleTauriVideoClick(true)}>
           <FolderOpen size={15} />
           <span>Impor Klip & Langsung Gambar</span>
-          <input
-            type="file"
-            accept="video/*"
-            onchange={handleQuickClipUpload}
-            style="display: none;"
-          />
-        </label>
+        </button>
+        <input
+          bind:this={quickVideoInputEl}
+          type="file"
+          accept="video/*"
+          onchange={handleQuickClipUpload}
+          style="display: none;"
+        />
       </div>
     </div>
 
@@ -326,12 +397,12 @@
     overflow-y: auto;
     background: radial-gradient(ellipse at 50% 15%, #0e2347 0%, #060b14 80%);
     color: #f0f6fc;
-    padding: 28px 40px;
+    padding: 20px 28px;
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
     justify-content: space-between;
-    gap: 24px;
+    gap: 18px;
     font-family: 'Inter', system-ui, -apple-system, sans-serif;
   }
 
@@ -383,8 +454,8 @@
   /* CARDS GRID */
   .cards-grid {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 20px;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 16px;
     max-width: 1200px;
     width: 100%;
     margin: 0 auto;
@@ -394,12 +465,23 @@
     background: linear-gradient(180deg, #0d1e38 0%, #071222 100%);
     border: 1px solid #1a355d;
     border-radius: 14px;
-    padding: 22px;
+    padding: 20px;
+    min-width: 0;
     display: flex;
     flex-direction: column;
     position: relative;
     transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
     box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.7), 0 0 15px rgba(14, 165, 233, 0.06);
+  }
+
+  @media (max-width: 1040px) {
+    .project-hub-container {
+      padding: 16px 20px;
+    }
+
+    .cards-grid {
+      grid-template-columns: 1fr;
+    }
   }
 
   .workflow-card:hover {
@@ -750,8 +832,10 @@
     border-radius: 10px;
     padding: 10px 16px;
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
+    gap: 10px;
     max-width: 1200px;
     width: 100%;
     margin: 0 auto;
@@ -770,8 +854,9 @@
 
   .recent-chips-row {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 16px;
+    gap: 10px;
   }
 
   .recent-chip {

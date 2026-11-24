@@ -27,40 +27,141 @@
   let selectedPlayerFilter = $state<string>('all');
   let selectedCategoryFilter = $state<string>('all');
 
-  const ROSTER = [
-    { id: '#1 Kiper', label: '#1 Kiper', defaultPos: { x: 4, y: 10 } },
-    { id: '#4 Anchor', label: '#4 Anchor', defaultPos: { x: 12, y: 10 } },
-    { id: '#7 Flank Kiri', label: '#7 Flank Kiri', defaultPos: { x: 22, y: 4 } },
-    { id: '#11 Flank Kanan', label: '#11 Flank Kanan', defaultPos: { x: 22, y: 16 } },
-    { id: '#9 Pivot', label: '#9 Pivot', defaultPos: { x: 32, y: 10 } },
-  ];
+  const DEFAULT_NODE_POSITIONS: Record<string, Point2D> = {
+    '#1 Kiper': { x: 4, y: 10 },
+    '#4 Anchor': { x: 12, y: 10 },
+    '#7 Flank Kiri': { x: 22, y: 4 },
+    '#11 Flank Kanan': { x: 22, y: 16 },
+    '#9 Pivot': { x: 32, y: 10 },
+  };
 
-  // Map zone to coordinates on a 40x20 futsal pitch
-  function getZoneCoord(zone?: string): Point2D {
-    switch (zone) {
+  const ROSTER_NODES = $derived(
+    projectStore.roster
+      .filter((p) => !p.isOpponent && p.name !== 'Tim Lawan')
+      .map((p, idx) => {
+        const label = projectStore.getPlayerDisplayLabel(p);
+        const pos = DEFAULT_NODE_POSITIONS[label] || {
+          x: 14 + ((idx * 7) % 18),
+          y: 4 + ((idx * 5) % 12),
+        };
+        return { id: label, label, defaultPos: pos };
+      })
+  );
+
+  function deterministicHashOffset(id: string): { dx: number; dy: number } {
+    let h = 2166136261;
+    for (let i = 0; i < id.length; i++) {
+      h ^= id.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    const u1 = ((h >>> 0) % 1000) / 1000 - 0.5;
+    const u2 = (((h >>> 10) & 0x3ff) / 1024) - 0.5;
+    return { dx: u1 * 3.0, dy: u2 * 2.4 };
+  }
+
+  // Deterministic coordinate resolution (uses exact courtCoord if pinned, else deterministic zone centroid + id offset)
+  function getEventCoord(ev: VideoTagEvent): Point2D {
+    if (ev.courtCoord) return ev.courtCoord;
+    const off = deterministicHashOffset(ev.id || ev.title);
+    switch (ev.zoneLabel) {
       case 'Area Penalti Lawan':
-        return { x: 34 + (Math.random() - 0.5) * 4, y: 10 + (Math.random() - 0.5) * 5 };
+        return { x: 34 + off.dx, y: 10 + off.dy };
       case 'Flank Kiri':
-        return { x: 24 + (Math.random() - 0.5) * 8, y: 3.5 + (Math.random() - 0.5) * 2 };
+        return { x: 24 + off.dx, y: 3.5 + off.dy * 0.5 };
       case 'Flank Kanan':
-        return { x: 24 + (Math.random() - 0.5) * 8, y: 16.5 + (Math.random() - 0.5) * 2 };
+        return { x: 24 + off.dx, y: 16.5 + off.dy * 0.5 };
       case 'Area Tengah':
-        return { x: 20 + (Math.random() - 0.5) * 6, y: 10 + (Math.random() - 0.5) * 4 };
+        return { x: 20 + off.dx, y: 10 + off.dy };
       case 'Area Bertahan Sendiri':
-        return { x: 8 + (Math.random() - 0.5) * 6, y: 10 + (Math.random() - 0.5) * 6 };
+        return { x: 8 + off.dx, y: 10 + off.dy };
       default:
-        return { x: 20 + (Math.random() - 0.5) * 12, y: 10 + (Math.random() - 0.5) * 8 };
+        return { x: 20 + off.dx * 2, y: 10 + off.dy * 2 };
     }
   }
 
-  // Filtered tags for heatmap
+  // Filtered tags for heatmap & passing network
   let filteredEvents = $derived(
     projectStore.tags.filter((t) => {
-      if (selectedPlayerFilter !== 'all' && t.playerLabel !== selectedPlayerFilter) return false;
+      if (
+        selectedPlayerFilter !== 'all' &&
+        projectStore.normalizePlayerLabel(t.playerLabel) !== selectedPlayerFilter
+      ) {
+        return false;
+      }
       if (selectedCategoryFilter !== 'all' && t.category !== selectedCategoryFilter) return false;
       return true;
     })
   );
+
+  // Real Passing Network Computation:
+  // 1) Explicit (playerLabel -> passTargetPlayer)
+  // 2) Fallback: consecutive same-team clips within <= 6s
+  const passingNetworkData = $derived.by(() => {
+    const pairCounts = new Map<string, { from: string; to: string; count: number; isInferred: boolean }>();
+    const sorted = [...filteredEvents].sort((a, b) => a.startTime - b.startTime);
+
+    let hasExplicit = false;
+    for (const ev of sorted) {
+      const from = projectStore.normalizePlayerLabel(ev.playerLabel);
+      const to = ev.passTargetPlayer ? projectStore.normalizePlayerLabel(ev.passTargetPlayer) : '';
+      if (from && to && from !== to && from !== 'Tim Lawan' && to !== 'Tim Lawan') {
+        hasExplicit = true;
+        const key = `${from}=>${to}`;
+        const prev = pairCounts.get(key);
+        if (prev) prev.count += 1;
+        else pairCounts.set(key, { from, to, count: 1, isInferred: false });
+      }
+    }
+
+    if (!hasExplicit) {
+      for (let i = 0; i < sorted.length - 1; i++) {
+        const a = sorted[i];
+        const b = sorted[i + 1];
+        const from = projectStore.normalizePlayerLabel(a.playerLabel);
+        const to = projectStore.normalizePlayerLabel(b.playerLabel);
+        if (
+          from !== 'Tim Lawan' &&
+          to !== 'Tim Lawan' &&
+          from !== to &&
+          b.startTime - a.startTime <= 6.0
+        ) {
+          const key = `${from}=>${to}`;
+          const prev = pairCounts.get(key);
+          if (prev) prev.count += 1;
+          else pairCounts.set(key, { from, to, count: 1, isInferred: true });
+        }
+      }
+    }
+
+    const links = Array.from(pairCounts.values()).sort((a, b) => b.count - a.count);
+    return { links, hasExplicit };
+  });
+
+  // Real sector dominance metrics
+  const dominantSector = $derived.by(() => {
+    if (filteredEvents.length === 0) return 'Belum ada data';
+    const counts = new Map<string, number>();
+    for (const ev of filteredEvents) {
+      const z = ev.zoneLabel || 'Area Tengah';
+      counts.set(z, (counts.get(z) || 0) + 1);
+    }
+    let bestZone = 'Area Tengah';
+    let bestCount = 0;
+    for (const [z, c] of counts.entries()) {
+      if (c > bestCount) {
+        bestZone = z;
+        bestCount = c;
+      }
+    }
+    const pct = Math.round((bestCount / filteredEvents.length) * 100);
+    return `${bestZone} (${pct}%)`;
+  });
+
+  const topPassConnection = $derived.by(() => {
+    const top = passingNetworkData.links[0];
+    if (!top) return 'Belum ada koneksi umpan';
+    return `${top.from} ➔ ${top.to} (${top.count}x${top.isInferred ? ' est.' : ''})`;
+  });
 
   onMount(() => {
     renderCanvas();
@@ -164,19 +265,22 @@
     const scaleX = pitchW / FUTSAL_DIMENSIONS.length;
     const scaleY = pitchH / FUTSAL_DIMENSIONS.width;
 
+    const resolvedPts = filteredEvents.map((ev) => ({
+      ev,
+      coord: getEventCoord(ev),
+    }));
+
     ctx.save();
-    // Render gaussian heat density blobs
-    for (const ev of filteredEvents) {
-      const coord = ev.courtCoord || getZoneCoord(ev.zoneLabel);
+    for (const { coord } of resolvedPts) {
       const cx = pad + coord.x * scaleX;
       const cy = pad + coord.y * scaleY;
       const radius = 45;
 
       const grad = ctx.createRadialGradient(cx, cy, 2, cx, cy, radius);
-      grad.addColorStop(0, 'rgba(239, 68, 68, 0.45)');   // Core Red
-      grad.addColorStop(0.3, 'rgba(245, 158, 11, 0.35)'); // Amber
-      grad.addColorStop(0.6, 'rgba(16, 185, 129, 0.2)');  // Green
-      grad.addColorStop(0.85, 'rgba(2, 132, 199, 0.1)'); // Blue
+      grad.addColorStop(0, 'rgba(239, 68, 68, 0.45)');
+      grad.addColorStop(0.3, 'rgba(245, 158, 11, 0.35)');
+      grad.addColorStop(0.6, 'rgba(16, 185, 129, 0.2)');
+      grad.addColorStop(0.85, 'rgba(2, 132, 199, 0.1)');
       grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
 
       ctx.beginPath();
@@ -185,9 +289,7 @@
       ctx.fill();
     }
 
-    // Overlay action points
-    for (const ev of filteredEvents) {
-      const coord = ev.courtCoord || getZoneCoord(ev.zoneLabel);
+    for (const { coord } of resolvedPts) {
       const cx = pad + coord.x * scaleX;
       const cy = pad + coord.y * scaleY;
 
@@ -211,56 +313,65 @@
     const scaleX = pitchW / FUTSAL_DIMENSIONS.length;
     const scaleY = pitchH / FUTSAL_DIMENSIONS.width;
 
-    // Passing connections model between Starting 5
-    const links = [
-      { from: 0, to: 1, count: 14 }, // Kiper -> Anchor
-      { from: 1, to: 2, count: 22 }, // Anchor -> Flank L
-      { from: 1, to: 3, count: 18 }, // Anchor -> Flank R
-      { from: 2, to: 4, count: 16 }, // Flank L -> Pivot
-      { from: 3, to: 4, count: 12 }, // Flank R -> Pivot
-      { from: 0, to: 4, count: 6 },  // Kiper -> Pivot (Long Pass)
-    ];
+    const nodeMap = new Map<string, Point2D>();
+    for (const r of ROSTER_NODES) {
+      nodeMap.set(r.label, r.defaultPos);
+    }
 
     ctx.save();
 
-    // 1. Draw Passing Vectors
-    for (const l of links) {
-      const p1 = ROSTER[l.from].defaultPos;
-      const p2 = ROSTER[l.to].defaultPos;
+    // 1. Draw Real Passing Vectors
+    for (const l of passingNetworkData.links) {
+      const p1 = nodeMap.get(l.from);
+      const p2 = nodeMap.get(l.to);
+      if (!p1 || !p2) continue;
+
       const x1 = pad + p1.x * scaleX;
       const y1 = pad + p1.y * scaleY;
       const x2 = pad + p2.x * scaleX;
       const y2 = pad + p2.y * scaleY;
 
-      const thickness = Math.max(2, l.count * 0.35);
+      const thickness = Math.min(14, Math.max(2.5, l.count * 2.2));
 
       ctx.beginPath();
       ctx.moveTo(x1, y1);
       ctx.lineTo(x2, y2);
-      ctx.strokeStyle = 'rgba(56, 189, 248, 0.75)';
+      ctx.strokeStyle = l.isInferred ? 'rgba(245, 158, 11, 0.7)' : 'rgba(56, 189, 248, 0.8)';
       ctx.lineWidth = thickness;
+      if (l.isInferred) ctx.setLineDash([6, 4]);
       ctx.stroke();
+      ctx.setLineDash([]);
 
-      // Midpoint pass volume badge
       const mx = (x1 + x2) / 2;
       const my = (y1 + y2) / 2;
       ctx.fillStyle = '#0f172a';
       ctx.beginPath();
-      ctx.arc(mx, my, 9, 0, Math.PI * 2);
+      ctx.arc(mx, my, 10, 0, Math.PI * 2);
       ctx.fill();
-      ctx.strokeStyle = '#38bdf8';
-      ctx.lineWidth = 1;
+      ctx.strokeStyle = l.isInferred ? '#f59e0b' : '#38bdf8';
+      ctx.lineWidth = 1.5;
       ctx.stroke();
 
       ctx.font = 'bold 9px monospace';
-      ctx.fillStyle = '#38bdf8';
+      ctx.fillStyle = l.isInferred ? '#fbbf24' : '#38bdf8';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(`${l.count}`, mx, my);
     }
 
+    if (passingNetworkData.links.length === 0) {
+      ctx.font = 'bold 13px system-ui';
+      ctx.fillStyle = 'rgba(148, 163, 184, 0.85)';
+      ctx.textAlign = 'center';
+      ctx.fillText(
+        'Belum ada data operan. Isi "Penerima Operan" di Menu Tag & Label untuk memetakan koneksi.',
+        w / 2,
+        h - 36
+      );
+    }
+
     // 2. Draw Player Nodes
-    for (const r of ROSTER) {
+    for (const r of ROSTER_NODES) {
       const px = pad + r.defaultPos.x * scaleX;
       const py = pad + r.defaultPos.y * scaleY;
       const nodeRadius = 18;
@@ -279,7 +390,6 @@
       ctx.textBaseline = 'middle';
       ctx.fillText(r.label.split(' ')[0], px, py);
 
-      // Label below
       ctx.font = 'bold 11px system-ui';
       ctx.fillStyle = '#93c5fd';
       ctx.fillText(r.label.split(' ').slice(1).join(' '), px, py + nodeRadius + 12);
@@ -357,8 +467,9 @@
               class="filter-select"
             >
               <option value="all">Semua Pemain (100% Data)</option>
-              {#each ROSTER as r}
-                <option value={r.label}>{r.label}</option>
+              {#each projectStore.roster as r}
+                {@const label = projectStore.getPlayerDisplayLabel(r)}
+                <option value={label}>{label}</option>
               {/each}
             </select>
           </div>
@@ -390,7 +501,7 @@
         ></canvas>
       </div>
 
-      <!-- FOOTER METRICS -->
+      <!-- FOOTER METRICS (REAL COMPUTED) -->
       <div class="metrics-footer">
         <div class="metric-pill">
           <span class="m-label">Total Momen Terpetakan:</span>
@@ -398,11 +509,11 @@
         </div>
         <div class="metric-pill">
           <span class="m-label">Sektor Terpadat:</span>
-          <span class="m-val text-cyan">Flank Kiri (42% Dominasi Serangan)</span>
+          <span class="m-val text-cyan">{dominantSector}</span>
         </div>
         <div class="metric-pill">
           <span class="m-label">Koneksi Umpan Tertinggi:</span>
-          <span class="m-val text-amber">#4 Anchor ➔ #7 Flank Kiri (22 Umpan)</span>
+          <span class="m-val text-amber">{topPassConnection}</span>
         </div>
       </div>
     </div>

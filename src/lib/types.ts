@@ -118,7 +118,7 @@ export interface TacticalDrill {
 }
 
 // Video Match Analysis Types
-export type TagCategory = 
+export type PresetTagCategory =
   | 'Goal'
   | 'Shot on Target'
   | 'Shot Off Target'
@@ -133,6 +133,61 @@ export type TagCategory =
   | 'Foul'
   | 'Goalkeeper Save';
 
+export type TagCategory = PresetTagCategory | (string & {});
+
+export type TaggingButtonKind = 'category' | 'descriptor';
+export type TaggingButtonShape = 'rounded' | 'rect' | 'circle';
+
+export interface TagDescriptor {
+  id: string;
+  name: string;
+  color?: string;
+  group?: string | null;
+  atTime: number; // seconds
+}
+
+export interface TaggingButton {
+  id: string;
+  name: string;
+  kind: TaggingButtonKind;
+  hotkey: string | null;
+  color: string; // '#rrggbb'
+  x: number;
+  y: number;
+  w: number; // 0 = off-canvas quick-pool descriptor
+  h: number;
+  leadSec: number;
+  lagSec: number;
+  continuous: boolean; // true = Continuous Mode (Start/Stop), false = Single-Click Auto
+  shape: TaggingButtonShape;
+  forTags: string[]; // empty = all tags; non-empty = scoped to these category button IDs
+  links: string[]; // linked category button IDs (e.g. AT 5X4 <-> DEF 4X5)
+  exclusionGroup: string | null; // mutually exclusive continuous group
+  group?: string | null; // mutually exclusive descriptor group per clip
+  autoAdd?: boolean; // sticky descriptor auto-added to every new clip
+}
+
+export interface TaggingBoard {
+  id: string;
+  name: string;
+  background: 'pitch' | 'plain';
+  color: string;
+  periods?: number;
+  buttons: TaggingButton[];
+}
+
+export interface ActiveContinuousTag {
+  buttonId: string;
+  name: string;
+  color: string;
+  startTime: number;
+  pressedAt: number;
+  lagSec: number;
+  labels: TagDescriptor[];
+  players: string[];
+  teamSide: 'home' | 'away';
+}
+
 export type TagOutcome = 'Gol / Sukses' | 'Terblok / Diselamatkan' | 'Keluar / Gagal' | 'Turnover';
 export type CourtZone = 'Area Penalti Lawan' | 'Flank Kiri' | 'Flank Kanan' | 'Area Tengah' | 'Area Bertahan Sendiri';
 export type TagRating = '⭐⭐⭐ Bagus' | '⚠️ Evaluasi' | '❌ Kesalahan Fatal';
@@ -144,18 +199,51 @@ export interface VideoTagEvent {
   startTime: number; // seconds
   endTime: number;   // seconds
   color: string;
-  playerLabel?: string;     // e.g. '#9 Pivot', '#4 Anchor'
-  outcomeLabel?: TagOutcome; // e.g. 'Gol / Sukses'
-  zoneLabel?: CourtZone;     // e.g. 'Flank Kiri'
+  playerLabel?: string;       // e.g. '#9 Pivot', '#4 Anchor', 'Tim Lawan'
+  passTargetPlayer?: string;  // Receiver player label for real passing network
+  outcomeLabel?: TagOutcome;  // e.g. 'Gol / Sukses'
+  zoneLabel?: CourtZone;      // e.g. 'Flank Kiri'
   rating?: TagRating;
   favorite?: boolean;
   notes?: string;
   playersInvolved?: string[];
+  labels?: TagDescriptor[];
+  teamSide?: 'home' | 'away';
+  isContinuous?: boolean;
+  boardButtonId?: string;
   drawings?: DrawingElement[];
-  pauseDuration?: number; // duration to freeze keyframe during playback / export (default: 3s)
-  freezeTimestamp?: number; // frame timestamp where drawings apply
+  pauseDuration?: number;     // duration to freeze keyframe during playback / export (default: 3s)
+  freezeTimestamp?: number;   // frame timestamp where drawings apply
   voiceoverAudioBase64?: string; // Recorded coach audio instructions (WebM/WAV)
-  courtCoord?: Point2D; // Tactical pitch location (0..40m, 0..20m) for heatmap
+  courtCoord?: Point2D;       // Tactical pitch location (0..40m, 0..20m) for heatmap
+}
+
+export interface RosterPlayer {
+  id: string;
+  num: string;
+  name: string;
+  role: string;
+  color: string;
+  isOpponent?: boolean;
+}
+
+export interface AiModelStatus {
+  available: boolean;
+  model_path: string | null;
+  engine: string;
+  input_size: [number, number];
+}
+
+export interface DetectedPlayerBox {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  foot_x: number;
+  foot_y: number;
+  confidence: number;
+  class_id: number;
+  label: string;
 }
 
 export type WorkflowStage = 'hub' | 'tagging' | 'telestrator' | 'playlist_export' | 'coachboard' | 'chalkboard';

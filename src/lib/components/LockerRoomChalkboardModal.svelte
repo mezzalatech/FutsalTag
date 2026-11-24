@@ -1,21 +1,20 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { tick } from 'svelte';
   import { projectStore } from '$lib/stores/projectStore.svelte';
   import type { VideoTagEvent, Point2D } from '$lib/types';
+  import { renderDrawingsToDataUrl } from '$lib/export/telestrationRenderer';
   import {
     Play,
     Pause,
     SkipBack,
     SkipForward,
     RotateCcw,
-    Trash2,
+    Undo2,
+    Clock,
     X,
-    Maximize,
     Sparkles,
     MoveRight,
     CircleDot,
-    Volume2,
-    Check,
   } from 'lucide-svelte';
 
   interface Props {
@@ -33,11 +32,17 @@
   let isPlaying = $state(false);
   let currentTime = $state(0);
 
+  // Halftime Countdown Timer (default 10:00)
+  let halftimeSeconds = $state(600);
+  let isTimerRunning = $state(false);
+  let timerInterval: any = null;
+
   // Chalkboard drawing state
   type ChalkTool = 'pen' | 'spotlight' | 'arrow';
   let activeTool = $state<ChalkTool>('pen');
   let activeColor = $state('#00f0ff');
   let isDrawing = $state(false);
+  let showSavedTelestrations = $state(true);
 
   interface ChalkStroke {
     tool: ChalkTool;
@@ -58,41 +63,116 @@
 
   const CHALK_COLORS = ['#00f0ff', '#f59e0b', '#ef4444', '#10b981', '#ffffff'];
 
-  onMount(() => {
-    syncCanvas();
-    window.addEventListener('resize', syncCanvas);
-    requestAnimationFrame(renderLoop);
+  // Cached overlay image for saved telestrations from Studio
+  let savedOverlayImg = $state<HTMLImageElement | null>(null);
+  $effect(() => {
+    const clip = currentClip;
+    if (showSavedTelestrations && clip?.drawings && clip.drawings.length > 0) {
+      const url = renderDrawingsToDataUrl(clip.drawings, 1280, 720, currentTime);
+      const img = new Image();
+      img.onload = () => {
+        savedOverlayImg = img;
+      };
+      img.src = url;
+    } else {
+      savedOverlayImg = null;
+    }
+  });
+
+  // Only sync canvas and run RAF while modal is actually open!
+  $effect(() => {
+    if (!isOpen) return;
+
+    let rafId: number | null = null;
+    let active = true;
+
+    tick().then(() => {
+      if (active) syncCanvas();
+    });
+
+    const onResize = () => syncCanvas();
+    window.addEventListener('resize', onResize);
+
+    const loop = () => {
+      if (!active) return;
+      if (videoEl && !videoEl.paused) {
+        currentTime = videoEl.currentTime;
+        if (currentClip && currentTime >= currentClip.endTime) {
+          if (activeClipIdx + 1 < activeClips.length) {
+            selectClip(activeClipIdx + 1);
+          } else {
+            videoEl.pause();
+            isPlaying = false;
+          }
+        }
+      }
+      drawCanvas();
+      rafId = requestAnimationFrame(loop);
+    };
+
+    rafId = requestAnimationFrame(loop);
 
     return () => {
-      window.removeEventListener('resize', syncCanvas);
+      active = false;
+      window.removeEventListener('resize', onResize);
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      if (timerInterval) {
+        clearInterval(timerInterval);
+        timerInterval = null;
+        isTimerRunning = false;
+      }
     };
   });
+
+  function toggleHalftimeTimer() {
+    if (isTimerRunning) {
+      clearInterval(timerInterval);
+      timerInterval = null;
+      isTimerRunning = false;
+    } else {
+      isTimerRunning = true;
+      timerInterval = setInterval(() => {
+        if (halftimeSeconds > 0) {
+          halftimeSeconds -= 1;
+        } else {
+          clearInterval(timerInterval);
+          timerInterval = null;
+          isTimerRunning = false;
+        }
+      }, 1000);
+    }
+  }
+
+  function resetHalftimeTimer(mins: number) {
+    if (timerInterval) {
+      clearInterval(timerInterval);
+      timerInterval = null;
+    }
+    isTimerRunning = false;
+    halftimeSeconds = mins * 60;
+  }
+
+  function formatCountdown(sec: number): string {
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  }
+
+  function undoLastStroke() {
+    if (strokes.length > 0) {
+      strokes = strokes.slice(0, -1);
+    }
+  }
 
   function syncCanvas() {
     if (!containerEl || !canvasEl) return;
     const rect = containerEl.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
     const dpr = window.devicePixelRatio || 1;
     canvasEl.width = rect.width * dpr;
     canvasEl.height = rect.height * dpr;
     canvasEl.style.width = `${rect.width}px`;
     canvasEl.style.height = `${rect.height}px`;
-  }
-
-  function renderLoop() {
-    if (videoEl && !videoEl.paused) {
-      currentTime = videoEl.currentTime;
-      if (currentClip && currentTime >= currentClip.endTime) {
-        // Step to next clip or loop
-        if (activeClipIdx + 1 < activeClips.length) {
-          selectClip(activeClipIdx + 1);
-        } else {
-          videoEl.pause();
-          isPlaying = false;
-        }
-      }
-    }
-    drawCanvas();
-    requestAnimationFrame(renderLoop);
   }
 
   function drawCanvas() {
@@ -107,6 +187,10 @@
 
     const w = canvasEl.width / dpr;
     const h = canvasEl.height / dpr;
+
+    if (showSavedTelestrations && savedOverlayImg) {
+      ctx.drawImage(savedOverlayImg, 0, 0, w, h);
+    }
 
     for (const stroke of strokes) {
       drawStroke(ctx, stroke, w, h);
@@ -325,6 +409,19 @@
       </div>
 
       <div class="header-right">
+        <div class="halftime-timer-pill">
+          <Clock size={12} />
+          <span class="timer-digits">{formatCountdown(halftimeSeconds)}</span>
+          <button class="btn-timer-mini" onclick={toggleHalftimeTimer}>
+            {isTimerRunning ? 'Jeda' : 'Mulai'}
+          </button>
+          <button class="btn-timer-mini" onclick={() => resetHalftimeTimer(10)} title="Reset 10 menit">10m</button>
+          <button class="btn-timer-mini" onclick={() => resetHalftimeTimer(15)} title="Reset 15 menit">15m</button>
+        </div>
+        <button class="btn-undo-chalk" onclick={undoLastStroke} title="Batalkan coretan terakhir">
+          <Undo2 size={14} />
+          <span>Undo</span>
+        </button>
         <button class="btn-clear-resume" onclick={clearAndResume} title="Hapus coretan dan lanjut video">
           <RotateCcw size={14} />
           <span>Hapus & Lanjut Putar</span>
@@ -424,20 +521,26 @@
   }
 
   .chalkboard-header {
-    height: 52px;
+    min-height: 50px;
+    height: auto;
     background: linear-gradient(180deg, #0d1e38 0%, #060e1c 100%);
     border-bottom: 1px solid #1a355d;
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
-    padding: 0 16px;
+    gap: 8px;
+    padding: 6px 14px;
+    box-sizing: border-box;
     flex-shrink: 0;
   }
 
   .header-left {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 8px;
+    min-width: 0;
+    overflow: hidden;
   }
 
   .live-pill {
@@ -449,18 +552,25 @@
     padding: 4px 8px;
     border-radius: 6px;
     letter-spacing: 0.05em;
+    white-space: nowrap;
+    flex-shrink: 0;
   }
 
   .clip-title-text {
     font-size: 13px;
     font-weight: 700;
     color: #f1f5f9;
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .header-center {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 16px;
+    gap: 8px;
   }
 
   .tool-pills {
@@ -475,14 +585,16 @@
   .pill-btn {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 5px;
     background: transparent;
     border: none;
     color: #94a3b8;
-    padding: 6px 12px;
+    padding: 5px 10px;
     border-radius: 6px;
     font-size: 11px;
     font-weight: 600;
+    white-space: nowrap;
+    flex-shrink: 0;
     cursor: pointer;
     transition: all 0.15s;
   }
@@ -519,26 +631,75 @@
   .header-right {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
+    flex-shrink: 0;
+    white-space: nowrap;
   }
 
   .btn-clear-resume {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 5px;
     background: #059669;
     border: none;
     color: #ffffff;
-    padding: 6px 14px;
+    padding: 6px 12px;
     border-radius: 6px;
     font-size: 11px;
     font-weight: 700;
+    white-space: nowrap;
+    flex-shrink: 0;
     cursor: pointer;
     transition: all 0.15s;
   }
 
   .btn-clear-resume:hover {
     background: #047857;
+  }
+
+  .halftime-timer-pill {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: #0b172a;
+    border: 1px solid #1e3b68;
+    padding: 4px 8px;
+    border-radius: 6px;
+    color: #38bdf8;
+    font-size: 11px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .timer-digits {
+    font-family: monospace;
+    font-weight: 800;
+    color: #f8fafc;
+  }
+
+  .btn-timer-mini {
+    background: #142a4d;
+    border: 1px solid #1e3b68;
+    color: #93c5fd;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+
+  .btn-undo-chalk {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    background: #0f2444;
+    border: 1px solid #1e3b68;
+    color: #93c5fd;
+    padding: 6px 10px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
   }
 
   .btn-close {

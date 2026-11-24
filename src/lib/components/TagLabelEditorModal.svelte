@@ -5,7 +5,10 @@
     TagOutcome,
     CourtZone,
     TagRating,
+    TagDescriptor,
+    Point2D,
   } from "$lib/types";
+  import { projectStore } from "$lib/stores/projectStore.svelte";
   import {
     X,
     User,
@@ -22,6 +25,8 @@
     Crosshair,
     Layers,
     MapPin,
+    Share2,
+    RotateCcw,
   } from "lucide-svelte";
 
   interface Props {
@@ -37,103 +42,65 @@
   // Local draft state
   let draftTitle = $state("");
   let draftCategory = $state<TagCategory>("Goal");
+  let draftBoardButtonId = $state<string | undefined>(undefined);
   let draftStartTime = $state(0);
   let draftEndTime = $state(0);
   let draftColor = $state("#10b981");
   let draftPlayerLabel = $state<string>("#9 Pivot");
+  let draftPlayersInvolved = $state<string[]>(["#9 Pivot"]);
+  let draftLabels = $state<TagDescriptor[]>([]);
+  let draftPassTargetPlayer = $state<string>("");
   let draftOutcomeLabel = $state<TagOutcome>("Gol / Sukses");
   let draftZoneLabel = $state<CourtZone>("Area Penalti Lawan");
+  let draftCourtCoord = $state<Point2D | undefined>(undefined);
   let draftRating = $state<TagRating>("⭐⭐⭐ Bagus");
   let draftNotes = $state("");
   let draftPauseDuration = $state(3.0);
   let newPlayerInput = $state("");
+  let newLabelInput = $state("");
 
-  let rosterList = $state([
-    "#1 Kiper",
-    "#4 Anchor",
-    "#7 Flank Kiri",
-    "#11 Flank Kanan",
-    "#9 Pivot",
-    "#10 Second Pivot",
-    "#8 Mid Flank",
-    "Tim Lawan",
-  ]);
+  const rosterList = $derived(
+    projectStore.roster.map((p) => projectStore.getPlayerDisplayLabel(p))
+  );
 
-  const CATEGORIES: {
-    cat: TagCategory;
-    label: string;
-    icon: string;
-    color: string;
-  }[] = [
-    { cat: "Goal", label: "Gol", icon: "⚽", color: "#10b981" },
-    {
-      cat: "Shot on Target",
-      label: "Tembakan On-Target",
-      icon: "🎯",
-      color: "#38bdf8",
-    },
-    {
-      cat: "Shot Off Target",
-      label: "Tembakan Gagal",
-      icon: "⭕",
-      color: "#64748b",
-    },
-    {
-      cat: "Pressing High",
-      label: "High Pressing",
-      icon: "🔥",
-      color: "#f59e0b",
-    },
-    {
-      cat: "Transition Attack",
-      label: "Counter Attack",
-      icon: "⚡",
-      color: "#6366f1",
-    },
-    {
-      cat: "Transition Defense",
-      label: "Transisi Bertahan",
-      icon: "🛑",
-      color: "#ef4444",
-    },
-    {
-      cat: "Kick-in Set Piece",
-      label: "Kick-In Set Piece",
-      icon: "📐",
-      color: "#ec4899",
-    },
-    {
-      cat: "Corner Set Piece",
-      label: "Corner Kick",
-      icon: "🚩",
-      color: "#8b5cf6",
-    },
-    { cat: "Build-up 3-1", label: "Rotasi 3-1", icon: "🔄", color: "#0ea5e9" },
-    {
-      cat: "Build-up 4-0",
-      label: "Rotasi 4-0 Flat",
-      icon: "↔️",
-      color: "#14b8a6",
-    },
-    {
-      cat: "Power Play",
-      label: "Power Play 5v4",
-      icon: "👑",
-      color: "#eab308",
-    },
-    {
-      cat: "Goalkeeper Save",
-      label: "Save Kiper",
-      icon: "🧤",
-      color: "#06b6d4",
-    },
-    {
-      cat: "Foul",
-      label: "Pelanggaran / Peluit",
-      icon: "⚠️",
-      color: "#f97316",
-    },
-  ];
+  const boardDescriptors = $derived(
+    projectStore.activeBoard.buttons.filter((b) => b.kind === "descriptor")
+  );
+
+  const boardCategories = $derived.by(() => {
+    const out = projectStore.activeBoard.buttons
+      .filter((b) => b.kind === "category")
+      .map((btn) => ({
+        id: btn.id,
+        cat: btn.name as TagCategory,
+        label: btn.name,
+        color: btn.color,
+        continuous: btn.continuous,
+        hotkey: btn.hotkey,
+      }));
+    const hasCurrent = out.some(
+      (c) => c.cat.toLowerCase() === String(draftCategory || "").toLowerCase()
+    );
+    if (draftCategory && !hasCurrent) {
+      out.push({
+        id: draftBoardButtonId || String(draftCategory),
+        cat: draftCategory,
+        label: String(draftCategory),
+        color: draftColor || "#0284c7",
+        continuous: false,
+        hotkey: null,
+      });
+    }
+    return out;
+  });
+
+  const selectedCatButtonId = $derived(
+    draftBoardButtonId ||
+      boardCategories.find(
+        (c) => c.cat.toLowerCase() === String(draftCategory || "").toLowerCase()
+      )?.id ||
+      null
+  );
 
   const OUTCOMES: TagOutcome[] = [
     "Gol / Sukses",
@@ -161,29 +128,92 @@
     if (tag) {
       draftTitle = tag.title;
       draftCategory = tag.category;
+      draftBoardButtonId = tag.boardButtonId;
       draftStartTime = tag.startTime;
       draftEndTime = tag.endTime;
       draftColor = tag.color;
-      draftPlayerLabel = tag.playerLabel || "#9 Pivot";
+      const initialPlayers =
+        tag.playersInvolved && tag.playersInvolved.length > 0
+          ? Array.from(new Set(tag.playersInvolved.map((p) => projectStore.normalizePlayerLabel(p))))
+          : [projectStore.normalizePlayerLabel(tag.playerLabel || "#9 Pivot")];
+      draftPlayersInvolved = initialPlayers;
+      draftPlayerLabel = initialPlayers[0] || "#9 Pivot";
+      draftLabels = tag.labels ? tag.labels.map((l) => ({ ...l })) : [];
+      draftPassTargetPlayer = tag.passTargetPlayer || "";
       draftOutcomeLabel = tag.outcomeLabel || "Gol / Sukses";
       draftZoneLabel = tag.zoneLabel || "Area Penalti Lawan";
+      draftCourtCoord = tag.courtCoord ? { ...tag.courtCoord } : undefined;
       draftRating = tag.rating || "⭐⭐⭐ Bagus";
       draftNotes = tag.notes || "";
       draftPauseDuration = tag.pauseDuration || 3.0;
     }
   });
 
+  function toggleDraftPlayer(player: string) {
+    if (draftPlayersInvolved.includes(player)) {
+      if (draftPlayersInvolved.length > 1) {
+        draftPlayersInvolved = draftPlayersInvolved.filter((p) => p !== player);
+      }
+    } else {
+      draftPlayersInvolved = [...draftPlayersInvolved, player];
+    }
+    draftPlayerLabel = draftPlayersInvolved[0] || player;
+  }
+
+  function toggleDraftLabel(id: string, name: string, color?: string, group?: string | null) {
+    if (draftLabels.some((l) => l.id === id || l.name.toLowerCase() === name.toLowerCase())) {
+      draftLabels = draftLabels.filter(
+        (l) => l.id !== id && l.name.toLowerCase() !== name.toLowerCase()
+      );
+    } else {
+      const cleaned = group ? draftLabels.filter((l) => l.group !== group) : draftLabels;
+      draftLabels = [
+        ...cleaned,
+        { id, name, color: color || "#38bdf8", group: group ?? null, atTime: draftStartTime },
+      ];
+    }
+  }
+
+  function handleAddCustomLabel() {
+    const clean = newLabelInput.trim();
+    if (!clean) return;
+    toggleDraftLabel(`custom_${Date.now()}`, clean, "#38bdf8", null);
+    newLabelInput = "";
+  }
+
+  function inferZoneFromCoord(pt: Point2D): CourtZone {
+    if (pt.x >= 30) return "Area Penalti Lawan";
+    if (pt.x <= 12) return "Area Bertahan Sendiri";
+    if (pt.y <= 6.5) return "Flank Kiri";
+    if (pt.y >= 13.5) return "Flank Kanan";
+    return "Area Tengah";
+  }
+
+  function handleMiniCourtClick(e: MouseEvent) {
+    const svg = e.currentTarget as SVGSVGElement;
+    const rect = svg.getBoundingClientRect();
+    const xM = Math.max(0, Math.min(40, ((e.clientX - rect.left) / rect.width) * 40));
+    const yM = Math.max(0, Math.min(20, ((e.clientY - rect.top) / rect.height) * 20));
+    draftCourtCoord = { x: Number(xM.toFixed(1)), y: Number(yM.toFixed(1)) };
+    draftZoneLabel = inferZoneFromCoord(draftCourtCoord);
+  }
+
   function handleSave() {
     onSave({
       ...tag,
       title: draftTitle,
       category: draftCategory,
+      boardButtonId: draftBoardButtonId,
       startTime: Number(draftStartTime.toFixed(2)),
       endTime: Number(draftEndTime.toFixed(2)),
       color: draftColor,
-      playerLabel: draftPlayerLabel,
+      playerLabel: draftPlayersInvolved[0] || draftPlayerLabel,
+      playersInvolved: [...draftPlayersInvolved],
+      labels: draftLabels.map((l) => ({ ...l })),
+      passTargetPlayer: draftPassTargetPlayer || undefined,
       outcomeLabel: draftOutcomeLabel,
       zoneLabel: draftZoneLabel,
+      courtCoord: draftCourtCoord,
       rating: draftRating,
       notes: draftNotes,
       pauseDuration: draftPauseDuration,
@@ -192,9 +222,12 @@
   }
 
   function handleAddPlayer() {
-    if (newPlayerInput.trim() && !rosterList.includes(newPlayerInput.trim())) {
-      rosterList.push(newPlayerInput.trim());
-      draftPlayerLabel = newPlayerInput.trim();
+    const added = projectStore.addRosterPlayer(newPlayerInput);
+    if (added) {
+      if (!draftPlayersInvolved.includes(added)) {
+        draftPlayersInvolved = [...draftPlayersInvolved, added];
+      }
+      draftPlayerLabel = draftPlayersInvolved[0] || added;
       newPlayerInput = "";
     }
   }
@@ -225,9 +258,9 @@
             <Tag size={16} />
           </div>
           <div>
-            <h2 class="drawer-title">FORM TAGGING & LABELING TAKTIS</h2>
+            <h2 class="drawer-title">EDIT KLIP & METADATA TAKTIS</h2>
             <span class="drawer-subtitle"
-              >Once Sport Professional Action & Player Metadata Inspector</span
+              >Papan Aktif: {projectStore.activeBoard.name} ({boardCategories.length} Tag · {boardDescriptors.length} Label)</span
             >
           </div>
         </div>
@@ -254,7 +287,7 @@
           />
 
           <div class="categories-scroll-grid">
-            {#each CATEGORIES as item}
+            {#each boardCategories as item (item.id + item.label)}
               <button
                 type="button"
                 class="category-chip"
@@ -262,24 +295,28 @@
                 style="--chip-color: {item.color}"
                 onclick={() => {
                   draftCategory = item.cat;
+                  draftBoardButtonId = item.id;
                   draftColor = item.color;
                   if (!draftTitle || draftTitle.includes("(")) {
                     draftTitle = `${item.label} (${draftStartTime.toFixed(1)}s - ${draftEndTime.toFixed(1)}s)`;
                   }
                 }}
               >
-                <span class="chip-icon">{item.icon}</span>
+                <span class="chip-dot" style="background-color: {item.color};"></span>
                 <span class="chip-label">{item.label}</span>
+                {#if item.hotkey}
+                  <span class="chip-kbd">{item.hotkey}</span>
+                {/if}
               </button>
             {/each}
           </div>
         </section>
 
-        <!-- 2. PLAYER ROSTER SELECTION -->
+        <!-- 2. MULTI-PLAYER ROSTER SELECTION -->
         <section class="form-section">
           <label class="section-label">
             <User size={13} class="text-sky-400" />
-            <span>PEMAIN YANG TERLIBAT (ROSTER FUTSAL)</span>
+            <span>PEMAIN YANG TERLIBAT (MULTI-PEMAIN FUTSAL)</span>
           </label>
 
           <div class="roster-pills-wrap">
@@ -287,8 +324,8 @@
               <button
                 type="button"
                 class="roster-pill"
-                class:active={draftPlayerLabel === player}
-                onclick={() => (draftPlayerLabel = player)}
+                class:active={draftPlayersInvolved.includes(player)}
+                onclick={() => toggleDraftPlayer(player)}
               >
                 <span class="player-dot"></span>
                 <span>{player}</span>
@@ -317,6 +354,71 @@
             >
               <Plus size={14} />
               <span>Tambah</span>
+            </button>
+          </div>
+        </section>
+
+        <!-- 2B. TACTICAL DESCRIPTORS / MULTI-LABELS (MOMEN & ONCE SPORT) -->
+        <section class="form-section">
+          <label class="section-label">
+            <Tag size={13} class="text-amber-400" />
+            <span>LABEL TAKTIS / DESCRIPTORS KLIP ({draftLabels.length} aktif)</span>
+          </label>
+          <div class="labels-chips-wrap">
+            {#each boardDescriptors as descBtn (descBtn.id)}
+              {@const isActive = draftLabels.some(
+                (l) => l.id === descBtn.id || l.name.toLowerCase() === descBtn.name.toLowerCase()
+              )}
+              {@const isScopedOut = Boolean(
+                descBtn.forTags.length > 0 &&
+                  selectedCatButtonId &&
+                  !descBtn.forTags.includes(selectedCatButtonId)
+              )}
+              <button
+                type="button"
+                class="desc-chip-btn"
+                class:active={isActive}
+                class:dim={isScopedOut}
+                onclick={() => toggleDraftLabel(descBtn.id, descBtn.name, descBtn.color, descBtn.group)}
+                title={isScopedOut
+                  ? `Label ini dihubungkan ke tag: ${descBtn.forTags.join(', ')} (tetap bisa dipaksa aktif bila diklik)`
+                  : `Toggle label: ${descBtn.name}`}
+              >
+                <span class="desc-chip-dot" style="background-color: {descBtn.color};"></span>
+                <span>{descBtn.name}</span>
+              </button>
+            {/each}
+            {#each draftLabels.filter((l) => !boardDescriptors.some((b) => b.id === l.id || b.name.toLowerCase() === l.name.toLowerCase())) as extraLbl}
+              <button
+                type="button"
+                class="desc-chip-btn active"
+                onclick={() => toggleDraftLabel(extraLbl.id, extraLbl.name, extraLbl.color, extraLbl.group)}
+              >
+                <span class="desc-chip-dot" style="background-color: {extraLbl.color || '#38bdf8'};"></span>
+                <span>{extraLbl.name}</span>
+              </button>
+            {/each}
+          </div>
+          <div class="add-player-row">
+            <input
+              type="text"
+              placeholder="Tambah label kustom (misal: CONNECT PIVOT, OVERLAP)..."
+              bind:value={newLabelInput}
+              class="input-new-player"
+              onkeydown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  handleAddCustomLabel();
+                }
+              }}
+            />
+            <button
+              type="button"
+              class="btn-add-player"
+              onclick={handleAddCustomLabel}
+            >
+              <Plus size={14} />
+              <span>+ Label</span>
             </button>
           </div>
         </section>
@@ -366,12 +468,61 @@
           </section>
         </div>
 
-        <!-- 4. COURT ZONE -->
+        <!-- 4. COURT ZONE & INTERACTIVE 40m x 20m COORDINATE PICKER -->
         <section class="form-section">
-          <label class="section-label">
-            <MapPin size={13} class="text-cyan-400" />
-            <span>ZONA LAPANGAN FUTSAL (COURT ZONE)</span>
-          </label>
+          <div class="section-header-inline">
+            <label class="section-label">
+              <MapPin size={13} class="text-cyan-400" />
+              <span>ZONA & TITIK KOORDINAT LAPANGAN (40m x 20m)</span>
+            </label>
+            {#if draftCourtCoord}
+              <span class="coord-readout">
+                ({draftCourtCoord.x.toFixed(1)}m, {draftCourtCoord.y.toFixed(1)}m)
+                <button
+                  type="button"
+                  class="btn-reset-coord"
+                  onclick={() => (draftCourtCoord = undefined)}
+                  title="Hapus titik koordinat"
+                >
+                  <RotateCcw size={10} /> Reset
+                </button>
+              </span>
+            {:else}
+              <span class="coord-hint">Klik lapangan di bawah untuk pin lokasi nyata Heatmap</span>
+            {/if}
+          </div>
+
+          <div class="mini-court-picker-wrap">
+            <!-- svelte-ignore a11y_click_events_have_key_events -->
+            <svg
+              viewBox="0 0 400 200"
+              class="mini-court-svg"
+              onclick={handleMiniCourtClick}
+              role="button"
+              tabindex="0"
+              aria-label="Pilih koordinat lapangan futsal 40m x 20m"
+            >
+              <rect x="0" y="0" width="400" height="200" fill="#0a2540" rx="6" />
+              <rect x="4" y="4" width="392" height="192" fill="none" stroke="rgba(255,255,255,0.5)" stroke-width="2" />
+              <line x1="200" y1="4" x2="200" y2="196" stroke="rgba(255,255,255,0.4)" stroke-width="1.5" />
+              <circle cx="200" cy="100" r="30" fill="none" stroke="rgba(255,255,255,0.4)" stroke-width="1.5" />
+              <path d="M 4 40 A 60 60 0 0 1 4 160" fill="none" stroke="rgba(255,255,255,0.4)" stroke-width="1.5" />
+              <path d="M 396 40 A 60 60 0 0 0 396 160" fill="none" stroke="rgba(255,255,255,0.4)" stroke-width="1.5" />
+              <text x="16" y="18" fill="rgba(255,255,255,0.45)" font-size="9" font-weight="bold">BERTAHAN (0m)</text>
+              <text x="305" y="18" fill="rgba(56,189,248,0.7)" font-size="9" font-weight="bold">ARAH SERANG ➔ (40m)</text>
+              {#if draftCourtCoord}
+                <circle
+                  cx={draftCourtCoord.x * 10}
+                  cy={draftCourtCoord.y * 10}
+                  r="7"
+                  fill="#38bdf8"
+                  stroke="#ffffff"
+                  stroke-width="2"
+                />
+              {/if}
+            </svg>
+          </div>
+
           <div class="zones-grid">
             {#each ZONES as zone}
               <button
@@ -384,6 +535,20 @@
               </button>
             {/each}
           </div>
+        </section>
+
+        <!-- 4B. PASSING TARGET RECEIVER (FOR PASSING NETWORK) -->
+        <section class="form-section">
+          <label class="section-label">
+            <Share2 size={13} class="text-sky-400" />
+            <span>PENERIMA OPERAN / TARGET UMPAN (UNTUK PASSING NETWORK)</span>
+          </label>
+          <select bind:value={draftPassTargetPlayer} class="input-title-text">
+            <option value="">— Tidak ada / Aksi Individu —</option>
+            {#each rosterList.filter((p) => p !== draftPlayerLabel && p !== 'Tim Lawan') as targetP}
+              <option value={targetP}>{targetP}</option>
+            {/each}
+          </select>
         </section>
 
         <!-- 5. PRECISE TIMING & DURATION FINE-TUNING (Once Sport EditActionTimeDialog) -->
@@ -683,14 +848,30 @@
     box-shadow: 0 0 10px rgba(56, 189, 248, 0.2);
   }
 
-  .chip-icon {
-    font-size: 12px;
+  .chip-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
   }
 
   .chip-label {
+    flex: 1;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  .chip-kbd {
+    font-family: monospace;
+    font-size: 9px;
+    font-weight: 800;
+    color: #93c5fd;
+    background: #060b14;
+    border: 1px solid #1e3b68;
+    border-radius: 3px;
+    padding: 0 4px;
+    flex-shrink: 0;
   }
 
   /* ROSTER */
@@ -736,6 +917,55 @@
 
   .roster-pill.active .player-dot {
     background-color: #ffffff;
+  }
+
+  .labels-chips-wrap {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    max-height: 112px;
+    overflow-y: auto;
+    padding: 4px;
+    background: #081222;
+    border: 1px solid #1a355d;
+    border-radius: 6px;
+  }
+
+  .desc-chip-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: #0d1e38;
+    border: 1px solid #1e3b68;
+    color: #cbd5e1;
+    padding: 4px 9px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.12s;
+  }
+
+  .desc-chip-btn:hover {
+    border-color: #38bdf8;
+    color: #ffffff;
+  }
+
+  .desc-chip-btn.active {
+    background: rgba(56, 189, 248, 0.22);
+    border-color: #38bdf8;
+    color: #ffffff;
+  }
+
+  .desc-chip-btn.dim {
+    opacity: 0.35;
+  }
+
+  .desc-chip-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
   }
 
   .add-player-row {
@@ -832,6 +1062,56 @@
   .choice-btn.active .radio-disc {
     border-color: #38bdf8;
     background-color: #38bdf8;
+  }
+
+  /* MINI COURT PICKER */
+  .section-header-inline {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .coord-readout {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-family: monospace;
+    font-size: 10px;
+    font-weight: 700;
+    color: #38bdf8;
+  }
+
+  .coord-hint {
+    font-size: 10px;
+    color: #64748b;
+  }
+
+  .btn-reset-coord {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    background: #142a4d;
+    border: 1px solid #1e3b68;
+    color: #cbd5e1;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 9px;
+    cursor: pointer;
+  }
+
+  .mini-court-picker-wrap {
+    background: #06101f;
+    border: 1px solid #1e3b68;
+    border-radius: 8px;
+    padding: 6px;
+  }
+
+  .mini-court-svg {
+    width: 100%;
+    max-height: 145px;
+    display: block;
+    cursor: crosshair;
   }
 
   /* ZONES */

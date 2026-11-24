@@ -50,7 +50,7 @@
 
   // --- STATE ---
   let canvas: HTMLCanvasElement;
-  let container: HTMLDivElement;
+  let container: HTMLElement;
   let transform: ViewportTransform = $state({
     scale: 20,
     offsetX: 0,
@@ -80,6 +80,7 @@
   let isPlaying = $state(false);
   let animationProgress = $state(0); // 0.0 to 1.0 between steps
   let animFrameId: number | null = null;
+  let renderRafId: number | null = null;
   let animStartTime: number = 0;
   let animDurationMs = 2500;
 
@@ -90,11 +91,12 @@
   onMount(() => {
     resizeCanvas();
     window.addEventListener('resize', resizeCanvas);
-    requestAnimationFrame(renderLoop);
+    renderRafId = requestAnimationFrame(renderLoop);
 
     return () => {
       window.removeEventListener('resize', resizeCanvas);
-      if (animFrameId) cancelAnimationFrame(animFrameId);
+      if (animFrameId !== null) cancelAnimationFrame(animFrameId);
+      if (renderRafId !== null) cancelAnimationFrame(renderRafId);
     };
   });
 
@@ -114,7 +116,7 @@
   // Continuous Render Loop
   function renderLoop() {
     drawCanvas();
-    requestAnimationFrame(renderLoop);
+    renderRafId = requestAnimationFrame(renderLoop);
   }
 
   function drawCanvas() {
@@ -192,10 +194,14 @@
   function toggleAnimation() {
     if (isPlaying) {
       isPlaying = false;
+      if (animFrameId !== null) {
+        cancelAnimationFrame(animFrameId);
+        animFrameId = null;
+      }
     } else {
       isPlaying = true;
       animStartTime = performance.now();
-      stepAnimation();
+      animFrameId = requestAnimationFrame(stepAnimation);
     }
   }
 
@@ -213,7 +219,7 @@
       animStartTime = performance.now();
     }
 
-    requestAnimationFrame(stepAnimation);
+    animFrameId = requestAnimationFrame(stepAnimation);
   }
 
   // --- POINTER / MOUSE INTERACTIONS ---
@@ -270,6 +276,28 @@
       // Deselect
       selectedId = null;
       selectedType = null;
+    } else if (activeTool === 'pressing-zone') {
+      const pt = { x: xM, y: yM };
+      if (!inProgressDrawing || inProgressDrawing.type !== 'pressing-zone') {
+        inProgressDrawing = {
+          id: `d-${Date.now()}`,
+          type: 'pressing-zone',
+          points: [pt],
+          color: selectedColor,
+          lineWidth: 2,
+          isFilled: true,
+          label: 'Zona Pressing',
+        };
+      } else {
+        const first = inProgressDrawing.points[0];
+        if (inProgressDrawing.points.length >= 3 && Math.hypot(pt.x - first.x, pt.y - first.y) < 1.2) {
+          currentStep.drawings.push(inProgressDrawing);
+          selectedId = inProgressDrawing.id;
+          inProgressDrawing = null;
+        } else {
+          inProgressDrawing.points.push(pt);
+        }
+      }
     } else {
       // Start Drawing with Active Tool
       startDrawing({ x: xM, y: yM });
@@ -289,8 +317,14 @@
       } else if (dragTargetType === 'ball') {
         currentStep.ball.x = xM;
         currentStep.ball.y = yM;
+      } else if (dragTargetType === 'equipment' && dragTargetId) {
+        const eq = currentStep.equipment.find((item) => item.id === dragTargetId);
+        if (eq) {
+          eq.x = xM;
+          eq.y = yM;
+        }
       }
-    } else if (inProgressDrawing) {
+    } else if (inProgressDrawing && inProgressDrawing.type !== 'pressing-zone') {
       updateDrawing({ x: xM, y: yM });
     }
   }
@@ -300,8 +334,16 @@
     dragTargetId = null;
     dragTargetType = null;
 
-    if (inProgressDrawing) {
+    if (inProgressDrawing && inProgressDrawing.type !== 'pressing-zone') {
       finishDrawing();
+    }
+  }
+
+  function handleCanvasDblClick() {
+    if (inProgressDrawing && inProgressDrawing.type === 'pressing-zone' && inProgressDrawing.points.length >= 3) {
+      currentStep.drawings.push(inProgressDrawing);
+      selectedId = inProgressDrawing.id;
+      inProgressDrawing = null;
     }
   }
 
@@ -582,6 +624,7 @@
         onmousedown={handleMouseDown}
         onmousemove={handleMouseMove}
         onmouseup={handleMouseUp}
+        ondblclick={handleCanvasDblClick}
       ></canvas>
 
       <!-- Overlay Coaching Note Card -->
@@ -695,8 +738,8 @@
   .tactical-board-root {
     display: flex;
     flex-direction: column;
-    height: 100vh;
-    width: 100vw;
+    height: 100%;
+    width: 100%;
     background-color: #0f172a;
     color: #f8fafc;
     overflow: hidden;
@@ -706,21 +749,25 @@
   /* TOP BAR */
   .top-bar {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
-    padding: 10px 18px;
+    padding: 6px 14px;
     background-color: #1e293b;
     border-bottom: 1px solid #334155;
-    gap: 16px;
-    height: 56px;
+    gap: 8px;
+    min-height: 48px;
+    height: auto;
+    flex-shrink: 0;
     box-sizing: border-box;
   }
 
   .drill-meta {
     display: flex;
     align-items: center;
-    gap: 10px;
-    flex: 1;
+    gap: 8px;
+    flex: 1 1 200px;
+    min-width: 180px;
   }
 
   .badge-futsal {
@@ -731,17 +778,21 @@
     padding: 3px 8px;
     border-radius: 4px;
     letter-spacing: 0.05em;
+    white-space: nowrap;
+    flex-shrink: 0;
   }
 
   .drill-title-input {
     background: transparent;
     border: 1px solid transparent;
     color: #ffffff;
-    font-size: 15px;
+    font-size: 14px;
     font-weight: 700;
     padding: 4px 8px;
     border-radius: 6px;
-    width: 320px;
+    width: 100%;
+    max-width: 240px;
+    min-width: 120px;
   }
 
   .drill-title-input:hover,
@@ -755,6 +806,8 @@
   .formation-presets {
     display: flex;
     align-items: center;
+    flex-shrink: 0;
+    white-space: nowrap;
   }
 
   .select-clean {
@@ -771,11 +824,13 @@
     background-color: #0b172a;
     color: #93c5fd;
     border: 1px solid #1a355d;
-    padding: 4px 10px;
+    padding: 4px 9px;
     border-radius: 6px;
     font-size: 11px;
     font-weight: 600;
-    margin-right: 6px;
+    margin-right: 4px;
+    white-space: nowrap;
+    flex-shrink: 0;
     cursor: pointer;
     transition: all 0.15s;
   }
@@ -788,20 +843,24 @@
 
   .export-actions {
     display: flex;
-    gap: 8px;
+    gap: 6px;
+    flex-shrink: 0;
+    white-space: nowrap;
   }
 
   .btn-action {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 5px;
     background-color: #0f2444;
     color: #93c5fd;
     border: 1px solid #1e3b68;
-    padding: 6px 12px;
+    padding: 5px 10px;
     border-radius: 6px;
     font-size: 11px;
     font-weight: 600;
+    white-space: nowrap;
+    flex-shrink: 0;
     cursor: pointer;
     transition: all 0.15s;
   }
@@ -987,13 +1046,14 @@
 
   /* RIGHT PANEL */
   .right-panel {
-    width: 250px;
+    width: 230px;
+    flex-shrink: 0;
     background-color: #1e293b;
     border-left: 1px solid #334155;
     display: flex;
     flex-direction: column;
-    padding: 14px;
-    gap: 16px;
+    padding: 12px;
+    gap: 14px;
     overflow-y: auto;
   }
 

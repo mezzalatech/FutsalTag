@@ -1,7 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
-  import { projectStore } from '$lib/stores/projectStore.svelte';
-  import type { VideoTagEvent } from '$lib/types';
+  import { projectStore, isTauriDesktop } from '$lib/stores/projectStore.svelte';
+  import { renderDrawingsToDataUrl } from '$lib/export/telestrationRenderer';
   import {
     Share2,
     MessageCircle,
@@ -21,31 +21,29 @@
 
   let { isOpen, onClose }: Props = $props();
 
-  const ROSTER = [
-    '#1 Kiper',
-    '#4 Anchor',
-    '#7 Flank Kiri',
-    '#11 Flank Kanan',
-    '#9 Pivot',
-    'Tim Lawan',
-  ];
+  const ROSTER = $derived(
+    projectStore.roster.map((p) => projectStore.getPlayerDisplayLabel(p))
+  );
 
   let selectedPlayer = $state('#7 Flank Kiri');
+  let includeTelestrationAndVoice = $state(true);
   let isExporting = $state(false);
   let progress = $state(0);
   let statusMessage = $state('');
   let successFilePath = $state<string | null>(null);
 
-  // Clips involving selected player
+  // Clips involving selected player (normalized)
   let playerClips = $derived(
-    projectStore.tags.filter((t) => t.playerLabel === selectedPlayer)
+    projectStore.tags.filter(
+      (t) => projectStore.normalizePlayerLabel(t.playerLabel) === selectedPlayer
+    )
   );
 
   let totalDurationSec = $derived(
     playerClips.reduce((acc, c) => acc + (c.endTime - c.startTime), 0)
   );
 
-  // Approximate file size at 720p 2Mbps: ~0.25MB per second
+  // Approximate file size at 720p ~1.8Mbps
   let estimatedMb = $derived((totalDurationSec * 0.22).toFixed(1));
 
   async function exportWhatsAppPackage() {
@@ -54,28 +52,58 @@
       return;
     }
 
-    if (!projectStore.videoFilePath) {
-      statusMessage = 'File video tidak ditemukan. Silakan buka proyek dari file video.';
+    if (!isTauriDesktop()) {
+      statusMessage = 'Ekspor MP4 WhatsApp membutuhkan aplikasi desktop Tauri.';
       return;
     }
 
-    isExporting = true;
-    progress = 10;
-    statusMessage = `Memotong ${playerClips.length} klip khusus untuk ${selectedPlayer}...`;
-    successFilePath = null;
+    if (
+      !projectStore.videoFilePath ||
+      (!projectStore.videoFilePath.startsWith('/') && !/^[A-Za-z]:[\\/]/.test(projectStore.videoFilePath))
+    ) {
+      statusMessage = 'Path video absolut tidak ditemukan. Buka video lewat tombol "Pilih Video" di Hub Proyek.';
+      return;
+    }
 
     try {
+      const { save } = await import('@tauri-apps/plugin-dialog');
+      const cleanPlayer = selectedPlayer.replace(/[^a-zA-Z0-9]/g, '_');
+      const outPath = await save({
+        title: `Simpan Paket Video WhatsApp (${selectedPlayer})`,
+        defaultPath: `WhatsApp_Evaluasi_${cleanPlayer}.mp4`,
+        filters: [{ name: 'MP4 Video', extensions: ['mp4'] }],
+      });
+      if (!outPath) return;
+
+      isExporting = true;
+      progress = 10;
+      statusMessage = `Memotong ${playerClips.length} klip khusus untuk ${selectedPlayer}...`;
+      successFilePath = null;
+
+      const tempDir = await invoke<string>('get_temp_dir');
+      const sep = tempDir.endsWith('/') || tempDir.endsWith('\\') ? '' : '/';
       const renderedClips: string[] = [];
 
       for (let i = 0; i < playerClips.length; i++) {
         const clip = playerClips[i];
-        const tempPath = `futsaltag_wa_clip_${i}_${Date.now()}.mp4`;
+        const tempPath = `${tempDir}${sep}futsaltag_wa_clip_${i}_${Date.now()}.mp4`;
+
+        const hasDrawings = includeTelestrationAndVoice && clip.drawings && clip.drawings.length > 0;
+        const freezeSec = clip.freezeTimestamp ?? (clip.startTime + clip.endTime) / 2;
+        const overlayBase64 = hasDrawings
+          ? renderDrawingsToDataUrl(clip.drawings || [], 1280, 720, freezeSec)
+          : null;
+        const voiceoverBase64 = includeTelestrationAndVoice ? (clip.voiceoverAudioBase64 || null) : null;
 
         await invoke<string>('export_whatsapp_clip_ffmpeg', {
           inputPath: projectStore.videoFilePath,
           outputPath: tempPath,
           startSec: clip.startTime,
           durationSec: clip.endTime - clip.startTime,
+          freezeSec,
+          pauseDuration: clip.pauseDuration || 3.0,
+          overlayBase64,
+          voiceoverBase64,
         });
 
         renderedClips.push(tempPath);
@@ -83,17 +111,15 @@
       }
 
       statusMessage = 'Menggabungkan kompilasi video ringkas WhatsApp...';
-      const cleanPlayer = selectedPlayer.replace(/[^a-zA-Z0-9]/g, '_');
-      const finalFileName = `WhatsApp_Evaluasi_${cleanPlayer}_${Date.now()}.mp4`;
-
       await invoke<string>('concat_playlist_ffmpeg', {
         clipPaths: renderedClips,
-        outputPath: finalFileName,
+        outputPath: outPath,
+        cleanupInputs: true,
       });
 
       progress = 100;
-      statusMessage = `Berhasil! Paket video WhatsApp tersimpan: ${finalFileName}`;
-      successFilePath = finalFileName;
+      statusMessage = `Berhasil! Paket video WhatsApp tersimpan: ${outPath}`;
+      successFilePath = outPath;
     } catch (err: any) {
       statusMessage = `Gagal ekspor: ${err?.message || err}`;
     } finally {
@@ -189,6 +215,11 @@
             {/if}
           </div>
         </div>
+
+        <label class="wa-check-row">
+          <input type="checkbox" bind:checked={includeTelestrationAndVoice} />
+          <span>Sertakan Gambar Telestrasi &amp; Suara Pelatih (Voiceover)</span>
+        </label>
 
         <!-- PROGRESS BAR -->
         {#if isExporting}
@@ -456,6 +487,20 @@
     color: #64748b;
     text-align: center;
     padding: 16px;
+  }
+
+  .wa-check-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    font-weight: 600;
+    color: #cbd5e1;
+    cursor: pointer;
+  }
+
+  .wa-check-row input {
+    accent-color: #10b981;
   }
 
   .progress-wrap {

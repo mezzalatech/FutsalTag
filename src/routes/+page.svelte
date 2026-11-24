@@ -14,7 +14,6 @@
     Sparkles,
     Film,
     LayoutGrid,
-    ChevronRight,
     Save,
     Tv,
     Flame,
@@ -24,6 +23,33 @@
   let isChalkboardOpen = $state(false);
   let isHeatmapOpen = $state(false);
   let isWhatsAppOpen = $state(false);
+  let openProjectInputEl: HTMLInputElement | undefined = $state();
+
+  async function handleSaveProject() {
+    try {
+      const savedPath = await projectStore.saveProjectToDisk();
+      if (savedPath) {
+        alert(`Proyek berhasil disimpan ke "${savedPath}"`);
+      }
+    } catch (err: any) {
+      alert(`Gagal menyimpan proyek: ${err?.message || err}`);
+    }
+  }
+
+  async function handleOpenProjectClick() {
+    if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
+      try {
+        const ok = await projectStore.openProjectFromDisk();
+        if (ok) {
+          alert(`Proyek "${projectStore.videoTitle}" berhasil dimuat!`);
+        }
+      } catch (err: any) {
+        alert(`Gagal membuka proyek: ${err?.message || err}`);
+      }
+    } else {
+      openProjectInputEl?.click();
+    }
+  }
 
   function handleOpenProjectFile(event: Event) {
     const input = event.target as HTMLInputElement;
@@ -51,9 +77,9 @@
 </svelte:head>
 
 <div class="app-container">
-  <!-- PRIMARY APP HEADER BAR WITH MOMEN & ONCE SPORT BROADCAST STYLE -->
+  <!-- PRIMARY APP HEADER BAR -->
   <header class="app-header">
-    <div class="brand" onclick={() => projectStore.setStage('hub')} role="button" tabindex="0">
+    <button type="button" class="brand" onclick={() => projectStore.setStage('hub')} title="Kembali ke Hub Proyek">
       <div class="brand-badge-circle">
         <span class="brand-icon">⚽</span>
       </div>
@@ -62,144 +88,153 @@
           <span class="brand-title">FUTSALTAG</span>
           <span class="brand-tag">PRO</span>
         </div>
-        <span class="brand-sub">MOMEN & ONCE SPORT WORKFLOW</span>
       </div>
-    </div>
+    </button>
 
-    <!-- ACTIVE MATCH PILL (MOMEN SPORTS STYLE) -->
+    <!-- ACTIVE MATCH PILL -->
     {#if projectStore.videoTitle}
-      <div class="active-match-pill" onclick={() => projectStore.setStage('tagging')} role="button" tabindex="0">
+      <button type="button" class="active-match-pill" onclick={() => projectStore.setStage('tagging')} title={projectStore.videoTitle}>
         <span class="live-indicator"></span>
         <span class="match-name">{projectStore.videoTitle}</span>
         <span class="clips-count">{projectStore.tags.length} Klip</span>
-      </div>
+      </button>
     {/if}
 
     <!-- WORKFLOW STEPPER TABS -->
-    <nav class="workflow-stepper">
+    <nav class="workflow-stepper" aria-label="Alur Kerja Analisis">
       <!-- STEP 1: HUB -->
       <button
+        type="button"
         class="step-btn"
         class:active={projectStore.stage === 'hub'}
         onclick={() => projectStore.setStage('hub')}
+        title="Hub Proyek"
       >
         <FolderOpen size={14} />
         <span class="step-num">1</span>
-        <span class="step-label">Hub Proyek</span>
+        <span class="step-label">Hub</span>
       </button>
-
-      <div class="step-separator">
-        <ChevronRight size={13} />
-      </div>
 
       <!-- STEP 2: TAGGING & CLIPPING -->
       <button
+        type="button"
         class="step-btn"
         class:active={projectStore.stage === 'tagging'}
         onclick={() => projectStore.setStage('tagging')}
+        title="Tagging & Klip Pertandingan"
       >
         <Scissors size={14} />
         <span class="step-num">2</span>
-        <span class="step-label">Tagging & Klip</span>
+        <span class="step-label">Tagging</span>
         {#if projectStore.tags.length > 0}
           <span class="tab-counter-badge">{projectStore.tags.length}</span>
         {/if}
       </button>
 
-      <div class="step-separator">
-        <ChevronRight size={13} />
-      </div>
-
       <!-- STEP 3: TELESTRATOR STUDIO -->
       <button
+        type="button"
         class="step-btn"
         class:active={projectStore.stage === 'telestrator'}
         onclick={() => projectStore.setStage('telestrator')}
+        title="Studio Telestrasi & AI Tracking"
       >
         <Sparkles size={14} />
         <span class="step-num">3</span>
-        <span class="step-label">Studio Telestrasi</span>
+        <span class="step-label">Telestrasi</span>
       </button>
-
-      <div class="step-separator">
-        <ChevronRight size={13} />
-      </div>
 
       <!-- STEP 4: PLAYLIST & EXPORT -->
       <button
+        type="button"
         class="step-btn"
         class:active={projectStore.stage === 'playlist_export'}
         onclick={() => projectStore.setStage('playlist_export')}
+        title="Playlist & Ekspor Video"
       >
         <Film size={14} />
         <span class="step-num">4</span>
-        <span class="step-label">Playlist & Ekspor</span>
+        <span class="step-label">Playlist</span>
       </button>
 
       <div class="stepper-mode-divider"></div>
 
       <!-- COACH BOARD TAB -->
       <button
+        type="button"
         class="step-btn coachboard-tab"
         class:active={projectStore.stage === 'coachboard'}
         onclick={() => projectStore.setStage('coachboard')}
+        title="Papan Taktik 2D FIFA Futsal (40m x 20m)"
       >
         <LayoutGrid size={14} />
-        <span class="step-label">Papan Taktik (2D)</span>
+        <span class="step-label">Taktik 2D</span>
       </button>
     </nav>
 
-    <!-- KILLER PRO TOOLS BAR -->
-    <div class="pro-tools-bar">
-      <button
-        class="btn-pro-tool btn-chalkboard"
-        onclick={() => (isChalkboardOpen = true)}
-        title="Buka Ruang Ganti Chalkboard (Auto-Pause Layar Sentuh & Telestrasi Kilat)"
-      >
-        <Tv size={13} />
-        <span>Ruang Ganti</span>
-      </button>
+    <!-- RIGHT TOOLBAR GROUP -->
+    <div class="header-right-group">
+      <!-- KILLER PRO TOOLS BAR -->
+      <div class="pro-tools-bar">
+        <button
+          type="button"
+          class="btn-pro-tool btn-chalkboard"
+          onclick={() => (isChalkboardOpen = true)}
+          title="Buka Ruang Ganti Chalkboard (Auto-Pause Layar Sentuh & Telestrasi Kilat)"
+        >
+          <Tv size={13} />
+          <span>Ruang Ganti</span>
+        </button>
 
-      <button
-        class="btn-pro-tool btn-heatmap"
-        onclick={() => (isHeatmapOpen = true)}
-        title="Peta Panas Densitas & Jaringan Operan Antar Pemain 5v5"
-      >
-        <Flame size={13} />
-        <span>Heatmap & Umpan</span>
-      </button>
+        <button
+          type="button"
+          class="btn-pro-tool btn-heatmap"
+          onclick={() => (isHeatmapOpen = true)}
+          title="Peta Panas Densitas & Jaringan Operan Antar Pemain 5v5"
+        >
+          <Flame size={13} />
+          <span>Heatmap</span>
+        </button>
 
-      <button
-        class="btn-pro-tool btn-whatsapp"
-        onclick={() => (isWhatsAppOpen = true)}
-        title="Ekspor Paket Klip Evaluasi Pemain Ringan untuk WhatsApp (<15MB)"
-      >
-        <MessageCircle size={13} />
-        <span>Paket WA</span>
-      </button>
-    </div>
+        <button
+          type="button"
+          class="btn-pro-tool btn-whatsapp"
+          onclick={() => (isWhatsAppOpen = true)}
+          title="Ekspor Paket Klip Evaluasi Pemain Ringan untuk WhatsApp (<15MB)"
+        >
+          <MessageCircle size={13} />
+          <span>Paket WA</span>
+        </button>
+      </div>
 
-    <!-- RIGHT BADGES & PROJECT FILE IO -->
-    <div class="header-badges">
-      <label class="btn-header-io" title="Buka Berkas Proyek Futsal (.futsal)">
-        <FolderOpen size={12} />
-        <span>Buka Proyek</span>
+      <!-- PROJECT FILE IO -->
+      <div class="header-badges">
+        <button
+          type="button"
+          class="btn-header-io"
+          title="Buka Berkas Proyek Futsal (.futsal)"
+          onclick={handleOpenProjectClick}
+        >
+          <FolderOpen size={12} />
+          <span>Buka</span>
+        </button>
         <input
+          bind:this={openProjectInputEl}
           type="file"
           accept=".futsal,.json"
           onchange={handleOpenProjectFile}
           style="display: none;"
         />
-      </label>
-      <button
-        class="btn-header-io btn-io-save"
-        onclick={() => projectStore.downloadProjectFile()}
-        title="Simpan Proyek & Seluruh Klip ke Berkas (.futsal)"
-      >
-        <Save size={12} />
-        <span>Simpan Proyek</span>
-      </button>
-      <span class="badge-fifa">FIFA Futsal (40m x 20m)</span>
+        <button
+          type="button"
+          class="btn-header-io btn-io-save"
+          onclick={handleSaveProject}
+          title="Simpan Proyek & Seluruh Klip ke Berkas (.futsal)"
+        >
+          <Save size={12} />
+          <span>Simpan</span>
+        </button>
+      </div>
     </div>
   </header>
 
@@ -266,20 +301,26 @@
     box-shadow: 0 4px 20px -2px rgba(2, 6, 23, 0.8);
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    padding: 0 18px;
+    gap: 10px;
+    padding: 0 12px;
     box-sizing: border-box;
+    overflow: hidden;
     z-index: 50;
     flex-shrink: 0;
   }
 
-  /* BRAND (MOMEN SPORTS STYLE) */
+  /* BRAND */
   .brand {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
+    background: transparent;
+    border: none;
+    padding: 0;
+    text-align: left;
     user-select: none;
     cursor: pointer;
+    flex-shrink: 0;
     transition: opacity 0.15s;
   }
 
@@ -288,8 +329,8 @@
   }
 
   .brand-badge-circle {
-    width: 32px;
-    height: 32px;
+    width: 30px;
+    height: 30px;
     border-radius: 8px;
     background: linear-gradient(135deg, #0284c7 0%, #1e3a8a 100%);
     border: 1px solid #38bdf8;
@@ -297,10 +338,11 @@
     align-items: center;
     justify-content: center;
     box-shadow: 0 0 12px rgba(56, 189, 248, 0.35);
+    flex-shrink: 0;
   }
 
   .brand-icon {
-    font-size: 16px;
+    font-size: 15px;
     line-height: 1;
   }
 
@@ -318,9 +360,10 @@
   .brand-title {
     font-size: 13px;
     font-weight: 900;
-    letter-spacing: 0.12em;
+    letter-spacing: 0.1em;
     color: #f0f6fc;
     line-height: 1.1;
+    white-space: nowrap;
   }
 
   .brand-tag {
@@ -333,24 +376,18 @@
     letter-spacing: 0.05em;
   }
 
-  .brand-sub {
-    font-size: 8px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    color: #38bdf8;
-    opacity: 0.85;
-  }
-
-  /* ACTIVE MATCH PILL (MOMEN STYLE) */
+  /* ACTIVE MATCH PILL */
   .active-match-pill {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     background-color: #0d1e38;
     border: 1px solid #1a355d;
-    padding: 4px 12px;
+    padding: 4px 10px;
     border-radius: 20px;
     cursor: pointer;
+    min-width: 0;
+    flex-shrink: 1;
     transition: all 0.2s ease;
   }
 
@@ -366,6 +403,7 @@
     border-radius: 50%;
     background-color: #10b981;
     box-shadow: 0 0 8px #10b981;
+    flex-shrink: 0;
     animation: pulse 2s infinite;
   }
 
@@ -379,7 +417,7 @@
     font-size: 11px;
     font-weight: 600;
     color: #f0f6fc;
-    max-width: 220px;
+    max-width: 150px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -393,6 +431,8 @@
     padding: 1px 6px;
     border-radius: 10px;
     border: 1px solid #1a355d;
+    white-space: nowrap;
+    flex-shrink: 0;
   }
 
   .tab-counter-badge {
@@ -409,25 +449,28 @@
   .workflow-stepper {
     display: flex;
     align-items: center;
-    gap: 3px;
+    gap: 2px;
     background-color: #0b1528;
-    padding: 3px 6px;
+    padding: 3px 5px;
     border-radius: 8px;
     border: 1px solid #1a355d;
     box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.4);
+    flex-shrink: 0;
   }
 
   .step-btn {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 5px;
     background: transparent;
     border: 1px solid transparent;
     color: #94a3b8;
-    padding: 6px 12px;
+    padding: 5px 9px;
     border-radius: 6px;
     font-size: 11px;
     font-weight: 600;
+    white-space: nowrap;
+    flex-shrink: 0;
     cursor: pointer;
     transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
     user-select: none;
@@ -446,8 +489,8 @@
   }
 
   .step-num {
-    width: 16px;
-    height: 16px;
+    width: 15px;
+    height: 15px;
     border-radius: 50%;
     background-color: #060b14;
     border: 1px solid #1a355d;
@@ -457,6 +500,7 @@
     font-size: 9px;
     font-weight: 800;
     color: #94a3b8;
+    flex-shrink: 0;
   }
 
   .step-btn.active .step-num {
@@ -466,17 +510,12 @@
     box-shadow: 0 0 8px rgba(56, 189, 248, 0.6);
   }
 
-  .step-separator {
-    color: #1a355d;
-    display: flex;
-    align-items: center;
-  }
-
   .stepper-mode-divider {
     width: 1px;
     height: 18px;
     background-color: #1a355d;
-    margin: 0 4px;
+    margin: 0 3px;
+    flex-shrink: 0;
   }
 
   .coachboard-tab {
@@ -495,24 +534,36 @@
     box-shadow: 0 0 14px rgba(52, 211, 153, 0.3);
   }
 
-  /* BADGES */
-  .header-badges {
+  /* RIGHT TOOLBAR GROUP */
+  .header-right-group {
     display: flex;
     align-items: center;
     gap: 8px;
+    margin-left: auto;
+    flex-shrink: 0;
+  }
+
+  /* PROJECT IO */
+  .header-badges {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex-shrink: 0;
   }
 
   .btn-header-io {
-    display: flex;
+    display: inline-flex;
     align-items: center;
     gap: 5px;
     background: #09172c;
     color: #93c5fd;
     border: 1px solid #1a355d;
-    padding: 4px 10px;
+    padding: 5px 9px;
     border-radius: 6px;
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 700;
+    white-space: nowrap;
+    flex-shrink: 0;
     cursor: pointer;
     transition: all 0.15s ease;
   }
@@ -535,47 +586,51 @@
     color: #ffffff;
   }
 
-  .badge-fifa {
-    font-size: 9px;
-    font-weight: 700;
-    color: #38bdf8;
-    background-color: rgba(56, 189, 248, 0.1);
-    border: 1px solid rgba(56, 189, 248, 0.3);
-    padding: 4px 9px;
-    border-radius: 5px;
-    letter-spacing: 0.04em;
-  }
-
-  .badge-version {
-    font-size: 9px;
-    font-weight: 700;
-    color: #93c5fd;
-    background-color: #0d1e38;
-    border: 1px solid #1a355d;
-    padding: 4px 8px;
-    border-radius: 5px;
-  }
-
   /* PRO TOOLS BAR */
   .pro-tools-bar {
     display: flex;
     align-items: center;
-    gap: 6px;
-    margin-left: auto;
-    margin-right: 12px;
+    gap: 5px;
+    flex-shrink: 0;
   }
 
   .btn-pro-tool {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    padding: 5px 11px;
+    gap: 5px;
+    padding: 5px 9px;
     border-radius: 6px;
     font-size: 11px;
     font-weight: 700;
+    white-space: nowrap;
+    flex-shrink: 0;
     cursor: pointer;
     transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
     border: 1px solid transparent;
+  }
+
+  @media (max-width: 1380px) {
+    .active-match-pill {
+      display: none;
+    }
+  }
+
+  @media (max-width: 1180px) {
+    .step-num {
+      display: none;
+    }
+
+    .step-btn {
+      padding: 5px 8px;
+    }
+
+    .btn-pro-tool span {
+      display: none;
+    }
+
+    .btn-pro-tool {
+      padding: 6px 8px;
+    }
   }
 
   .btn-chalkboard {

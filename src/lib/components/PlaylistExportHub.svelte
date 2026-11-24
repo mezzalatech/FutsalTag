@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
-  import { projectStore } from '$lib/stores/projectStore.svelte';
+  import { projectStore, isTauriDesktop } from '$lib/stores/projectStore.svelte';
   import type {
     ActionPlaylist,
     ActionPlaylistItem,
@@ -94,106 +94,153 @@
 
   // Trigger Native / Web Export
   async function triggerExport() {
+    if (!currentPlaylist || currentPlaylist.items.length === 0) {
+      exportStatusMessage = 'Playlist masih kosong. Tambahkan klip terlebih dahulu.';
+      return;
+    }
+
     isExporting = true;
-    exportProgress = 10;
+    exportProgress = 5;
     exportStatusMessage = 'Menyiapkan klip dan parameter render FFmpeg...';
     exportSuccessPath = null;
 
+    const targetHeight = outputResolution === '720p' ? 720 : 1080;
+    const renderW = targetHeight === 720 ? 1280 : 1920;
+    const renderH = targetHeight === 720 ? 720 : 1080;
+
     try {
-      // If running inside Tauri desktop app
-      if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window && projectStore.videoFilePath) {
-        if (exportMode === 'single_compilation' && currentPlaylist.items.length > 1) {
-          exportStatusMessage = `Memotong ${currentPlaylist.items.length} klip playlist dengan mode cepat...`;
-          exportProgress = 20;
+      const hasAbsVideo =
+        projectStore.videoFilePath &&
+        (projectStore.videoFilePath.startsWith('/') || /^[A-Za-z]:[\\/]/.test(projectStore.videoFilePath));
 
-          // Render each clip to a temporary clip file
-          const renderedClips: string[] = [];
-          for (let i = 0; i < currentPlaylist.items.length; i++) {
-            const item = currentPlaylist.items[i];
-            const tempClipPath = `futsaltag_clip_${i}_${Date.now()}.mp4`;
-            const hasDrawings = item.tagEvent.drawings && item.tagEvent.drawings.length > 0;
+      if (isTauriDesktop()) {
+        if (!hasAbsVideo || !projectStore.videoFilePath) {
+          throw new Error(
+            'Path video absolut tidak ditemukan. Buka video lewat tombol "Pilih Video" di Hub Proyek.'
+          );
+        }
 
-            if (includeDrawings && hasDrawings) {
-              const overlayBase64 = renderDrawingsToDataUrl(item.tagEvent.drawings || [], 1920, 1080);
-              const freezeSec = (item.tagEvent.startTime + item.tagEvent.endTime) / 2;
-              await invoke<string>('burn_telestration_clip_ffmpeg', {
-                inputPath: projectStore.videoFilePath,
-                outputPath: tempClipPath,
-                startSec: item.tagEvent.startTime,
-                durationSec: item.tagEvent.endTime - item.tagEvent.startTime,
-                freezeSec,
-                pauseDuration: item.tagEvent.pauseDuration || 3.0,
-                overlayBase64,
-              });
-            } else {
-              await invoke<string>('render_video_clip_ffmpeg', {
-                inputPath: projectStore.videoFilePath,
-                outputPath: tempClipPath,
-                startSec: item.tagEvent.startTime,
-                durationSec: item.tagEvent.endTime - item.tagEvent.startTime,
-                fastCopy: true,
-              });
-            }
-            renderedClips.push(tempClipPath);
-            exportProgress = 20 + Math.floor(((i + 1) / currentPlaylist.items.length) * 60);
+        const { open, save } = await import('@tauri-apps/plugin-dialog');
+        const items = currentPlaylist.items;
+
+        const renderItemToPath = async (item: ActionPlaylistItem, outPath: string) => {
+          const tag = item.tagEvent;
+          const hasDrawings = includeDrawings && tag.drawings && tag.drawings.length > 0;
+          const hasVoice = Boolean(tag.voiceoverAudioBase64);
+          const freezeSec = tag.freezeTimestamp ?? (tag.startTime + tag.endTime) / 2;
+
+          if (hasDrawings || hasVoice) {
+            const overlayBase64 = hasDrawings
+              ? renderDrawingsToDataUrl(tag.drawings || [], renderW, renderH, freezeSec)
+              : null;
+            await invoke<string>('burn_telestration_clip_ffmpeg', {
+              inputPath: projectStore.videoFilePath,
+              outputPath: outPath,
+              startSec: tag.startTime,
+              durationSec: tag.endTime - tag.startTime,
+              freezeSec,
+              pauseDuration: tag.pauseDuration || item.pauseDuration || 3.0,
+              overlayBase64,
+              voiceoverBase64: tag.voiceoverAudioBase64 || null,
+              targetHeight,
+            });
+          } else {
+            await invoke<string>('render_video_clip_ffmpeg', {
+              inputPath: projectStore.videoFilePath,
+              outputPath: outPath,
+              startSec: tag.startTime,
+              durationSec: tag.endTime - tag.startTime,
+              fastCopy: exportMode !== 'merged_video',
+              targetHeight,
+            });
+          }
+        };
+
+        if (exportMode === 'merged_video') {
+          const finalPath = await save({
+            title: 'Simpan Video Kompilasi Playlist',
+            defaultPath: `FutsalTag_Pro_Playlist_${Date.now()}.mp4`,
+            filters: [{ name: 'MP4 Video', extensions: ['mp4'] }],
+          });
+          if (!finalPath) {
+            isExporting = false;
+            exportProgress = 0;
+            return;
           }
 
-          exportStatusMessage = 'Menggabungkan seluruh klip ke kompilasi presentasi...';
-          const finalPath = `FutsalTag_Pro_Playlist_Presentasi_${Date.now()}.mp4`;
+          const tempDir = await invoke<string>('get_temp_dir');
+          const sep = tempDir.endsWith('/') || tempDir.endsWith('\\') ? '' : '/';
+          const renderedClips: string[] = [];
+
+          for (let i = 0; i < items.length; i++) {
+            const item = items[i];
+            exportStatusMessage = `Merender klip ${i + 1}/${items.length}: ${item.title}...`;
+            const tempClipPath = `${tempDir}${sep}futsaltag_pl_${i}_${Date.now()}.mp4`;
+            await renderItemToPath(item, tempClipPath);
+            renderedClips.push(tempClipPath);
+            exportProgress = 15 + Math.floor(((i + 1) / items.length) * 70);
+          }
+
+          exportStatusMessage = 'Menggabungkan seluruh klip menjadi 1 video presentasi...';
           await invoke<string>('concat_playlist_ffmpeg', {
             clipPaths: renderedClips,
             outputPath: finalPath,
+            cleanupInputs: true,
           });
 
           exportProgress = 100;
           exportStatusMessage = `Selesai! Kompilasi video tersimpan di: ${finalPath}`;
           exportSuccessPath = finalPath;
         } else {
-          const item = currentPlaylist.items[selectedItemIndex] || currentPlaylist.items[0];
-          exportStatusMessage = `Merender klip ${item.title}...`;
-          exportProgress = 50;
-
-          const singlePath = `FutsalTag_Pro_${item.tagEvent.category.replace(/[^a-zA-Z0-9]/g, '_')}_${Date.now()}.mp4`;
-          const hasDrawings = item.tagEvent.drawings && item.tagEvent.drawings.length > 0;
-
-          if (includeDrawings && hasDrawings) {
-            exportStatusMessage = `Membakar grafis telestrasi 3D & jeda siaran...`;
-            const overlayBase64 = renderDrawingsToDataUrl(item.tagEvent.drawings || [], 1920, 1080);
-            const freezeSec = (item.tagEvent.startTime + item.tagEvent.endTime) / 2;
-            const res = await invoke<string>('burn_telestration_clip_ffmpeg', {
-              inputPath: projectStore.videoFilePath,
-              outputPath: singlePath,
-              startSec: item.tagEvent.startTime,
-              durationSec: item.tagEvent.endTime - item.tagEvent.startTime,
-              freezeSec,
-              pauseDuration: item.tagEvent.pauseDuration || 3.0,
-              overlayBase64,
-            });
-            exportProgress = 100;
-            exportStatusMessage = `Selesai! Klip telestrasi tersimpan di: ${singlePath}`;
-          } else {
-            const resultPath = await invoke<string>('render_video_clip_ffmpeg', {
-              inputPath: projectStore.videoFilePath,
-              outputPath: singlePath,
-              startSec: item.tagEvent.startTime,
-              durationSec: item.tagEvent.endTime - item.tagEvent.startTime,
-              fastCopy: true,
-            });
-            exportProgress = 100;
-            exportStatusMessage = `Selesai! Klip tersimpan di: ${resultPath}`;
+          // separate_clips OR grouped_folders
+          const targetDir = await open({
+            title:
+              exportMode === 'grouped_folders'
+                ? 'Pilih Folder Utama (Subfolder Kategori Otomatis)'
+                : 'Pilih Folder Tujuan Klip Terpisah',
+            directory: true,
+            multiple: false,
+          });
+          if (!targetDir || typeof targetDir !== 'string') {
+            isExporting = false;
+            exportProgress = 0;
+            return;
           }
-          exportSuccessPath = singlePath;
+
+          const sep = targetDir.endsWith('/') || targetDir.endsWith('\\') ? '' : '/';
+          for (let i = 0; i < items.length; i++) {
+            const item = items[i];
+            const safeCat = item.tagEvent.category.replace(/[^a-zA-Z0-9_-]/g, '_');
+            const safeTitle = item.title.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 48);
+            const idxStr = String(i + 1).padStart(2, '0');
+            let outPath: string;
+            if (exportMode === 'grouped_folders') {
+              const subDir = `${targetDir}${sep}${safeCat}`;
+              await invoke('ensure_dir', { path: subDir });
+              outPath = `${subDir}${sep}${idxStr}_${safeTitle}.mp4`;
+            } else {
+              outPath = `${targetDir}${sep}${idxStr}_${safeCat}_${safeTitle}.mp4`;
+            }
+
+            exportStatusMessage = `Merender klip ${i + 1}/${items.length}: ${item.title}...`;
+            await renderItemToPath(item, outPath);
+            exportProgress = 10 + Math.floor(((i + 1) / items.length) * 90);
+          }
+
+          exportProgress = 100;
+          exportStatusMessage = `Selesai! ${items.length} klip tersimpan di folder: ${targetDir}`;
+          exportSuccessPath = targetDir;
         }
       } else {
-        // Fallback simulation for browser demo mode
+        // Browser-only demo preview mode
         for (let p = 20; p <= 100; p += 20) {
-          await new Promise((r) => setTimeout(r, 400));
+          await new Promise((r) => setTimeout(r, 250));
           exportProgress = p;
-          if (p === 40) exportStatusMessage = 'Menggabungkan frame video & anotasi 3D...';
-          if (p === 80) exportStatusMessage = 'Menerapkan pause jeda freeze-frame...';
+          if (p === 40) exportStatusMessage = 'Simulasi Web: menyiapkan preview...';
+          if (p === 80) exportStatusMessage = 'Gunakan aplikasi desktop Tauri untuk render MP4 FFmpeg asli.';
         }
-        exportStatusMessage = 'Ekspor Video Berhasil! File siap diunduh.';
-        exportSuccessPath = `FutsalTag_Pro_${exportMode}_${Date.now()}.mp4`;
+        exportStatusMessage = 'Mode Web Demo selesai (render MP4 nyata hanya aktif di Tauri Desktop).';
+        exportSuccessPath = `Web_Preview_${exportMode}`;
       }
     } catch (err: any) {
       exportStatusMessage = `Gagal ekspor: ${err?.message || err}`;
@@ -511,34 +558,42 @@
 
   /* HEADER (DEEP SAPPHIRE) */
   .hub-header {
-    height: 52px;
+    min-height: 50px;
+    height: auto;
     background: linear-gradient(180deg, #0b172a 0%, #070e1c 100%);
     border-bottom: 1px solid #1a355d;
     box-shadow: 0 4px 16px rgba(2, 6, 23, 0.7);
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0 20px;
+    padding: 6px 16px;
+    gap: 10px;
+    box-sizing: border-box;
     flex-shrink: 0;
   }
 
   .header-left {
     display: flex;
     align-items: center;
-    gap: 16px;
+    gap: 10px;
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
   }
 
   .btn-back {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 5px;
     background: #0f2444;
     border: 1px solid #1e3b68;
     color: #93c5fd;
-    padding: 6px 12px;
+    padding: 5px 10px;
     border-radius: 6px;
     font-size: 11px;
     font-weight: 600;
+    white-space: nowrap;
+    flex-shrink: 0;
     cursor: pointer;
     transition: all 0.15s ease;
   }
@@ -553,6 +608,8 @@
   .header-title-wrap {
     display: flex;
     flex-direction: column;
+    min-width: 0;
+    overflow: hidden;
   }
 
   .hub-main-title {
@@ -560,18 +617,26 @@
     font-weight: 700;
     color: #f0f6fc;
     letter-spacing: 0.02em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .hub-sub-title {
     font-size: 10px;
     color: #38bdf8;
     font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .header-right {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
+    flex-shrink: 0;
+    white-space: nowrap;
   }
 
   .btn-csv {
@@ -581,10 +646,12 @@
     background-color: #0d233a;
     border: 1px solid #1e4570;
     color: #38bdf8;
-    padding: 6px 14px;
+    padding: 5px 11px;
     border-radius: 6px;
     font-size: 11px;
     font-weight: 600;
+    white-space: nowrap;
+    flex-shrink: 0;
     cursor: pointer;
     transition: all 0.15s ease;
   }
@@ -625,9 +692,9 @@
   .hub-grid {
     flex: 1;
     display: grid;
-    grid-template-columns: 1fr 440px;
-    gap: 16px;
-    padding: 16px;
+    grid-template-columns: minmax(0, 1fr) minmax(350px, 410px);
+    gap: 14px;
+    padding: 14px;
     overflow: hidden;
     box-sizing: border-box;
   }
@@ -636,7 +703,8 @@
   .playlist-column {
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: 14px;
+    min-width: 0;
     overflow: hidden;
   }
 

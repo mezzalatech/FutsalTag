@@ -64,13 +64,48 @@
     { id: 'special', label: '♟️ Taktik & Rotasi (3)', badge: 'Taktik' },
   ] as const;
 
+  let matrixView = $state<'tag_player' | 'tag_label'>('tag_player');
   let activePhaseTab = $state<'all' | 'attack' | 'defense' | 'setpiece' | 'special'>('all');
 
-  const visibleCategories = $derived(
-    activePhaseTab === 'all'
-      ? ALL_CATEGORIES
-      : ALL_CATEGORIES.filter((c) => c.phase === activePhaseTab)
-  );
+  const resolvedCategories = $derived.by(() => {
+    const base =
+      activePhaseTab === 'all'
+        ? [...ALL_CATEGORIES]
+        : ALL_CATEGORIES.filter((c) => c.phase === activePhaseTab);
+
+    if (activePhaseTab === 'all') {
+      const seen = new Set(base.map((c) => c.cat));
+      for (const btn of projectStore.activeBoard.buttons) {
+        if (btn.kind === 'category' && !seen.has(btn.name)) {
+          seen.add(btn.name);
+          base.push({
+            id: btn.id,
+            label: btn.name,
+            shortLabel: btn.name,
+            icon: btn.continuous ? '●' : '🏷️',
+            cat: btn.name as TagCategory,
+            phase: 'special',
+            color: btn.color,
+          });
+        }
+      }
+      for (const t of tags) {
+        if (t.category && !seen.has(t.category)) {
+          seen.add(t.category);
+          base.push({
+            id: `cat-${t.category}`,
+            label: t.category,
+            shortLabel: t.category,
+            icon: '🏷️',
+            cat: t.category,
+            phase: 'special',
+            color: t.color || '#38bdf8',
+          });
+        }
+      }
+    }
+    return base;
+  });
 
   const BASE_PLAYERS = ['#1 Kiper', '#4 Anchor', '#7 Flank Kiri', '#11 Flank Kanan', '#9 Pivot', 'Tim Lawan'];
 
@@ -78,8 +113,14 @@
   const resolvedPlayers = $derived.by(() => {
     const list = [...BASE_PLAYERS];
     for (const t of tags) {
-      if (t.playerLabel) {
-        const norm = normalizePlayerLabel(t.playerLabel);
+      const allTagPlayers =
+        t.playersInvolved && t.playersInvolved.length > 0
+          ? t.playersInvolved
+          : t.playerLabel
+            ? [t.playerLabel]
+            : [];
+      for (const rawP of allTagPlayers) {
+        const norm = normalizePlayerLabel(rawP);
         if (!list.includes(norm)) {
           list.push(norm);
         }
@@ -97,12 +138,25 @@
   }
 
   function matchesPlayer(tag: VideoTagEvent, player: string): boolean {
-    const norm = normalizePlayerLabel(tag.playerLabel || '');
-    return norm === player;
+    if (normalizePlayerLabel(tag.playerLabel || '') === player) return true;
+    return Boolean(tag.playersInvolved?.some((p) => normalizePlayerLabel(p) === player));
   }
 
   function matchesCategory(tag: VideoTagEvent, catObj: MatrixCategory): boolean {
     return tag.category === catObj.cat;
+  }
+
+  function sumDurationSec(clips: VideoTagEvent[]): number {
+    return clips.reduce((acc, c) => acc + Math.max(0, c.endTime - c.startTime), 0);
+  }
+
+  function formatPhaseDuration(clips: VideoTagEvent[]): string {
+    const sec = sumDurationSec(clips);
+    if (sec <= 0) return '0s';
+    if (sec < 60) return `${sec.toFixed(1)}s`;
+    const m = Math.floor(sec / 60);
+    const s = Math.round(sec % 60);
+    return `${m}m ${s}s`;
   }
 
   // Get matching clips for (Player, Category)
@@ -111,19 +165,77 @@
   }
 
   function getPlayerRowTotal(player: string): VideoTagEvent[] {
-    return tags.filter((t) => matchesPlayer(t, player) && visibleCategories.some((c) => matchesCategory(t, c)));
+    return tags.filter((t) => matchesPlayer(t, player) && resolvedCategories.some((c) => matchesCategory(t, c)));
   }
 
   function getCategoryColTotal(catObj: MatrixCategory): VideoTagEvent[] {
     return tags.filter((t) => matchesCategory(t, catObj) && resolvedPlayers.some((p) => matchesPlayer(t, p)));
   }
 
-  const grandVisibleTotal = $derived(
-    tags.filter((t) => 
-      visibleCategories.some((c) => matchesCategory(t, c)) &&
-      resolvedPlayers.some((p) => matchesPlayer(t, p))
-    ).length
+  const grandVisibleTotalClips = $derived(
+    tags.filter(
+      (t) =>
+        resolvedCategories.some((c) => matchesCategory(t, c)) &&
+        resolvedPlayers.some((p) => matchesPlayer(t, p))
+    )
   );
+
+  // TAG x LABEL (DESCRIPTOR) VIEW COMPUTATIONS
+  const labelRows = $derived.by(() => {
+    const set = new Set<string>();
+    for (const t of tags) {
+      if (t.category) set.add(t.category);
+    }
+    return Array.from(set);
+  });
+
+  const labelColumns = $derived.by(() => {
+    const set = new Set<string>();
+    let hasUnlabeled = false;
+    for (const t of tags) {
+      if (t.labels && t.labels.length > 0) {
+        for (const l of t.labels) {
+          set.add(l.name);
+        }
+      } else {
+        hasUnlabeled = true;
+      }
+    }
+    const cols = Array.from(set);
+    if (hasUnlabeled) cols.push('Tanpa Label');
+    return cols;
+  });
+
+  function getTagLabelClips(category: string, labelName: string): VideoTagEvent[] {
+    return tags.filter((t) => {
+      if (t.category !== category) return false;
+      if (labelName === 'Tanpa Label') return !t.labels || t.labels.length === 0;
+      return Boolean(t.labels?.some((l) => l.name === labelName));
+    });
+  }
+
+  function getTagLabelRowClips(category: string): VideoTagEvent[] {
+    return tags.filter((t) => t.category === category);
+  }
+
+  function getTagLabelColClips(labelName: string): VideoTagEvent[] {
+    return tags.filter((t) => {
+      if (labelName === 'Tanpa Label') return !t.labels || t.labels.length === 0;
+      return Boolean(t.labels?.some((l) => l.name === labelName));
+    });
+  }
+
+  function handleTagLabelCellClick(category: string, labelName: string) {
+    const clips = getTagLabelClips(category, labelName);
+    if (clips.length > 0) {
+      if (onPlayClips) {
+        onPlayClips(clips, `${category} × ${labelName} (${clips.length} Klip)`);
+      } else if (onPlayTag) {
+        onPlayTag(clips[0]);
+      }
+      onClose();
+    }
+  }
 
   function handleCellClick(player: string, catObj: MatrixCategory) {
     const clips = getClips(player, catObj);
@@ -162,10 +274,7 @@
   }
 
   function handlePlayAll() {
-    const allClips = tags.filter((t) =>
-      visibleCategories.some((c) => matchesCategory(t, c)) &&
-      resolvedPlayers.some((p) => matchesPlayer(t, p))
-    );
+    const allClips = grandVisibleTotalClips;
     if (allClips.length > 0) {
       if (onPlayClips) {
         onPlayClips(allClips, `Semua Klip Matriks (${allClips.length} Klip)`);
@@ -181,17 +290,26 @@
   }
 
   function exportCSV() {
-    let csv = 'Pemain,' + ALL_CATEGORIES.map((c) => `"${c.label}"`).join(',') + ',TOTAL\n';
-
-    for (const p of resolvedPlayers) {
-      const rowCounts = ALL_CATEGORIES.map((c) => getClips(p, c).length);
-      const total = tags.filter((t) => matchesPlayer(t, p) && ALL_CATEGORIES.some((c) => matchesCategory(t, c))).length;
-      csv += `"${p}",` + rowCounts.join(',') + `,${total}\n`;
+    let csv = '';
+    if (matrixView === 'tag_label') {
+      csv = 'Tag / Fase,' + labelColumns.map((l) => `"${l}"`).join(',') + ',TOTAL KLIP,DURASI (dtk)\n';
+      for (const cat of labelRows) {
+        const rowCounts = labelColumns.map((lbl) => getTagLabelClips(cat, lbl).length);
+        const rowClips = getTagLabelRowClips(cat);
+        csv += `"${cat}",` + rowCounts.join(',') + `,${rowClips.length},${sumDurationSec(rowClips).toFixed(1)}\n`;
+      }
+      const colTotals = labelColumns.map((lbl) => getTagLabelColClips(lbl).length);
+      csv += `"TOTAL",` + colTotals.join(',') + `,${tags.length},${sumDurationSec(tags).toFixed(1)}\n`;
+    } else {
+      csv = 'Pemain,' + resolvedCategories.map((c) => `"${c.label}"`).join(',') + ',TOTAL,DURASI (dtk)\n';
+      for (const p of resolvedPlayers) {
+        const rowCounts = resolvedCategories.map((c) => getClips(p, c).length);
+        const rowClips = getPlayerRowTotal(p);
+        csv += `"${p}",` + rowCounts.join(',') + `,${rowClips.length},${sumDurationSec(rowClips).toFixed(1)}\n`;
+      }
+      const colTotals = resolvedCategories.map((c) => getCategoryColTotal(c).length);
+      csv += `"TOTAL TIM",` + colTotals.join(',') + `,${tags.length},${sumDurationSec(tags).toFixed(1)}\n`;
     }
-
-    const colTotals = ALL_CATEGORIES.map((c) => getCategoryColTotal(c).length);
-    const totalCount = tags.length;
-    csv += `"TOTAL TIM",` + colTotals.join(',') + `,${totalCount}\n`;
 
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -232,23 +350,41 @@
       </div>
     </header>
 
-    <!-- PHASE FILTER TABS (ONCE SPORT STYLE) -->
+    <!-- MATRIX VIEW & PHASE FILTER BAR -->
     <div class="filter-bar">
       <div class="tabs-group">
-        {#each PHASES as ph}
+        <div class="view-mode-switch">
           <button
             class="tab-pill"
-            class:active={activePhaseTab === ph.id}
-            onclick={() => (activePhaseTab = ph.id)}
+            class:active={matrixView === 'tag_player'}
+            onclick={() => (matrixView = 'tag_player')}
           >
-            <span>{ph.label}</span>
+            Tag × Pemain
           </button>
-        {/each}
+          <button
+            class="tab-pill"
+            class:active={matrixView === 'tag_label'}
+            onclick={() => (matrixView = 'tag_label')}
+          >
+            Tag × Label
+          </button>
+        </div>
+        {#if matrixView === 'tag_player'}
+          {#each PHASES as ph}
+            <button
+              class="tab-pill"
+              class:active={activePhaseTab === ph.id}
+              onclick={() => (activePhaseTab = ph.id)}
+            >
+              <span>{ph.label}</span>
+            </button>
+          {/each}
+        {/if}
       </div>
 
       <div class="interactive-tip">
         <Sparkles size={13} class="text-amber-400" />
-        <span>Klik sel angka <strong class="text-sky-300">▶ Klip</strong> untuk memutar playlist momen secara otomatis</span>
+        <span>Klik sel angka untuk putar klip · menampilkan jumlah & total durasi fase</span>
       </div>
     </div>
 
@@ -275,130 +411,222 @@
 
       <!-- MATRIX TABLE CONTAINER -->
       <div class="table-wrapper">
-        <table class="matrix-table">
-          <thead>
-            <tr>
-              <th class="th-player">
-                <div class="flex items-center gap-1.5">
-                  <Layers size={13} class="text-sky-400" />
-                  <span>Pemain / Roster</span>
-                </div>
-              </th>
-              {#each visibleCategories as cat}
-                <th
-                  class="th-action"
-                  onclick={() => handleColClick(cat)}
-                  title="Klik untuk putar semua klip {cat.label}"
-                >
-                  <div class="th-content">
-                    <span class="th-icon">{cat.icon}</span>
-                    <span class="th-label">{cat.shortLabel}</span>
+        {#if matrixView === 'tag_player'}
+          <table class="matrix-table">
+            <thead>
+              <tr>
+                <th class="th-player">
+                  <div class="flex items-center gap-1.5">
+                    <Layers size={13} class="text-sky-400" />
+                    <span>Pemain / Roster</span>
                   </div>
                 </th>
-              {/each}
-              <th
-                class="th-total"
-                onclick={handlePlayAll}
-                title="Klik untuk memutar semua klip"
-              >
-                TOTAL
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each resolvedPlayers as player}
-              {@const pRowClips = getPlayerRowTotal(player)}
-              {@const pTotal = pRowClips.length}
-              <tr class="tr-player">
-                <td
-                  class="td-player"
-                  onclick={() => handleRowClick(player)}
-                  title="Klik untuk putar semua aksi {player}"
+                {#each resolvedCategories as cat}
+                  <th
+                    class="th-action"
+                    onclick={() => handleColClick(cat)}
+                    title="Klik untuk putar semua klip {cat.label}"
+                  >
+                    <div class="th-content">
+                      <span class="th-icon">{cat.icon}</span>
+                      <span class="th-label">{cat.shortLabel}</span>
+                    </div>
+                  </th>
+                {/each}
+                <th
+                  class="th-total"
+                  onclick={handlePlayAll}
+                  title="Klik untuk memutar semua klip"
                 >
-                  <div class="player-cell">
-                    <span class="player-dot" class:is-opponent={player === 'Tim Lawan'}></span>
-                    <span class="player-name">{player}</span>
+                  TOTAL
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each resolvedPlayers as player}
+                {@const pRowClips = getPlayerRowTotal(player)}
+                {@const pTotal = pRowClips.length}
+                <tr class="tr-player">
+                  <td
+                    class="td-player"
+                    onclick={() => handleRowClick(player)}
+                    title="Klik untuk putar semua aksi {player}"
+                  >
+                    <div class="player-cell">
+                      <span class="player-dot" class:is-opponent={player === 'Tim Lawan'}></span>
+                      <span class="player-name">{player}</span>
+                    </div>
+                  </td>
+
+                  {#each resolvedCategories as cat}
+                    {@const clips = getClips(player, cat)}
+                    {@const count = clips.length}
+                    <td class="td-cell" class:has-data={count > 0}>
+                      {#if count > 0}
+                        <button
+                          class="cell-btn"
+                          onclick={() => handleCellClick(player, cat)}
+                          title="Putar {count} klip {player} - {cat.label} ({formatPhaseDuration(clips)})"
+                        >
+                          <Play size={10} />
+                          <span class="cell-count">{count}</span>
+                        </button>
+                      {:else}
+                        <span class="cell-zero">-</span>
+                      {/if}
+                    </td>
+                  {/each}
+
+                  <td class="td-total">
+                    {#if pTotal > 0}
+                      <button
+                        class="total-btn"
+                        onclick={() => handleRowClick(player)}
+                        title="Putar {pTotal} aksi {player}"
+                      >
+                        <Play size={10} />
+                        <span>{pTotal}</span>
+                      </button>
+                      <div class="phase-dur-hint">{formatPhaseDuration(pRowClips)}</div>
+                    {:else}
+                      <span class="cell-zero">0</span>
+                    {/if}
+                  </td>
+                </tr>
+              {/each}
+
+              <!-- FOOTER ROW (TOTAL TIM) -->
+              <tr class="tr-footer">
+                <td class="td-footer-label">
+                  <div class="flex items-center gap-2">
+                    <CheckCircle2 size={14} class="text-sky-400" />
+                    <span class="font-bold">TOTAL TIM</span>
                   </div>
                 </td>
-
-                {#each visibleCategories as cat}
-                  {@const clips = getClips(player, cat)}
-                  {@const count = clips.length}
-                  <td class="td-cell" class:has-data={count > 0}>
-                    {#if count > 0}
+                {#each resolvedCategories as cat}
+                  {@const cClips = getCategoryColTotal(cat)}
+                  {@const cTotal = cClips.length}
+                  <td class="td-footer-cell">
+                    {#if cTotal > 0}
                       <button
-                        class="cell-btn"
-                        onclick={() => handleCellClick(player, cat)}
-                        title="Putar {count} klip {player} - {cat.label}"
+                        class="col-total-btn"
+                        onclick={() => handleColClick(cat)}
+                        title="Putar semua {cTotal} klip {cat.label}"
                       >
-                        <Play size={10} class="cell-play-icon" />
-                        <span class="cell-count">{count}</span>
+                        <Play size={10} />
+                        <span>{cTotal}</span>
                       </button>
+                      <div class="phase-dur-hint">{formatPhaseDuration(cClips)}</div>
                     {:else}
-                      <span class="cell-zero">-</span>
+                      <span class="cell-zero">0</span>
                     {/if}
                   </td>
                 {/each}
-
-                <td class="td-total">
-                  {#if pTotal > 0}
+                <td class="td-grand-total">
+                  {#if grandVisibleTotalClips.length > 0}
                     <button
-                      class="total-btn"
-                      onclick={() => handleRowClick(player)}
-                      title="Putar {pTotal} aksi {player}"
+                      class="grand-total-btn"
+                      onclick={handlePlayAll}
+                      title="Putar playlist semua {grandVisibleTotalClips.length} klip matriks"
                     >
-                      <Play size={10} class="inline mr-1 opacity-70" />
-                      <span>{pTotal}</span>
+                      <Play size={11} />
+                      <span>{grandVisibleTotalClips.length}</span>
                     </button>
+                    <div class="phase-dur-hint grand">{formatPhaseDuration(grandVisibleTotalClips)}</div>
                   {:else}
-                    <span class="cell-zero">0</span>
+                    <span>0</span>
                   {/if}
                 </td>
               </tr>
-            {/each}
-
-            <!-- FOOTER ROW (TOTAL TIM) -->
-            <tr class="tr-footer">
-              <td class="td-footer-label">
-                <div class="flex items-center gap-2">
-                  <CheckCircle2 size={14} class="text-sky-400" />
-                  <span class="font-bold">TOTAL TIM</span>
-                </div>
-              </td>
-              {#each visibleCategories as cat}
-                {@const cTotal = getCategoryColTotal(cat).length}
-                <td class="td-footer-cell">
-                  {#if cTotal > 0}
-                    <button
-                      class="col-total-btn"
-                      onclick={() => handleColClick(cat)}
-                      title="Putar semua {cTotal} klip {cat.label}"
-                    >
-                      <Play size={10} class="inline mr-1 opacity-70" />
-                      <span>{cTotal}</span>
-                    </button>
-                  {:else}
-                    <span class="cell-zero">0</span>
-                  {/if}
-                </td>
-              {/each}
-              <td class="td-grand-total">
-                {#if grandVisibleTotal > 0}
-                  <button
-                    class="grand-total-btn"
-                    onclick={handlePlayAll}
-                    title="Putar playlist semua {grandVisibleTotal} klip matriks"
+            </tbody>
+          </table>
+        {:else}
+          <!-- TAG x LABEL (DESCRIPTOR) CROSS-TABULATION -->
+          <table class="matrix-table">
+            <thead>
+              <tr>
+                <th class="th-player">Tag / Fase</th>
+                {#each labelColumns as lbl}
+                  <th
+                    class="th-action"
+                    onclick={() => {
+                      const clips = getTagLabelColClips(lbl);
+                      if (clips.length > 0 && onPlayClips) {
+                        onPlayClips(clips, `Label: ${lbl} (${clips.length} Klip)`);
+                        onClose();
+                      }
+                    }}
+                    title="Putar semua klip dengan label {lbl}"
                   >
-                    <Play size={11} class="inline mr-1" />
-                    <span>{grandVisibleTotal}</span>
-                  </button>
-                {:else}
-                  <span>0</span>
-                {/if}
-              </td>
-            </tr>
-          </tbody>
-        </table>
+                    <span class="th-label">{lbl}</span>
+                  </th>
+                {/each}
+                <th class="th-total" onclick={handlePlayAll}>TOTAL</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#if labelRows.length === 0}
+                <tr>
+                  <td colspan={Math.max(2, labelColumns.length + 2)} class="cell-zero">
+                    Belum ada klip dan label untuk disilangkan.
+                  </td>
+                </tr>
+              {:else}
+                {#each labelRows as cat}
+                  {@const rowClips = getTagLabelRowClips(cat)}
+                  <tr class="tr-player">
+                    <td
+                      class="td-player"
+                      onclick={() => {
+                        if (rowClips.length > 0 && onPlayClips) {
+                          onPlayClips(rowClips, `${cat} (${rowClips.length} Klip)`);
+                          onClose();
+                        }
+                      }}
+                    >
+                      <span class="player-name">{cat}</span>
+                    </td>
+                    {#each labelColumns as lbl}
+                      {@const cellClips = getTagLabelClips(cat, lbl)}
+                      <td class="td-cell" class:has-data={cellClips.length > 0}>
+                        {#if cellClips.length > 0}
+                          <button
+                            class="cell-btn"
+                            onclick={() => handleTagLabelCellClick(cat, lbl)}
+                            title="Putar {cellClips.length} klip {cat} × {lbl} ({formatPhaseDuration(cellClips)})"
+                          >
+                            <Play size={10} />
+                            <span>{cellClips.length}</span>
+                          </button>
+                        {:else}
+                          <span class="cell-zero">-</span>
+                        {/if}
+                      </td>
+                    {/each}
+                    <td class="td-total">
+                      <span class="total-btn">{rowClips.length}</span>
+                      <div class="phase-dur-hint">{formatPhaseDuration(rowClips)}</div>
+                    </td>
+                  </tr>
+                {/each}
+                <tr class="tr-footer">
+                  <td class="td-footer-label">TOTAL LABEL</td>
+                  {#each labelColumns as lbl}
+                    {@const colClips = getTagLabelColClips(lbl)}
+                    <td class="td-footer-cell">
+                      <span class="col-total-btn">{colClips.length}</span>
+                      <div class="phase-dur-hint">{formatPhaseDuration(colClips)}</div>
+                    </td>
+                  {/each}
+                  <td class="td-grand-total">
+                    <span>{tags.length}</span>
+                    <div class="phase-dur-hint grand">{formatPhaseDuration(tags)}</div>
+                  </td>
+                </tr>
+              {/if}
+            </tbody>
+          </table>
+        {/if}
       </div>
     </div>
   </div>
@@ -531,7 +759,16 @@
 
   .tabs-group {
     display: flex;
+    flex-wrap: wrap;
+    align-items: center;
     gap: 6px;
+  }
+
+  .view-mode-switch {
+    display: flex;
+    gap: 4px;
+    padding-right: 8px;
+    border-right: 1px solid #1e3b68;
   }
 
   .tab-pill {
@@ -795,9 +1032,16 @@
     box-shadow: 0 0 14px rgba(56, 189, 248, 0.7);
   }
 
-  .cell-play-icon {
-    margin-right: 3px;
-    opacity: 0.85;
+  .phase-dur-hint {
+    font-family: monospace;
+    font-size: 9px;
+    font-weight: 700;
+    color: #94a3b8;
+    margin-top: 2px;
+  }
+
+  .phase-dur-hint.grand {
+    color: #e0f2fe;
   }
 
   .cell-zero {

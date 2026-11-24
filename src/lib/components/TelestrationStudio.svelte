@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
-  import { projectStore } from '$lib/stores/projectStore.svelte';
+  import { projectStore, isTauriDesktop } from '$lib/stores/projectStore.svelte';
   import type {
     VideoTagEvent,
     DrawingElement,
@@ -11,13 +11,17 @@
   } from '$lib/types';
   import {
     runMultiPlayerAutoTracking,
-    generateFutsalPlayerSeeds,
+    checkAiModelStatus,
   } from '$lib/tracking/multiPlayerTracker';
-  import { getInterpolatedPosition } from '$lib/tracking/playerTracker';
+  import {
+    runPlayerAutoTracking,
+    getInterpolatedPosition,
+  } from '$lib/tracking/playerTracker';
   import {
     CALIBRATION_PRESETS,
     calculatePitchCalibration,
     getCalibratedDistanceMeters,
+    canvasToCourtMeters,
     drawCalibratedCourtOverlay,
     type PitchCalibrationPoints,
   } from '$lib/pitch/homographyCalibration';
@@ -97,9 +101,14 @@
   let isFreezeActive = $state(false);
   let freezeRemaining = $state(3.0);
   let freezeInterval: any = null;
+  let rafId: number | null = null;
 
   // AI Tracking state
   let isMultiTracking = $state(false);
+  let isSingleTracking = $state(false);
+  let singleTrackProgress = $state(0);
+  let trackAbortController: AbortController | null = null;
+  let aiEngineLabel = $state<string>('ONNX YOLOX-Nano');
 
   // Selected element derived
   let selectedElement = $derived(
@@ -147,21 +156,31 @@
       drawings = activeClip.drawings ? JSON.parse(JSON.stringify(activeClip.drawings)) : [];
       pauseDuration = activeClip.pauseDuration || 3.0;
       currentTime = activeClip.startTime;
-      freezeTime = (activeClip.startTime + activeClip.endTime) / 2;
+      freezeTime = activeClip.freezeTimestamp ?? (activeClip.startTime + activeClip.endTime) / 2;
     }
 
+    checkAiModelStatus()
+      .then((s) => {
+        if (s.available) aiEngineLabel = s.engine;
+      })
+      .catch(() => {});
+
     syncCanvasSize();
-    requestAnimationFrame(renderLoop);
+    rafId = requestAnimationFrame(renderLoop);
     window.addEventListener('resize', syncCanvasSize);
 
     return () => {
       window.removeEventListener('resize', syncCanvasSize);
       if (freezeInterval) clearInterval(freezeInterval);
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      trackAbortController?.abort();
     };
   });
 
   onDestroy(() => {
     if (freezeInterval) clearInterval(freezeInterval);
+    if (rafId !== null) cancelAnimationFrame(rafId);
+    trackAbortController?.abort();
   });
 
   function syncCanvasSize() {
@@ -197,7 +216,7 @@
     }
 
     drawCanvas();
-    requestAnimationFrame(renderLoop);
+    rafId = requestAnimationFrame(renderLoop);
   }
 
   // Freeze Countdown logic
@@ -520,18 +539,30 @@
         ctx.stroke();
         ctx.setLineDash([]);
 
-        // Calculate centroid & futsal court area (40m x 20m = 800 m²)
+        // Calculate centroid & futsal court area (real Homography m² when calibrated)
         const cx = (sumX / el.points.length) * w;
         const cy = (sumY / el.points.length) * h;
 
-        let areaNorm = 0;
-        for (let i = 0; i < el.points.length; i++) {
-          const j = (i + 1) % el.points.length;
-          areaNorm += el.points[i].x * el.points[j].y;
-          areaNorm -= el.points[j].x * el.points[i].y;
+        let areaM2Str: string;
+        if (isPitchCalibrated && homographyResult) {
+          const mPts = el.points.map((p) => canvasToCourtMeters(p, homographyResult!.H_inv));
+          let areaM2 = 0;
+          for (let i = 0; i < mPts.length; i++) {
+            const j = (i + 1) % mPts.length;
+            areaM2 += mPts[i].x * mPts[j].y - mPts[j].x * mPts[i].y;
+          }
+          areaM2 = Math.abs(areaM2) / 2;
+          areaM2Str = `${areaM2.toFixed(1)} m²`;
+        } else {
+          let areaNorm = 0;
+          for (let i = 0; i < el.points.length; i++) {
+            const j = (i + 1) % el.points.length;
+            areaNorm += el.points[i].x * el.points[j].y;
+            areaNorm -= el.points[j].x * el.points[i].y;
+          }
+          areaNorm = Math.abs(areaNorm) / 2;
+          areaM2Str = `~${(areaNorm * 800).toFixed(1)} m² (est.)`;
         }
-        areaNorm = Math.abs(areaNorm) / 2;
-        const areaM2 = (areaNorm * 800).toFixed(1);
 
         // Centroid dot
         ctx.beginPath();
@@ -540,7 +571,7 @@
         ctx.fill();
 
         // Area badge
-        const label = `Kompak: ${areaM2} m²`;
+        const label = `Kompak: ${areaM2Str}`;
         ctx.font = 'bold 11px system-ui';
         const tm = ctx.measureText(label);
         ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
@@ -585,9 +616,18 @@
       case 'vision-cone': {
         const cx = centerPt.x * w;
         const cy = centerPt.y * h;
-        const angle = -Math.PI / 4;
+        let angle = -Math.PI / 4;
+        let length = 135;
+        if (el.points.length >= 2) {
+          const tx = el.points[1].x * w;
+          const ty = el.points[1].y * h;
+          const dist = Math.hypot(tx - cx, ty - cy);
+          if (dist > 10) {
+            angle = Math.atan2(ty - cy, tx - cx);
+            length = dist;
+          }
+        }
         const fov = Math.PI / 3;
-        const length = 135;
 
         ctx.beginPath();
         ctx.moveTo(cx, cy);
@@ -1135,59 +1175,145 @@
     }
   }
 
-  // Trigger AI Multi-Player MOT Tracking
-  function triggerAIMultiTracking() {
-    if (!videoEl || !canvasEl) return;
+  // Trigger Real AI Multi-Player MOT Tracking (Rust ONNX Runtime + YOLOX-Nano)
+  async function triggerAIMultiTracking() {
+    if (isMultiTracking) return;
     isMultiTracking = true;
     const start = activeClip ? activeClip.startTime : currentTime;
     const end = activeClip ? activeClip.endTime : currentTime + 4;
+    exportNotice = `Menjalankan deteksi AI (${aiEngineLabel})...`;
 
-    const initialSeeds = generateFutsalPlayerSeeds();
-    const result = runMultiPlayerAutoTracking(
-      videoEl,
-      initialSeeds,
-      start,
-      end,
-      10,
-      canvasEl.width,
-      canvasEl.height
-    );
+    try {
+      const result = await runMultiPlayerAutoTracking(projectStore.videoFilePath, start, end, 8);
+      if (result.tracks.length === 0) {
+        exportNotice = 'AI tidak mendeteksi pemain yang cukup konsisten di klip ini.';
+        setTimeout(() => (exportNotice = null), 4000);
+        return;
+      }
 
-    // Convert MOT tracks to spotlight elements
-    for (const track of result.playerTracks) {
-      const firstPt = track.trajectory[0] || { x: 0.5, y: 0.5 };
-      drawings.push({
-        id: `mot-${track.playerId}-${Date.now()}`,
-        type: 'spotlight-3d',
-        color: track.teamColor,
-        points: [firstPt],
-        keyframes: track.trajectory.map((p, idx) => ({
-          time: start + idx * 0.1,
-          x: p.x,
-          y: p.y,
-        })),
-        isTracking: true,
-        label: track.label,
-        timeStart: start,
-        timeEnd: end,
-      });
+      for (const track of result.tracks) {
+        const firstKf = track.keyframes[0] || { x: 0.5, y: 0.5 };
+        drawings.push({
+          id: `mot-${track.id}-${Date.now()}`,
+          type: 'spotlight-3d',
+          color: track.color,
+          points: [{ x: firstKf.x, y: firstKf.y }],
+          keyframes: track.keyframes,
+          isTracking: true,
+          label: track.label,
+          timeStart: start,
+          timeEnd: end,
+        });
+      }
+
+      // Also attach initial compactness hull for home team if >= 3 players detected
+      const firstHomeHull = result.homeHullKeyframes.values().next().value;
+      if (firstHomeHull && firstHomeHull.length >= 3) {
+        drawings.push({
+          id: `mot-hull-home-${Date.now()}`,
+          type: 'compactness-hull',
+          color: '#ef4444',
+          points: firstHomeHull,
+          label: 'Kompak Tim A',
+          timeStart: start,
+          timeEnd: end,
+        });
+      }
+
+      drawings = [...drawings];
+      exportNotice = `AI mendeteksi ${result.tracks.length} trek dari ${result.framesProcessed} frame.`;
+      setTimeout(() => (exportNotice = null), 4500);
+    } catch (err: any) {
+      exportNotice = `AI Tracking gagal: ${err?.message || err}`;
+      setTimeout(() => (exportNotice = null), 5000);
+    } finally {
+      isMultiTracking = false;
+    }
+  }
+
+  // Trigger Visual Single-Player Auto-Tracking on currently selected element
+  async function triggerSingleElementTracking() {
+    if (!selectedElement || !videoEl || selectedElement.points.length === 0) {
+      exportNotice = 'Pilih elemen dan pastikan video termuat untuk melacak.';
+      setTimeout(() => (exportNotice = null), 3500);
+      return;
     }
 
-    isMultiTracking = false;
+    if (isSingleTracking) {
+      trackAbortController?.abort();
+      isSingleTracking = false;
+      return;
+    }
+
+    const start = activeClip ? activeClip.startTime : currentTime;
+    const end = activeClip ? activeClip.endTime : Math.min(duration, currentTime + 5);
+    const anchor = selectedElement.points[0];
+    const box = {
+      x: Math.max(0, anchor.x - 0.025),
+      y: Math.max(0, anchor.y - 0.06),
+      width: 0.05,
+      height: 0.09,
+    };
+
+    isSingleTracking = true;
+    singleTrackProgress = 0;
+    trackAbortController = new AbortController();
+
+    try {
+      const kfs = await runPlayerAutoTracking(videoEl, box, start, end, {
+        stepSeconds: 0.08,
+        signal: trackAbortController.signal,
+        onProgress: (p) => {
+          singleTrackProgress = Math.round(p * 100);
+        },
+      });
+      if (kfs.length > 0 && selectedElement) {
+        selectedElement.keyframes = kfs;
+        selectedElement.isTracking = true;
+        drawings = [...drawings];
+        exportNotice = `Berhasil melacak ${kfs.length} keyframe untuk "${selectedElement.label || selectedElement.type}".`;
+        setTimeout(() => (exportNotice = null), 4000);
+      }
+    } catch (err: any) {
+      exportNotice = `Tracking visual gagal: ${err?.message || err}`;
+      setTimeout(() => (exportNotice = null), 4000);
+    } finally {
+      isSingleTracking = false;
+      trackAbortController = null;
+    }
   }
 
   function handleSave() {
     if (!activeClip) return;
-    projectStore.saveTelestration(activeClip.id, drawings, pauseDuration, voiceoverAudio || undefined);
+    projectStore.saveTelestration(
+      activeClip.id,
+      drawings,
+      pauseDuration,
+      voiceoverAudio || undefined,
+      freezeTime
+    );
+    exportNotice = 'Telestrasi & posisi freeze-frame disimpan!';
+    setTimeout(() => (exportNotice = null), 2500);
   }
 
   function handleSaveAndNext() {
     if (!activeClip) return;
-    projectStore.saveAndNextClip(activeClip.id, drawings, pauseDuration, voiceoverAudio || undefined);
+    projectStore.saveAndNextClip(
+      activeClip.id,
+      drawings,
+      pauseDuration,
+      voiceoverAudio || undefined,
+      freezeTime
+    );
     if (projectStore.activeClipForDrawing) {
-      drawings = projectStore.activeClipForDrawing.drawings ? JSON.parse(JSON.stringify(projectStore.activeClipForDrawing.drawings)) : [];
+      drawings = projectStore.activeClipForDrawing.drawings
+        ? JSON.parse(JSON.stringify(projectStore.activeClipForDrawing.drawings))
+        : [];
       pauseDuration = projectStore.activeClipForDrawing.pauseDuration || 3.0;
       voiceoverAudio = projectStore.activeClipForDrawing.voiceoverAudioBase64 || null;
+      freezeTime =
+        projectStore.activeClipForDrawing.freezeTimestamp ??
+        (projectStore.activeClipForDrawing.startTime + projectStore.activeClipForDrawing.endTime) / 2;
       if (videoEl) {
         videoEl.currentTime = projectStore.activeClipForDrawing.startTime;
       }
@@ -1228,35 +1354,56 @@
     selectedElementId = null;
   }
 
-  // Pilar 1: Direct Telestration Video Burner (Once Sport style)
+  // Pilar 1: Direct Telestration Video Burner (with absolute Save dialog + full tool parity)
   async function handleDirectExportClip() {
-    if (!activeClip || !projectStore.videoFilePath) {
-      exportNotice = 'Jalur file video tidak ditemukan. Silakan buka proyek dari file video.';
+    if (!isTauriDesktop()) {
+      exportNotice = 'Ekspor MP4 FFmpeg hanya tersedia di aplikasi desktop Tauri.';
       setTimeout(() => (exportNotice = null), 4000);
       return;
     }
 
-    isExportingClip = true;
-    exportNotice = 'Merender klip telestrasi broadcast dengan FFmpeg...';
+    if (
+      !activeClip ||
+      !projectStore.videoFilePath ||
+      (!projectStore.videoFilePath.startsWith('/') && !/^[A-Za-z]:[\\/]/.test(projectStore.videoFilePath))
+    ) {
+      exportNotice = 'Path file video absolut tidak ditemukan. Buka video lewat Hub Proyek.';
+      setTimeout(() => (exportNotice = null), 4000);
+      return;
+    }
 
     try {
-      const overlayBase64 = renderDrawingsToDataUrl(drawings, 1920, 1080, currentTime);
-      const freezeSec = freezeTime || (activeClip.startTime + activeClip.endTime) / 2;
+      const { save } = await import('@tauri-apps/plugin-dialog');
       const cleanCat = activeClip.category.replace(/[^a-zA-Z0-9]/g, '_');
-      const filename = `FutsalTag_Telestrasi_${cleanCat}_${Date.now()}.mp4`;
+      const outPath = await save({
+        title: 'Simpan Klip Telestrasi MP4',
+        defaultPath: `FutsalTag_Telestrasi_${cleanCat}.mp4`,
+        filters: [{ name: 'MP4 Video', extensions: ['mp4'] }],
+      });
+      if (!outPath) return;
 
-      const res = await invoke<string>('burn_telestration_clip_ffmpeg', {
+      isExportingClip = true;
+      exportNotice = 'Merender klip telestrasi broadcast dengan FFmpeg...';
+
+      const freezeSec = freezeTime || (activeClip.startTime + activeClip.endTime) / 2;
+      const overlayBase64 = renderDrawingsToDataUrl(drawings, 1920, 1080, freezeSec, {
+        videoEl,
+        homographyResult: isPitchCalibrated ? homographyResult : null,
+      });
+
+      await invoke<string>('burn_telestration_clip_ffmpeg', {
         inputPath: projectStore.videoFilePath,
-        outputPath: filename,
+        outputPath: outPath,
         startSec: activeClip.startTime,
         durationSec: activeClip.endTime - activeClip.startTime,
         freezeSec,
         pauseDuration: pauseDuration || 3.0,
         overlayBase64,
         voiceoverBase64: voiceoverAudio || null,
+        targetHeight: 1080,
       });
 
-      exportNotice = `Klip berhasil diekspor: ${filename}`;
+      exportNotice = `Klip berhasil diekspor ke: ${outPath}`;
       setTimeout(() => (exportNotice = null), 6000);
     } catch (err: any) {
       exportNotice = `Gagal ekspor: ${err?.message || err}`;
@@ -1271,9 +1418,9 @@
   <!-- TOP STUDIO HEADER -->
   <header class="studio-header">
     <div class="header-left">
-      <button class="btn-back" onclick={handleBackToTagging}>
-        <ArrowLeft size={16} />
-        <span>Kembali ke Tagging</span>
+      <button class="btn-back" onclick={handleBackToTagging} title="Kembali ke Workspace Tagging">
+        <ArrowLeft size={15} />
+        <span>Tagging</span>
       </button>
 
       {#if activeClip}
@@ -1281,7 +1428,7 @@
           <span class="clip-cat-badge" style="background-color: {activeClip.color}">
             {activeClip.category}
           </span>
-          <span class="clip-name-text">{activeClip.title}</span>
+          <span class="clip-name-text" title={activeClip.title}>{activeClip.title}</span>
           <span class="clip-time-text">
             [{activeClip.startTime.toFixed(1)}s - {activeClip.endTime.toFixed(1)}s]
           </span>
@@ -1296,9 +1443,9 @@
       </button>
       <button class="btn-clear" onclick={clearAllDrawings} title="Hapus semua coretan">
         <Trash2 size={14} />
-        <span>Hapus Semua</span>
+        <span>Hapus</span>
       </button>
-      <button class="btn-save" onclick={handleSave}>
+      <button class="btn-save" onclick={handleSave} title="Simpan coretan telestrasi">
         <Check size={14} />
         <span>Simpan</span>
       </button>
@@ -1306,9 +1453,9 @@
         <Download size={14} />
         <span>{isExportingClip ? 'Merender...' : 'Ekspor MP4'}</span>
       </button>
-      <button class="btn-save-next" onclick={handleSaveAndNext}>
-        <span>Simpan & Klip Berikutnya</span>
-        <ArrowRight size={15} />
+      <button class="btn-save-next" onclick={handleSaveAndNext} title="Simpan & Klip Berikutnya">
+        <span>Lanjut</span>
+        <ArrowRight size={14} />
       </button>
     </div>
   </header>
@@ -1336,9 +1483,9 @@
 
       <!-- BROADCAST ONCE SPORT LAYERING & KEYFRAME TOGGLE -->
       <div class="palette-group-title">FITUR SIARAN (BROADCAST)</div>
-      <label class="toggle-control-item" title="Grafis menyatu ke lantai lapangan (ChromaKey Floor Blend)">
+      <label class="toggle-control-item" title="Mode pencampuran grafis ke lantai lapangan (Screen Blend)">
         <input type="checkbox" bind:checked={isFloorBlend} />
-        <span class="toggle-label">Layer Lantai (ChromaKey)</span>
+        <span class="toggle-label">Layer Lantai (Screen Blend)</span>
       </label>
 
       <label class="toggle-control-item" title="Aktifkan mode rekam keyframe gerakan pemain">
@@ -1374,15 +1521,16 @@
       <div class="palette-divider"></div>
 
       <!-- AI MULTI-TRACKING TRIGGER -->
-      <div class="palette-group-title">AI VISION</div>
+      <div class="palette-group-title">AI VISION ({aiEngineLabel})</div>
       <button
         class="tool-btn btn-ai"
         class:loading={isMultiTracking}
+        disabled={isMultiTracking}
         onclick={triggerAIMultiTracking}
-        title="Deteksi 10 Pemain & Tim Compactness"
+        title="Deteksi 10 Pemain & Bola via YOLOX-Nano ONNX di Rust"
       >
         <Users size={16} />
-        <span class="tool-label">Auto-Detect 10 Pemain</span>
+        <span class="tool-label">{isMultiTracking ? 'Memproses ONNX...' : 'AI Detect 10 Pemain'}</span>
       </button>
 
       <div class="palette-divider"></div>
@@ -1574,6 +1722,16 @@
               <span>Hapus KF</span>
             </button>
           </div>
+
+          <button
+            class="btn-kf-add"
+            style="width: 100%; justify-content: center; margin-top: 4px;"
+            onclick={triggerSingleElementTracking}
+            title="Lacak posisi elemen ini otomatis sepanjang klip (NCC + Histogram)"
+          >
+            <Activity size={13} />
+            <span>{isSingleTracking ? `Melacak (${singleTrackProgress}%) - Klik Batal` : 'Auto-Track Elemen Ini'}</span>
+          </button>
         </div>
       {/if}
 
@@ -1699,7 +1857,7 @@
     </div>
 
     <div class="footer-right">
-      <span class="info-note">Format kompatibel Once Sport & Momen Sports (.futsal). Mendukung interpolasi gerak & ChromaKey.</span>
+      <span class="info-note">ONNX YOLOX-Nano AI Tracking & FFmpeg Broadcast Burn-In (.futsal)</span>
     </div>
   </footer>
 </div>
@@ -1717,33 +1875,41 @@
 
   /* HEADER */
   .studio-header {
-    height: 48px;
+    min-height: 48px;
+    height: auto;
     background: linear-gradient(180deg, #0d1e38 0%, #091528 100%);
     border-bottom: 1px solid #1a355d;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0 16px;
+    padding: 6px 14px;
+    gap: 10px;
+    box-sizing: border-box;
     flex-shrink: 0;
   }
 
   .header-left {
     display: flex;
     align-items: center;
-    gap: 16px;
+    gap: 10px;
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
   }
 
   .btn-back {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 5px;
     background: rgba(14, 30, 56, 0.6);
     border: 1px solid #1a355d;
     color: #93c5fd;
-    padding: 6px 12px;
+    padding: 5px 10px;
     border-radius: 6px;
     font-size: 11px;
     font-weight: 600;
+    white-space: nowrap;
+    flex-shrink: 0;
     cursor: pointer;
     transition: all 0.15s;
   }
@@ -1757,7 +1923,9 @@
   .clip-badge-info {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
+    min-width: 0;
+    overflow: hidden;
   }
 
   .clip-cat-badge {
@@ -1766,12 +1934,18 @@
     color: #ffffff;
     padding: 2px 8px;
     border-radius: 4px;
+    white-space: nowrap;
+    flex-shrink: 0;
   }
 
   .clip-name-text {
     font-size: 13px;
     font-weight: 700;
     color: #f1f5f9;
+    max-width: 240px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .clip-time-text {
@@ -1779,25 +1953,31 @@
     font-size: 11px;
     color: #38bdf8;
     font-weight: 700;
+    white-space: nowrap;
+    flex-shrink: 0;
   }
 
   .header-right {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
+    flex-shrink: 0;
+    white-space: nowrap;
   }
 
   .btn-undo {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 5px;
     background: #0f2444;
     border: 1px solid #1e3b68;
     color: #93c5fd;
-    padding: 6px 12px;
+    padding: 5px 10px;
     border-radius: 6px;
     font-size: 11px;
     font-weight: 600;
+    white-space: nowrap;
+    flex-shrink: 0;
     cursor: pointer;
     transition: all 0.15s ease;
   }
@@ -1811,14 +1991,16 @@
   .btn-clear {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 5px;
     background: transparent;
     border: 1px solid #7f1d1d;
     color: #ef4444;
-    padding: 6px 12px;
+    padding: 5px 10px;
     border-radius: 6px;
     font-size: 11px;
     font-weight: 600;
+    white-space: nowrap;
+    flex-shrink: 0;
     cursor: pointer;
     transition: all 0.15s;
   }
@@ -1830,14 +2012,16 @@
   .btn-save {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 5px;
     background-color: #0d1e38;
     border: 1px solid #1a355d;
     color: #93c5fd;
-    padding: 6px 14px;
+    padding: 5px 10px;
     border-radius: 6px;
     font-size: 11px;
     font-weight: 700;
+    white-space: nowrap;
+    flex-shrink: 0;
     cursor: pointer;
     transition: all 0.15s;
   }
@@ -1851,14 +2035,16 @@
   .btn-export-direct {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 5px;
     background: linear-gradient(135deg, #059669, #047857);
     color: #ffffff;
     border: none;
-    padding: 6px 14px;
+    padding: 5px 11px;
     border-radius: 6px;
     font-size: 11px;
     font-weight: 700;
+    white-space: nowrap;
+    flex-shrink: 0;
     cursor: pointer;
     box-shadow: 0 0 10px rgba(16, 185, 129, 0.3);
     transition: all 0.2s;
@@ -1878,14 +2064,16 @@
   .btn-save-next {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 5px;
     background: linear-gradient(135deg, #0284c7, #2563eb);
     color: #ffffff;
     border: none;
-    padding: 6px 16px;
+    padding: 5px 12px;
     border-radius: 6px;
     font-size: 11px;
     font-weight: 700;
+    white-space: nowrap;
+    flex-shrink: 0;
     cursor: pointer;
     box-shadow: 0 0 12px rgba(56, 189, 248, 0.35);
     transition: all 0.2s;
@@ -2541,19 +2729,23 @@
 
   /* FOOTER */
   .studio-footer {
-    height: 52px;
+    min-height: 46px;
+    height: auto;
     background: linear-gradient(180deg, #091528 0%, #0d1e38 100%);
     border-top: 1px solid #1a355d;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0 16px;
+    padding: 6px 14px;
+    gap: 12px;
+    box-sizing: border-box;
     flex-shrink: 0;
   }
 
   .footer-left {
     display: flex;
     align-items: center;
+    flex-shrink: 0;
   }
 
   .btn-preview {
@@ -2563,10 +2755,12 @@
     background: linear-gradient(135deg, #059669, #047857);
     color: #ffffff;
     border: none;
-    padding: 8px 16px;
+    padding: 7px 14px;
     border-radius: 6px;
     font-size: 12px;
     font-weight: 700;
+    white-space: nowrap;
+    flex-shrink: 0;
     cursor: pointer;
     box-shadow: 0 0 12px rgba(16, 185, 129, 0.35);
   }
@@ -2586,9 +2780,11 @@
     gap: 10px;
     background-color: #0c1a33;
     border: 1px solid #1e3b68;
-    padding: 6px 14px;
+    padding: 5px 12px;
     border-radius: 8px;
     color: #38bdf8;
+    white-space: nowrap;
+    flex-shrink: 0;
   }
 
   .slider-label {
@@ -2614,5 +2810,16 @@
   .footer-right {
     font-size: 11px;
     color: #64748b;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  @media (max-width: 1220px) {
+    .footer-right,
+    .info-note {
+      display: none;
+    }
   }
 </style>

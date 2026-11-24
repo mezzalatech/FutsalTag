@@ -37,6 +37,8 @@
     CircleDot,
     Plus,
     Activity,
+    ZoomIn,
+    XCircle,
   } from 'lucide-svelte';
 
   // --- REFS & STATE ---
@@ -92,6 +94,8 @@
     { id: 'vision-cone', label: 'Radar Visi (FOV)', icon: Eye, desc: 'Sudut pandang / jangkauan pandangan pemain' },
     { id: 'compactness-hull', label: 'Area Kompak Tim (Hull)', icon: Layers, desc: 'Poligon kerapatan formasi tim futsal (m²)' },
     { id: 'distance-line', label: 'Garis Jarak (Meter)', icon: Ruler, desc: 'Ukur jarak antar pemain atau ke gawang' },
+    { id: 'magnifier', label: 'Lensa Zoom (Magnifier)', icon: ZoomIn, desc: 'Kaca pembesar detail kontrol bola / kaki pemain (Once Sport)' },
+    { id: 'player-cross', label: 'Silang Taktik (Cross)', icon: XCircle, desc: 'Tanda silang (X) kesalahan posisi atau rotasi taktik' },
     { id: 'note-text', label: 'Catatan Taktik', icon: Type, desc: 'Label instruksi taktik pelatih' },
     { id: 'freehand', label: 'Marker Bebas', icon: Sparkles, desc: 'Coretan bebas di atas video' },
   ];
@@ -684,6 +688,135 @@
         ctx.stroke();
         break;
       }
+
+      // 10. ONCE SPORT MAGNIFIER (ZOOM LENS)
+      case 'magnifier': {
+        const cx = centerPt.x * w;
+        const cy = centerPt.y * h;
+        const r = 52;
+        const zoom = el.zoomScale || 1.8;
+
+        ctx.save();
+        // Clip circular lens
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.clip();
+
+        if (videoEl && videoEl.videoWidth > 0 && videoEl.videoHeight > 0) {
+          const vw = videoEl.videoWidth;
+          const vh = videoEl.videoHeight;
+          const vSrcX = centerPt.x * vw;
+          const vSrcY = centerPt.y * vh;
+          const vSrcW = (r / zoom) * (vw / w);
+          const vSrcH = (r / zoom) * (vh / h);
+
+          ctx.drawImage(
+            videoEl,
+            Math.max(0, vSrcX - vSrcW),
+            Math.max(0, vSrcY - vSrcH),
+            Math.min(vw, vSrcW * 2),
+            Math.min(vh, vSrcH * 2),
+            cx - r,
+            cy - r,
+            r * 2,
+            r * 2
+          );
+        } else {
+          ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+          ctx.fill();
+        }
+
+        ctx.restore();
+
+        // Lens Glass Rim & Shadow
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.strokeStyle = el.color || '#38bdf8';
+        ctx.lineWidth = isSelected ? 4 : 2.5;
+        ctx.stroke();
+
+        // Crosshair Reticle inside lens
+        ctx.beginPath();
+        ctx.moveTo(cx - 10, cy);
+        ctx.lineTo(cx + 10, cy);
+        ctx.moveTo(cx, cy - 10);
+        ctx.lineTo(cx, cy + 10);
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.45)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+
+        // Floating Lens Zoom Badge
+        const badgeY = cy + r + 14;
+        const badgeText = `${zoom.toFixed(1)}x ZOOM DETAIL`;
+        ctx.font = 'bold 10px monospace';
+        const bM = ctx.measureText(badgeText);
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+        ctx.fillRect(cx - bM.width / 2 - 6, badgeY - 8, bM.width + 12, 16);
+        ctx.strokeStyle = el.color || '#38bdf8';
+        ctx.strokeRect(cx - bM.width / 2 - 6, badgeY - 8, bM.width + 12, 16);
+        ctx.fillStyle = '#38bdf8';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(badgeText, cx, badgeY);
+        ctx.restore();
+        break;
+      }
+
+      // 11. ONCE SPORT PLAYER CROSS (KESALAHAN TAKTIK)
+      case 'player-cross': {
+        const cx = centerPt.x * w;
+        const cy = centerPt.y * h;
+        const arm = 16;
+
+        ctx.save();
+        // Dark contrast background cross
+        ctx.beginPath();
+        ctx.moveTo(cx - arm, cy - arm);
+        ctx.lineTo(cx + arm, cy + arm);
+        ctx.moveTo(cx + arm, cy - arm);
+        ctx.lineTo(cx - arm, cy + arm);
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)';
+        ctx.lineWidth = 6;
+        ctx.lineCap = 'round';
+        ctx.stroke();
+
+        // Vibrant Cross
+        ctx.beginPath();
+        ctx.moveTo(cx - arm, cy - arm);
+        ctx.lineTo(cx + arm, cy + arm);
+        ctx.moveTo(cx + arm, cy - arm);
+        ctx.lineTo(cx - arm, cy + arm);
+        ctx.strokeStyle = el.color || '#ef4444';
+        ctx.lineWidth = 3.5;
+        ctx.lineCap = 'round';
+        ctx.stroke();
+
+        // Pulsing dashed ring
+        ctx.beginPath();
+        ctx.arc(cx, cy, arm * 1.5, 0, Math.PI * 2);
+        ctx.strokeStyle = hexToRgba(el.color || '#ef4444', 0.6);
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([4, 4]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Floating Error Label
+        const labelText = el.label || 'Salah Posisi';
+        const badgeY = cy - arm - 12;
+        ctx.font = 'bold 10px system-ui';
+        const tm = ctx.measureText(labelText);
+        ctx.fillStyle = 'rgba(239, 68, 68, 0.2)';
+        ctx.fillRect(cx - tm.width / 2 - 6, badgeY - 8, tm.width + 12, 16);
+        ctx.strokeStyle = '#ef4444';
+        ctx.strokeRect(cx - tm.width / 2 - 6, badgeY - 8, tm.width + 12, 16);
+        ctx.fillStyle = '#fca5a5';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(labelText, cx, badgeY);
+        ctx.restore();
+        break;
+      }
     }
 
     ctx.restore();
@@ -781,8 +914,9 @@
       points: [pt],
       timeStart: activeClip ? activeClip.startTime : currentTime,
       timeEnd: activeClip ? activeClip.endTime : currentTime + 5,
-      label: activeTool === 'player-circle' ? '#9' : activeTool === 'note-text' ? 'Evaluasi Rotasi' : undefined,
+      label: activeTool === 'player-circle' ? '#9' : activeTool === 'note-text' ? 'Evaluasi Rotasi' : activeTool === 'magnifier' ? '1.8x Zoom' : activeTool === 'player-cross' ? 'Salah Posisi' : undefined,
       curveOffset: activeTool === 'curved-arrow' ? -0.28 : undefined,
+      zoomScale: activeTool === 'magnifier' ? 1.8 : undefined,
     };
   }
 
@@ -1259,6 +1393,20 @@
               {selectedElement.keyframes ? selectedElement.keyframes.length : 0} titik gerak
             </span>
           </div>
+
+          {#if selectedElement.type === 'magnifier'}
+            <div class="prop-row">
+              <span class="prop-label">Perbesaran Lensa: {(selectedElement.zoomScale || 1.8).toFixed(1)}x</span>
+              <input
+                type="range"
+                min="1.2"
+                max="3.0"
+                step="0.1"
+                bind:value={selectedElement.zoomScale}
+                class="pause-slider"
+              />
+            </div>
+          {/if}
 
           <!-- KEYFRAME TOOLS -->
           <div class="keyframe-actions-wrap">

@@ -46,6 +46,8 @@ export type DrawingToolType =
   | 'text-note'        // Floating tactical text banner
   | 'note-text'        // Floating tactical text banner (alias)
   | 'compactness-hull' // Multi-player team compactness polygon
+  | 'magnifier'        // Zoom lens detail for ball/feet inspection (Once Sport Magnifier)
+  | 'player-cross'     // Red/amber X marker for tactical mistake/out-of-position (Once Sport PlayerCross)
   | 'freehand';        // Freehand tactical marker
 
 export interface Point2D {
@@ -87,6 +89,7 @@ export interface DrawingElement {
   curveOffset?: number;   // Arc height offset
   isChromaFloor?: boolean; // Floor blending mode
   pulseEffect?: boolean;   // Radar / beacon pulse
+  zoomScale?: number;     // For magnifier lens (e.g. 1.8x)
 }
 
 export interface TacticalStep {

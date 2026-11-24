@@ -34,14 +34,17 @@ export interface EquipmentItem {
 export type DrawingToolType = 
   | 'select'
   | 'pass-arrow'       // Solid line with arrow for pass/shot
+  | 'curved-arrow'     // Curved arc arrow for curved pass/shot (Once Sport style)
   | 'run-arrow'        // Dashed line with arrow for player run
   | 'dribble-arrow'    // Wavy / squiggly line for ball dribble
+  | 'player-circle'    // Player highlighting ring with number badge
   | 'pressing-zone'    // Transparent shaded polygon for defensive/pressing zones
   | 'vision-cone'      // Conical sector showing player's vision field
   | 'spotlight-3d'     // 3D perspective ellipse spotlight on pitch surface
   | 'distance-line'    // Dynamic line showing distance in meters
   | 'player-ghost'     // Semi-transparent phantom player indicating optimal position
   | 'text-note'        // Floating tactical text banner
+  | 'note-text'        // Floating tactical text banner (alias)
   | 'compactness-hull' // Multi-player team compactness polygon
   | 'freehand';        // Freehand tactical marker
 
@@ -80,6 +83,10 @@ export interface DrawingElement {
   isTracking?: boolean;
   keyframes?: TrackingKeyframe[];
   multiTracks?: MultiPlayerTrack[];
+  controlPoint?: Point2D; // For curved arrows (Once Sport style)
+  curveOffset?: number;   // Arc height offset
+  isChromaFloor?: boolean; // Floor blending mode
+  pulseEffect?: boolean;   // Radar / beacon pulse
 }
 
 export interface TacticalStep {

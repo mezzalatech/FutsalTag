@@ -28,6 +28,7 @@
     Settings2,
     Tv,
   } from 'lucide-svelte';
+  import { renderDrawingsToDataUrl } from '$lib/export/telestrationRenderer';
 
   let currentPlaylist = $derived(projectStore.playlists[0]);
   let selectedItemIndex = $state(0);
@@ -110,13 +111,29 @@
           for (let i = 0; i < currentPlaylist.items.length; i++) {
             const item = currentPlaylist.items[i];
             const tempClipPath = `futsaltag_clip_${i}_${Date.now()}.mp4`;
-            await invoke<string>('render_video_clip_ffmpeg', {
-              inputPath: projectStore.videoFilePath,
-              outputPath: tempClipPath,
-              startSec: item.tagEvent.startTime,
-              durationSec: item.tagEvent.endTime - item.tagEvent.startTime,
-              fastCopy: true,
-            });
+            const hasDrawings = item.tagEvent.drawings && item.tagEvent.drawings.length > 0;
+
+            if (includeDrawings && hasDrawings) {
+              const overlayBase64 = renderDrawingsToDataUrl(item.tagEvent.drawings || [], 1920, 1080);
+              const freezeSec = (item.tagEvent.startTime + item.tagEvent.endTime) / 2;
+              await invoke<string>('burn_telestration_clip_ffmpeg', {
+                inputPath: projectStore.videoFilePath,
+                outputPath: tempClipPath,
+                startSec: item.tagEvent.startTime,
+                durationSec: item.tagEvent.endTime - item.tagEvent.startTime,
+                freezeSec,
+                pauseDuration: item.tagEvent.pauseDuration || 3.0,
+                overlayBase64,
+              });
+            } else {
+              await invoke<string>('render_video_clip_ffmpeg', {
+                inputPath: projectStore.videoFilePath,
+                outputPath: tempClipPath,
+                startSec: item.tagEvent.startTime,
+                durationSec: item.tagEvent.endTime - item.tagEvent.startTime,
+                fastCopy: true,
+              });
+            }
             renderedClips.push(tempClipPath);
             exportProgress = 20 + Math.floor(((i + 1) / currentPlaylist.items.length) * 60);
           }
@@ -137,16 +154,34 @@
           exportProgress = 50;
 
           const singlePath = `FutsalTag_Pro_${item.tagEvent.category.replace(/[^a-zA-Z0-9]/g, '_')}_${Date.now()}.mp4`;
-          const resultPath = await invoke<string>('render_video_clip_ffmpeg', {
-            inputPath: projectStore.videoFilePath,
-            outputPath: singlePath,
-            startSec: item.tagEvent.startTime,
-            durationSec: item.tagEvent.endTime - item.tagEvent.startTime,
-            fastCopy: true,
-          });
+          const hasDrawings = item.tagEvent.drawings && item.tagEvent.drawings.length > 0;
 
-          exportProgress = 100;
-          exportStatusMessage = `Selesai! Klip tersimpan di: ${resultPath}`;
+          if (includeDrawings && hasDrawings) {
+            exportStatusMessage = `Membakar grafis telestrasi 3D & jeda siaran...`;
+            const overlayBase64 = renderDrawingsToDataUrl(item.tagEvent.drawings || [], 1920, 1080);
+            const freezeSec = (item.tagEvent.startTime + item.tagEvent.endTime) / 2;
+            const res = await invoke<string>('burn_telestration_clip_ffmpeg', {
+              inputPath: projectStore.videoFilePath,
+              outputPath: singlePath,
+              startSec: item.tagEvent.startTime,
+              durationSec: item.tagEvent.endTime - item.tagEvent.startTime,
+              freezeSec,
+              pauseDuration: item.tagEvent.pauseDuration || 3.0,
+              overlayBase64,
+            });
+            exportProgress = 100;
+            exportStatusMessage = `Selesai! Klip telestrasi tersimpan di: ${singlePath}`;
+          } else {
+            const resultPath = await invoke<string>('render_video_clip_ffmpeg', {
+              inputPath: projectStore.videoFilePath,
+              outputPath: singlePath,
+              startSec: item.tagEvent.startTime,
+              durationSec: item.tagEvent.endTime - item.tagEvent.startTime,
+              fastCopy: true,
+            });
+            exportProgress = 100;
+            exportStatusMessage = `Selesai! Klip tersimpan di: ${resultPath}`;
+          }
           exportSuccessPath = singlePath;
         }
       } else {

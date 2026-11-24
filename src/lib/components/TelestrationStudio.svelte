@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
+  import { invoke } from '@tauri-apps/api/core';
   import { projectStore } from '$lib/stores/projectStore.svelte';
   import type {
     VideoTagEvent,
@@ -13,6 +14,14 @@
     generateFutsalPlayerSeeds,
   } from '$lib/tracking/multiPlayerTracker';
   import { getInterpolatedPosition } from '$lib/tracking/playerTracker';
+  import {
+    CALIBRATION_PRESETS,
+    calculatePitchCalibration,
+    getCalibratedDistanceMeters,
+    drawCalibratedCourtOverlay,
+    type PitchCalibrationPoints,
+  } from '$lib/pitch/homographyCalibration';
+  import { renderDrawingsToDataUrl } from '$lib/export/telestrationRenderer';
   import {
     Sparkles,
     MoveRight,
@@ -39,6 +48,7 @@
     Activity,
     ZoomIn,
     XCircle,
+    Download,
   } from 'lucide-svelte';
 
   // --- REFS & STATE ---
@@ -70,6 +80,17 @@
   let activeCurveControl = $state<string | null>(null);
   let isDraggingSelected = $state(false);
   let dragStartPos = $state<Point2D | null>(null);
+
+  // Pilar 2: AI Homography 3D Court Calibration State
+  let isPitchCalibrated = $state(false);
+  let activePresetKey = $state('main-sideline');
+  let calibrationPoints = $state<PitchCalibrationPoints>({ ...CALIBRATION_PRESETS['main-sideline'].points });
+  let activeCornerDrag = $state<'tl' | 'tr' | 'br' | 'bl' | null>(null);
+  let homographyResult = $derived(calculatePitchCalibration(calibrationPoints));
+
+  // Pilar 1: Direct Video Export State
+  let isExportingClip = $state(false);
+  let exportNotice = $state<string | null>(null);
 
   // Broadcast Freeze-Frame Preview HUD State
   let isFreezeActive = $state(false);
@@ -226,6 +247,11 @@
     // Render in-progress drawing
     if (inProgressDrawing) {
       drawVideoElement(ctx, inProgressDrawing, w, h);
+    }
+
+    // Render 3D court homography calibration grid if active
+    if (isPitchCalibrated) {
+      drawCalibratedCourtOverlay(ctx, calibrationPoints, w, h);
     }
 
     ctx.restore();
@@ -634,7 +660,10 @@
         ctx.setLineDash([]);
 
         const distPx = Math.hypot(p2.x - p1.x, p2.y - p1.y);
-        const distM = (distPx / (w * 0.05)).toFixed(1);
+        let distM = (distPx / (w * 0.05)).toFixed(1);
+        if (isPitchCalibrated && homographyResult) {
+          distM = getCalibratedDistanceMeters(el.points[0], el.points[1], homographyResult.H_inv).toFixed(1);
+        }
         const mx = (p1.x + p2.x) / 2;
         const my = (p1.y + p2.y) / 2;
 
@@ -836,6 +865,18 @@
     if (!canvasEl) return;
     const pt = getCanvasCoords(e);
 
+    // 0. If 3D pitch calibration is active, check corner pin dragging
+    if (isPitchCalibrated) {
+      const corners: ('tl' | 'tr' | 'br' | 'bl')[] = ['tl', 'tr', 'br', 'bl'];
+      for (const c of corners) {
+        const pin = calibrationPoints[c];
+        if (Math.hypot(pt.x - pin.x, pt.y - pin.y) < 0.05) {
+          activeCornerDrag = c;
+          return;
+        }
+      }
+    }
+
     // If Select Tool is active:
     if (activeTool === 'select') {
       // 1. Check if clicking on curve control point of a curved arrow
@@ -924,6 +965,13 @@
     if (!canvasEl) return;
     const pt = getCanvasCoords(e);
 
+    // 0. If dragging 3D court calibration corner pin:
+    if (activeCornerDrag) {
+      calibrationPoints[activeCornerDrag] = pt;
+      calibrationPoints = { ...calibrationPoints };
+      return;
+    }
+
     // If dragging curve control point:
     if (activeCurveControl && selectedElement) {
       selectedElement.controlPoint = pt;
@@ -969,6 +1017,7 @@
   }
 
   function handlePointerUp() {
+    activeCornerDrag = null;
     activeCurveControl = null;
     isDraggingSelected = false;
     dragStartPos = null;
@@ -1167,6 +1216,43 @@
     drawings = drawings.filter((d) => d.id !== selectedElementId);
     selectedElementId = null;
   }
+
+  // Pilar 1: Direct Telestration Video Burner (Once Sport style)
+  async function handleDirectExportClip() {
+    if (!activeClip || !projectStore.videoFilePath) {
+      exportNotice = 'Jalur file video tidak ditemukan. Silakan buka proyek dari file video.';
+      setTimeout(() => (exportNotice = null), 4000);
+      return;
+    }
+
+    isExportingClip = true;
+    exportNotice = 'Merender klip telestrasi broadcast dengan FFmpeg...';
+
+    try {
+      const overlayBase64 = renderDrawingsToDataUrl(drawings, 1920, 1080, currentTime);
+      const freezeSec = freezeTime || (activeClip.startTime + activeClip.endTime) / 2;
+      const cleanCat = activeClip.category.replace(/[^a-zA-Z0-9]/g, '_');
+      const filename = `FutsalTag_Telestrasi_${cleanCat}_${Date.now()}.mp4`;
+
+      const res = await invoke<string>('burn_telestration_clip_ffmpeg', {
+        inputPath: projectStore.videoFilePath,
+        outputPath: filename,
+        startSec: activeClip.startTime,
+        durationSec: activeClip.endTime - activeClip.startTime,
+        freezeSec,
+        pauseDuration: pauseDuration || 3.0,
+        overlayBase64,
+      });
+
+      exportNotice = `Klip berhasil diekspor: ${filename}`;
+      setTimeout(() => (exportNotice = null), 6000);
+    } catch (err: any) {
+      exportNotice = `Gagal ekspor: ${err?.message || err}`;
+      setTimeout(() => (exportNotice = null), 6000);
+    } finally {
+      isExportingClip = false;
+    }
+  }
 </script>
 
 <div class="telestration-studio">
@@ -1203,6 +1289,10 @@
       <button class="btn-save" onclick={handleSave}>
         <Check size={14} />
         <span>Simpan</span>
+      </button>
+      <button class="btn-export-direct" onclick={handleDirectExportClip} disabled={isExportingClip} title="Ekspor klip ini dengan telestrasi terbakar ke format MP4">
+        <Download size={14} />
+        <span>{isExportingClip ? 'Merender...' : 'Ekspor MP4'}</span>
       </button>
       <button class="btn-save-next" onclick={handleSaveAndNext}>
         <span>Simpan & Klip Berikutnya</span>
@@ -1243,6 +1333,31 @@
         <input type="checkbox" bind:checked={isKeyframeMode} />
         <span class="toggle-label highlight-kf">Mode Gerak (Keyframes)</span>
       </label>
+
+      <label class="toggle-control-item" title="Kalibrasi Lapangan Futsal 3D (Once Sport Homography)">
+        <input type="checkbox" bind:checked={isPitchCalibrated} />
+        <span class="toggle-label highlight-homography">Kalibrasi 3D (Homography)</span>
+      </label>
+
+      {#if isPitchCalibrated}
+        <div class="homography-preset-box">
+          <div class="preset-title">Preset Kamera:</div>
+          <select
+            class="preset-select"
+            bind:value={activePresetKey}
+            onchange={() => {
+              if (CALIBRATION_PRESETS[activePresetKey]) {
+                calibrationPoints = { ...CALIBRATION_PRESETS[activePresetKey].points };
+              }
+            }}
+          >
+            {#each Object.entries(CALIBRATION_PRESETS) as [key, val]}
+              <option value={key}>{val.label}</option>
+            {/each}
+          </select>
+          <span class="preset-tip">Tarik 4 pin biru (TL, TR, BR, BL) di layar untuk menyamakan garis lapangan</span>
+        </div>
+      {/if}
 
       <div class="palette-divider"></div>
 
@@ -1314,6 +1429,13 @@
         onpointermove={handlePointerMove}
         onpointerup={handlePointerUp}
       ></canvas>
+
+      <!-- EXPORT NOTICE TOAST -->
+      {#if exportNotice}
+        <div class="export-notice-toast">
+          <span>{exportNotice}</span>
+        </div>
+      {/if}
 
       <!-- BROADCAST FREEZE-FRAME COUNTDOWN OVERLAY -->
       {#if isFreezeActive}
@@ -1693,6 +1815,33 @@
     color: #ffffff;
   }
 
+  .btn-export-direct {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: linear-gradient(135deg, #059669, #047857);
+    color: #ffffff;
+    border: none;
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+    box-shadow: 0 0 10px rgba(16, 185, 129, 0.3);
+    transition: all 0.2s;
+  }
+
+  .btn-export-direct:hover:not(:disabled) {
+    background: linear-gradient(135deg, #047857, #065f46);
+    box-shadow: 0 0 16px rgba(16, 185, 129, 0.5);
+    transform: translateY(-1px);
+  }
+
+  .btn-export-direct:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
   .btn-save-next {
     display: flex;
     align-items: center;
@@ -1801,6 +1950,68 @@
   .toggle-label.highlight-kf {
     color: #f59e0b;
     font-weight: 700;
+  }
+
+  .toggle-label.highlight-homography {
+    color: #38bdf8;
+    font-weight: 700;
+  }
+
+  .homography-preset-box {
+    background: #07101e;
+    border: 1px solid #1a355d;
+    border-radius: 6px;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 2px;
+  }
+
+  .preset-title {
+    font-size: 9px;
+    font-weight: 700;
+    color: #93c5fd;
+    text-transform: uppercase;
+  }
+
+  .preset-select {
+    background: #0b172a;
+    border: 1px solid #1e3b68;
+    color: #f8fafc;
+    font-size: 10px;
+    padding: 4px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+
+  .preset-tip {
+    font-size: 9px;
+    color: #64748b;
+    line-height: 1.3;
+  }
+
+  .export-notice-toast {
+    position: absolute;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(15, 23, 42, 0.95);
+    border: 1px solid #38bdf8;
+    box-shadow: 0 0 20px rgba(56, 189, 248, 0.4);
+    color: #38bdf8;
+    font-size: 12px;
+    font-weight: 700;
+    padding: 8px 18px;
+    border-radius: 8px;
+    z-index: 30;
+    pointer-events: none;
+    animation: fadeInToast 0.2s ease-out;
+  }
+
+  @keyframes fadeInToast {
+    from { opacity: 0; transform: translate(-50%, 10px); }
+    to { opacity: 1; transform: translate(-50%, 0); }
   }
 
   .btn-ai {

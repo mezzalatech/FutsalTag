@@ -1,52 +1,66 @@
-# FutsalTag (Teleslator) ⚽
+# FutsalTag Pro ⚽
 
-**Aplikasi Analisis Video Pertandingan Futsal, Telestrasi AI TV Broadcast & Papan Taktik Interaktif (Desktop macOS & Windows)**
+**Aplikasi Analisis Video Pertandingan Futsal Modern, Telestrasi AI TV Broadcast & Papan Taktik Interaktif (Desktop macOS & Windows)**
 
-FutsalTag (Teleslator) dirancang khusus untuk pelatih, analis performa, dan staf teknis futsal modern dengan mengadopsi dan menyempurnakan alur kerja (*workflow*) perangkat lunak analisis kelas dunia seperti Once Sport, KlipDraw, dan Nacsport.
-
----
-
-## 🚀 Fitur Utama
-
-### 1. Alur Kerja Terpandu 4 Tahap (Once Sport Professional Workflow)
-- **Tahap 1: Hub Proyek (Project Hub)**
-  - Tiga jalur alur instan: *Analisis Pertandingan Penuh (Full Match)*, *Studio Telestrasi Singkat (Quick Clip)*, dan *Papan Taktik 2D*.
-  - Tanpa konfigurasi database yang rumit; cukup seret video atau pilih sampel demo.
-- **Tahap 2: Layar Pemotongan & Tagging Aksi (Match Tagging & Trimming)**
-  - Tampilan video bersih tanpa gangguan alat gambar agar analis fokus menonton laga.
-  - **Futsal Code Buttons Panel**: Tombol aksi taktis futsal (Gol, Tembakan On-Target, High Pressing, Counter Attack, Kick-in, Corner, GK Save, Transisi).
-  - **Auto Pre/Post-Roll (Lead & Lag Time)**: Sekali klik tombol aksi atau tekan angka `1`–`8` / `Spasi`, klip otomatis terpotong mundur 5 detik dan maju 3 detik.
-  - **Matriks Silang Statistik Interaktif (Cross-Tabulation)**: Tabel rekap aksi vs pemain dengan kemampuan memutar klip otomatis saat angka diklik.
-- **Tahap 3: Studio Telestrasi Terdedikasi (Telestration & AI Tracking)**
-  - Video otomatis membeku (*freeze-frame*) pada detik krusial aksi.
-  - **Alat Gambar Taktis Profesional**: 3D Spotlight dengan pendar di lantai lapangan futsal, Lingkaran Pemain, Radar Vision Cone (FOV), Panah Operan & Dribble, dan Garis Jarak Meter.
-  - **AI Multi-Player MOT**: Deteksi pergerakan 10 pemain sekaligus dan perhitungan garis kerapatan tim (*Team Compactness Convex Hull*).
-  - **Pause Duration Slider**: Menentukan berapa detik video berhenti saat grafis telestrasi ditampilkan (default 3 detik).
-  - **Fitur Unggulan**: Tombol *Simpan & Lanjut ke Klip Berikutnya* untuk menggambar maraton tanpa bolak-balik.
-- **Tahap 4: Pengorganisasian Playlist & Pusat Ekspor (Playlist & Export Hub)**
-  - **Mode Presentasi Siaran TV (TV Broadcast Sequencer)**: Memutar seluruh klip secara berurutan dengan jeda freeze-frame untuk rapat analisis di ruang ganti.
-  - **3 Mode Ekspor FFmpeg**:
-    1. *Gabung Jadi 1 Video Utuh (Merge All MP4)*.
-    2. *Ekspor Klip Terpisah di 1 Folder*.
-    3. *Kelompokkan ke Subfolder Kategori (Gol/, Set_Piece/, dll)*.
-  - Ekspor lembar statistik CSV & PDF.
-
-### 2. Papan Taktik Futsal 2D (FIFA Standard 40m x 20m)
-- Geometri lapangan futsal resmi FIFA lengkap dengan titik penalti 6m dan second penalty 10m.
-- 4 pilihan permukaan lapangan: *Parket Kayu Liga Pro, Vinyl Biru FIFA World Cup, Rumput Sintetis, Dark Slate*.
-- Preset taktik futsal standar: *Rotasi 3-1 Pivot, 4-0 Flat, Power Play 5v4, dan Pressing Diamond*.
-- Animasi multi-step dan ekspor lembar taktik beresolusi tinggi ke format PDF & PNG.
+FutsalTag Pro dirancang khusus untuk pelatih futsal, analis taktik, dan staf kepelatihan modern dengan menggabungkan kecepatan alur kerja **Momen Sports**, kekuatan telestrasi tingkat tinggi **Once Sport Pro**, serta fitur-fitur inovatif yang melebihi kedua software referensi tersebut.
 
 ---
 
-## 🛠️ Teknologi & Arsitektur
+## 🌟 Fitur Unggulan (Killer Features)
 
-- **Desktop Framework:** [Tauri v2](https://v2.tauri.app/) (Rust backend native, ringan, cross-platform macOS & Windows)
+### 1. 📺 Halftime Locker-Room Chalkboard Mode
+- **Mode Teater Jeda Babak**: Tampilan layar penuh tanpa distraksi menu untuk ruang ganti saat jeda 10–15 menit.
+- **Auto-Pause on Touch / Stylus Drawing**: Video otomatis membeku saat jari atau pena menyentuh layar untuk menggambar taktik kilat, dan otomatis lanjut berputar setelah selesai.
+- **Dukungan Audio & Countdown**: Menjaga efisiensi waktu pelatih dalam memberikan instruksi langsung kepada pemain.
+
+### 2. 🎙️ Coach Voiceover Audio Recording (Studio Telestrasi)
+- **Rekaman Suara Pelatih**: Pelatih dapat merekam suara instruksi taktis langsung dari mikrofon laptop/PC saat meninjau klip telestrasi.
+- **Native FFmpeg Audio Mixing**: Rekaman suara secara otomatis di-mix dengan audio asli pertandingan menggunakan filter `amix` FFmpeg saat klip diekspor ke format `.mp4`.
+
+### 3. 🔥 Futsal Heatmap & Passing Network Matrix (FIFA 40m x 20m)
+- **Peta Panas Densitas (Heatmap)**: Menggunakan gradien panas radial untuk mengidentifikasi zona dominasi pemain di lapangan futsal standar ($40\text{m} \times 20\text{m}$).
+- **Passing Network 5v5**: Visualisasi grafis hubungan operan antar 5 pemain futsal (Kiper, Anchor, Flank Kiri, Flank Kanan, Pivot) dengan ketebalan koneksi dinamis sesuai frekuensi sirkulasi bola.
+- **Filter Fleksibel**: Dapat disaring berdasarkan pemain maupun kategori aksi (Gol, Transisi, Pressing, Set-Piece).
+
+### 4. 💬 WhatsApp Individual Player Clip Exporter
+- **Kompilasi Klip Otomatis Khusus per Pemain**: Memfilter seluruh klip aksi yang melibatkan pemain tertentu (misal: `#7 Flank Kiri`).
+- **Optimalisasi WhatsApp**: Menggunakan preset FFmpeg 720p `-crf 26` dengan ukuran file sangat ringan (< 15 MB) sehingga siap dikirim langsung via WhatsApp tanpa melebihi batas upload media.
+
+---
+
+## 🎨 Studio Telestrasi (100% Parity Once Sport)
+
+- **3D Spotlight Futsal**: Sorotan elips 3D dengan pendar cahaya di lantai lapangan.
+- **Curved Arrow (Panah Lengkung)**: Visualisasi operan melengkung / pisang dengan pengatur lengkungan Bézier.
+- **Lensa Pembesar (Magnifier 1.2x–3.0x)**: Kaca pembesar detail kontrol bola, duel kaki, atau pelanggaran langsung dari frame video.
+- **Silang Taktik (Player Cross)**: Penanda kesalahan posisi atau kelalaian rotasi taktik pemain.
+- **AI Multi-Player MOT (Multi-Object Tracking)**: Pelacakan otomatis 10 pemain sekaligus.
+- **Convex Hull (Kerapatan Formasi)**: Poligon area kompak tim dengan kalkulasi luas meter persegi ($m^2$).
+- **Radar Visi Pemain (Vision Cone / FOV)**: Jangkauan pandangan pemain saat mengambil keputusan.
+- **AI Homography 3D Court Calibration**: Menggunakan Direct Linear Transformation (DLT) untuk memetakan koordinat kamera ke ukuran lapangan futsal resmi ($40\text{m} \times 20\text{m}$) dengan preset tribun samping, sudut, dan gawang.
+- **Broadcast Freeze-Frame Preview HUD**: Countdown melingkar on-air dengan tombol skip freeze real-time.
+
+---
+
+## ⚡ Alur Kerja Utama (Workflow)
+
+1. **Hub Proyek (Project Hub)**: Buka video pertandingan atau berkas proyek `.futsal`.
+2. **Tagging & Klip (Match Tagging)**: Panel tombol aksi futsal instan dengan lead/lag time otomatis dan keyboard shortcuts (`1`–`8`).
+3. **Studio Telestrasi**: Telestrasi interaktif dengan keyframe tracking dan pembakaran langsung (*video burner*).
+4. **Playlist & Ekspor**: Pengorganisasian klip, sequencer presentasi siaran TV, dan ekspor gabungan / terpisah.
+5. **Papan Taktik Futsal 2D**: Papan strategi digital dengan 4 pilihan permukaan lapangan futsal resmi FIFA.
+
+---
+
+## 🛠️ Tech Stack & Arsitektur
+
+- **Desktop Framework:** [Tauri v2](https://v2.tauri.app/) (Rust backend native, sangat ringan & aman)
 - **Frontend Framework:** [Svelte 5](https://svelte.dev/) (Svelte Runes `$state`, `$derived`, `$effect`)
-- **Language:** TypeScript & Rust
-- **Build Tool:** Vite 8
-- **Package Manager & Runtime:** [Bun](https://bun.sh/)
-- **Media Engine:** Native HTML5 Video + Skia/Canvas 2D + FFmpeg Bridge
+- **Bahasa:** TypeScript & Rust
+- **Runtime & Package Manager:** [Bun](https://bun.sh/)
+- **Bundler:** Vite 8
+- **Media Engine:** Native HTML5 Video + Canvas 2D + FFmpeg CLI Bridge
+- **Penyimpanan:** Single-File Project `.futsal` (JSON-based) portable tanpa setup database server.
 
 ---
 
@@ -55,23 +69,23 @@ FutsalTag (Teleslator) dirancang khusus untuk pelatih, analis performa, dan staf
 ### Prasyarat
 1. [Bun](https://bun.sh/)
 2. [Rust & Cargo](https://rustup.rs/)
+3. [FFmpeg](https://ffmpeg.org/) (tersedia di PATH sistem)
 
-### Langkah Menjalankan (Mode Development)
+### Mode Development
 ```bash
 # 1. Kloning repositori
 git clone https://github.com/mezzalatech/FutsalTag.git
 cd FutsalTag
 
-# 2. Instal dependensi frontend
+# 2. Instal dependensi
 bun install
 
-# 3. Jalankan aplikasi desktop Tauri
+# 3. Jalankan aplikasi desktop
 bun run tauri dev
 ```
 
-### Build Executable Desktop (Production)
+### Build Production Desktop (.exe / .msi)
 ```bash
-# Build binary installer untuk Windows (.msi/.exe) atau macOS (.dmg/.app)
 bun run tauri build
 ```
 

@@ -649,7 +649,7 @@
     height: 100%;
     display: flex;
     flex-direction: column;
-    background-color: #0b0f19;
+    background-color: #060b14;
     color: #f8fafc;
     overflow: hidden;
   }
@@ -657,8 +657,8 @@
   /* HEADER */
   .studio-header {
     height: 48px;
-    background-color: #0f172a;
-    border-bottom: 1px solid #1e293b;
+    background: linear-gradient(180deg, #0d1e38 0%, #091528 100%);
+    border-bottom: 1px solid #1a355d;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -676,19 +676,21 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    background: transparent;
-    border: 1px solid #334155;
-    color: #94a3b8;
+    background: rgba(14, 30, 56, 0.6);
+    border: 1px solid #1a355d;
+    color: #93c5fd;
     padding: 6px 12px;
     border-radius: 6px;
     font-size: 11px;
     font-weight: 600;
     cursor: pointer;
+    transition: all 0.15s;
   }
 
   .btn-back:hover {
-    color: #f8fafc;
-    border-color: #64748b;
+    color: #ffffff;
+    border-color: #38bdf8;
+    background: rgba(56, 189, 248, 0.12);
   }
 
   .clip-badge-info {
@@ -715,6 +717,7 @@
     font-family: monospace;
     font-size: 11px;
     color: #38bdf8;
+    font-weight: 700;
   }
 
   .header-right {
@@ -728,35 +731,39 @@
     align-items: center;
     gap: 6px;
     background: transparent;
-    border: 1px solid #334155;
+    border: 1px solid #7f1d1d;
     color: #ef4444;
     padding: 6px 12px;
     border-radius: 6px;
     font-size: 11px;
     font-weight: 600;
     cursor: pointer;
+    transition: all 0.15s;
   }
 
   .btn-clear:hover {
-    background-color: rgba(239, 68, 68, 0.1);
+    background-color: rgba(239, 68, 68, 0.15);
   }
 
   .btn-save {
     display: flex;
     align-items: center;
     gap: 6px;
-    background-color: #1e293b;
-    border: 1px solid #334155;
-    color: #f8fafc;
+    background-color: #0d1e38;
+    border: 1px solid #1a355d;
+    color: #93c5fd;
     padding: 6px 14px;
     border-radius: 6px;
     font-size: 11px;
     font-weight: 700;
     cursor: pointer;
+    transition: all 0.15s;
   }
 
   .btn-save:hover {
-    background-color: #334155;
+    background-color: #142a4d;
+    border-color: #38bdf8;
+    color: #ffffff;
   }
 
   .btn-save-next {
@@ -771,10 +778,14 @@
     font-size: 11px;
     font-weight: 700;
     cursor: pointer;
+    box-shadow: 0 0 12px rgba(56, 189, 248, 0.35);
+    transition: all 0.2s;
   }
 
   .btn-save-next:hover {
     background: linear-gradient(135deg, #0369a1, #1d4ed8);
+    box-shadow: 0 0 18px rgba(56, 189, 248, 0.55);
+    transform: translateY(-1px);
   }
 
   /* STUDIO BODY */
@@ -788,8 +799,8 @@
   /* TOOLS SIDEBAR */
   .tools-sidebar {
     width: 220px;
-    background-color: #0f172a;
-    border-right: 1px solid #1e293b;
+    background: linear-gradient(180deg, #0b172a 0%, #07101e 100%);
+    border-right: 1px solid #1a355d;
     padding: 12px;
     display: flex;
     flex-direction: column;
@@ -802,7 +813,7 @@
     font-size: 9px;
     font-weight: 800;
     letter-spacing: 0.08em;
-    color: #64748b;
+    color: #93c5fd;
     margin-bottom: 2px;
   }
 
@@ -816,8 +827,8 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    background-color: #1e293b;
-    border: 1px solid #334155;
+    background-color: #0c1a33;
+    border: 1px solid #1b365f;
     color: #cbd5e1;
     padding: 8px 12px;
     border-radius: 6px;
@@ -829,30 +840,33 @@
   }
 
   .tool-btn:hover {
-    background-color: #273549;
-    color: #f8fafc;
+    background-color: #142a4d;
+    color: #ffffff;
+    border-color: #38bdf8;
   }
 
   .tool-btn.active {
-    background: linear-gradient(135deg, rgba(2, 132, 199, 0.3), rgba(37, 99, 235, 0.4));
+    background: linear-gradient(135deg, rgba(2, 132, 199, 0.35), rgba(37, 99, 235, 0.45));
     border-color: #38bdf8;
     color: #38bdf8;
+    box-shadow: 0 0 10px rgba(56, 189, 248, 0.25);
   }
 
   .btn-ai {
-    background: linear-gradient(135deg, rgba(16, 185, 129, 0.15), rgba(6, 78, 59, 0.3));
-    border-color: rgba(16, 185, 129, 0.3);
+    background: linear-gradient(135deg, rgba(16, 185, 129, 0.15), rgba(6, 78, 59, 0.35));
+    border-color: rgba(16, 185, 129, 0.4);
     color: #34d399;
   }
 
   .btn-ai:hover {
-    background: linear-gradient(135deg, rgba(16, 185, 129, 0.25), rgba(6, 78, 59, 0.4));
+    background: linear-gradient(135deg, rgba(16, 185, 129, 0.25), rgba(6, 78, 59, 0.45));
     border-color: #10b981;
+    color: #ffffff;
   }
 
   .palette-divider {
     height: 1px;
-    background-color: #1e293b;
+    background-color: #1a355d;
     margin: 4px 0;
   }
 
@@ -883,7 +897,7 @@
   .canvas-viewer-container {
     flex: 1;
     position: relative;
-    background-color: #000000;
+    background-color: #02050a;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -899,7 +913,7 @@
   .mock-court-video {
     width: 100%;
     height: 100%;
-    background: radial-gradient(circle at center, #1e3a5f 0%, #0b192c 80%);
+    background: radial-gradient(circle at center, #0f2444 0%, #060b14 80%);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -914,6 +928,7 @@
 
   .mock-tag-overlay h3 {
     font-size: 16px;
+    font-weight: 700;
     color: #38bdf8;
     margin: 0 0 6px 0;
   }
@@ -938,8 +953,8 @@
   /* FOOTER */
   .studio-footer {
     height: 52px;
-    background-color: #0f172a;
-    border-top: 1px solid #1e293b;
+    background: linear-gradient(180deg, #091528 0%, #0d1e38 100%);
+    border-top: 1px solid #1a355d;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -964,6 +979,7 @@
     font-size: 12px;
     font-weight: 700;
     cursor: pointer;
+    box-shadow: 0 0 12px rgba(16, 185, 129, 0.35);
   }
 
   .btn-preview:hover {
@@ -979,8 +995,8 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    background-color: #1e293b;
-    border: 1px solid #334155;
+    background-color: #0c1a33;
+    border: 1px solid #1e3b68;
     padding: 6px 14px;
     border-radius: 8px;
     color: #38bdf8;

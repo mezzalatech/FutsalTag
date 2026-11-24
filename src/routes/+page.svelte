@@ -131,8 +131,8 @@
     width: 100%;
     height: 100%;
     overflow: hidden;
-    background-color: #0b0f19;
-    font-family: Inter, system-ui, -apple-system, sans-serif;
+    background-color: #060b14;
+    font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   }
 
   .app-container {
@@ -141,18 +141,22 @@
     width: 100vw;
     height: 100vh;
     overflow: hidden;
-    background-color: #0b0f19;
+    background-color: #060b14;
+    background-image: 
+      radial-gradient(ellipse 80% 50% at 50% -20%, rgba(14, 165, 233, 0.08), transparent 70%),
+      radial-gradient(ellipse 50% 50% at 90% 100%, rgba(37, 99, 235, 0.05), transparent 70%);
   }
 
-  /* HEADER */
+  /* HEADER (DEEP SAPPHIRE BROADCAST) */
   .app-header {
-    height: 48px;
-    background-color: #0f172a;
-    border-bottom: 1px solid #1e293b;
+    height: 50px;
+    background: linear-gradient(180deg, #0b172a 0%, #070e1c 100%);
+    border-bottom: 1px solid #1a355d;
+    box-shadow: 0 4px 20px -2px rgba(2, 6, 23, 0.8);
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0 16px;
+    padding: 0 18px;
     box-sizing: border-box;
     z-index: 50;
     flex-shrink: 0;
@@ -161,12 +165,18 @@
   .brand {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
     user-select: none;
+    transition: opacity 0.15s;
+  }
+
+  .brand:hover {
+    opacity: 0.9;
   }
 
   .brand-icon {
     font-size: 20px;
+    filter: drop-shadow(0 0 8px rgba(56, 189, 248, 0.5));
   }
 
   .brand-text {
@@ -177,27 +187,30 @@
   .brand-title {
     font-size: 13px;
     font-weight: 900;
-    letter-spacing: 0.1em;
+    letter-spacing: 0.12em;
     color: #38bdf8;
     line-height: 1.1;
+    text-shadow: 0 0 12px rgba(56, 189, 248, 0.4);
   }
 
   .brand-sub {
     font-size: 8px;
     font-weight: 700;
-    letter-spacing: 0.05em;
-    color: #64748b;
+    letter-spacing: 0.08em;
+    color: #7dd3fc;
+    opacity: 0.7;
   }
 
   /* WORKFLOW STEPPER */
   .workflow-stepper {
     display: flex;
     align-items: center;
-    gap: 2px;
-    background-color: #1e293b;
+    gap: 3px;
+    background-color: #0b1528;
     padding: 3px 6px;
     border-radius: 8px;
-    border: 1px solid #334155;
+    border: 1px solid #1a355d;
+    box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.4);
   }
 
   .step-btn {
@@ -205,47 +218,52 @@
     align-items: center;
     gap: 6px;
     background: transparent;
-    border: none;
+    border: 1px solid transparent;
     color: #94a3b8;
-    padding: 5px 10px;
+    padding: 6px 12px;
     border-radius: 6px;
     font-size: 11px;
     font-weight: 600;
     cursor: pointer;
-    transition: all 0.15s;
+    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
     user-select: none;
   }
 
   .step-btn:hover {
-    color: #f8fafc;
-    background-color: rgba(255, 255, 255, 0.05);
+    color: #e2e8f0;
+    background-color: rgba(56, 189, 248, 0.08);
   }
 
   .step-btn.active {
-    background: linear-gradient(135deg, rgba(2, 132, 199, 0.3), rgba(37, 99, 235, 0.4));
-    border: 1px solid rgba(56, 189, 248, 0.4);
-    color: #38bdf8;
+    background: linear-gradient(135deg, rgba(2, 132, 199, 0.35), rgba(37, 99, 235, 0.45));
+    border: 1px solid #38bdf8;
+    color: #ffffff;
+    box-shadow: 0 0 14px rgba(56, 189, 248, 0.3);
   }
 
   .step-num {
     width: 16px;
     height: 16px;
     border-radius: 50%;
-    background-color: #0f172a;
+    background-color: #060b14;
+    border: 1px solid #1a355d;
     display: flex;
     align-items: center;
     justify-content: center;
     font-size: 9px;
     font-weight: 800;
+    color: #94a3b8;
   }
 
   .step-btn.active .step-num {
     background-color: #38bdf8;
-    color: #0f172a;
+    border-color: #38bdf8;
+    color: #060b14;
+    box-shadow: 0 0 8px rgba(56, 189, 248, 0.6);
   }
 
   .step-separator {
-    color: #475569;
+    color: #1a355d;
     display: flex;
     align-items: center;
   }
@@ -253,7 +271,7 @@
   .stepper-mode-divider {
     width: 1px;
     height: 18px;
-    background-color: #475569;
+    background-color: #1a355d;
     margin: 0 4px;
   }
 
@@ -261,10 +279,16 @@
     color: #34d399;
   }
 
+  .coachboard-tab:hover {
+    color: #6ee7b7;
+    background-color: rgba(16, 185, 129, 0.08);
+  }
+
   .coachboard-tab.active {
-    background: linear-gradient(135deg, rgba(16, 185, 129, 0.25), rgba(6, 78, 59, 0.4));
-    border-color: rgba(16, 185, 129, 0.4);
-    color: #34d399;
+    background: linear-gradient(135deg, rgba(16, 185, 129, 0.3), rgba(6, 78, 59, 0.5));
+    border-color: #34d399;
+    color: #ffffff;
+    box-shadow: 0 0 14px rgba(52, 211, 153, 0.3);
   }
 
   /* BADGES */
@@ -280,18 +304,19 @@
     color: #38bdf8;
     background-color: rgba(56, 189, 248, 0.1);
     border: 1px solid rgba(56, 189, 248, 0.3);
-    padding: 3px 8px;
-    border-radius: 4px;
+    padding: 4px 9px;
+    border-radius: 5px;
+    letter-spacing: 0.04em;
   }
 
   .badge-version {
     font-size: 9px;
     font-weight: 700;
-    color: #94a3b8;
-    background-color: #1e293b;
-    border: 1px solid #334155;
-    padding: 3px 6px;
-    border-radius: 4px;
+    color: #93c5fd;
+    background-color: #0d1e38;
+    border: 1px solid #1a355d;
+    padding: 4px 8px;
+    border-radius: 5px;
   }
 
   /* WORKSPACE */
@@ -299,5 +324,6 @@
     flex: 1;
     overflow: hidden;
     position: relative;
+    background-color: #060b14;
   }
 </style>

@@ -5,6 +5,9 @@
   import TelestrationStudio from '$lib/components/TelestrationStudio.svelte';
   import PlaylistExportHub from '$lib/components/PlaylistExportHub.svelte';
   import TacticalBoard from '$lib/components/TacticalBoard.svelte';
+  import LockerRoomChalkboardModal from '$lib/components/LockerRoomChalkboardModal.svelte';
+  import FutsalHeatmapModal from '$lib/components/FutsalHeatmapModal.svelte';
+  import WhatsAppPlayerExporterModal from '$lib/components/WhatsAppPlayerExporterModal.svelte';
   import {
     FolderOpen,
     Scissors,
@@ -13,7 +16,14 @@
     LayoutGrid,
     ChevronRight,
     Save,
+    Tv,
+    Flame,
+    MessageCircle,
   } from 'lucide-svelte';
+
+  let isChalkboardOpen = $state(false);
+  let isHeatmapOpen = $state(false);
+  let isWhatsAppOpen = $state(false);
 
   function handleOpenProjectFile(event: Event) {
     const input = event.target as HTMLInputElement;
@@ -139,6 +149,36 @@
       </button>
     </nav>
 
+    <!-- KILLER PRO TOOLS BAR -->
+    <div class="pro-tools-bar">
+      <button
+        class="btn-pro-tool btn-chalkboard"
+        onclick={() => (isChalkboardOpen = true)}
+        title="Buka Ruang Ganti Chalkboard (Auto-Pause Layar Sentuh & Telestrasi Kilat)"
+      >
+        <Tv size={13} />
+        <span>Ruang Ganti</span>
+      </button>
+
+      <button
+        class="btn-pro-tool btn-heatmap"
+        onclick={() => (isHeatmapOpen = true)}
+        title="Peta Panas Densitas & Jaringan Operan Antar Pemain 5v5"
+      >
+        <Flame size={13} />
+        <span>Heatmap & Umpan</span>
+      </button>
+
+      <button
+        class="btn-pro-tool btn-whatsapp"
+        onclick={() => (isWhatsAppOpen = true)}
+        title="Ekspor Paket Klip Evaluasi Pemain Ringan untuk WhatsApp (<15MB)"
+      >
+        <MessageCircle size={13} />
+        <span>Paket WA</span>
+      </button>
+    </div>
+
     <!-- RIGHT BADGES & PROJECT FILE IO -->
     <div class="header-badges">
       <label class="btn-header-io" title="Buka Berkas Proyek Futsal (.futsal)">
@@ -177,6 +217,22 @@
       <TacticalBoard />
     {/if}
   </main>
+
+  <!-- MODAL DIALOGS FOR KILLER FEATURES -->
+  <LockerRoomChalkboardModal
+    isOpen={isChalkboardOpen}
+    onClose={() => (isChalkboardOpen = false)}
+  />
+
+  <FutsalHeatmapModal
+    isOpen={isHeatmapOpen}
+    onClose={() => (isHeatmapOpen = false)}
+  />
+
+  <WhatsAppPlayerExporterModal
+    isOpen={isWhatsAppOpen}
+    onClose={() => (isWhatsAppOpen = false)}
+  />
 </div>
 
 <style>
@@ -498,6 +554,67 @@
     border: 1px solid #1a355d;
     padding: 4px 8px;
     border-radius: 5px;
+  }
+
+  /* PRO TOOLS BAR */
+  .pro-tools-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+    margin-right: 12px;
+  }
+
+  .btn-pro-tool {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 11px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    border: 1px solid transparent;
+  }
+
+  .btn-chalkboard {
+    background: rgba(14, 165, 233, 0.12);
+    border-color: rgba(56, 189, 248, 0.35);
+    color: #38bdf8;
+  }
+
+  .btn-chalkboard:hover {
+    background: rgba(14, 165, 233, 0.25);
+    border-color: #38bdf8;
+    box-shadow: 0 0 12px rgba(56, 189, 248, 0.35);
+    transform: translateY(-1px);
+  }
+
+  .btn-heatmap {
+    background: rgba(249, 115, 22, 0.12);
+    border-color: rgba(251, 146, 60, 0.35);
+    color: #fb923c;
+  }
+
+  .btn-heatmap:hover {
+    background: rgba(249, 115, 22, 0.25);
+    border-color: #f97316;
+    box-shadow: 0 0 12px rgba(249, 115, 22, 0.35);
+    transform: translateY(-1px);
+  }
+
+  .btn-whatsapp {
+    background: rgba(16, 185, 129, 0.12);
+    border-color: rgba(52, 211, 153, 0.35);
+    color: #34d399;
+  }
+
+  .btn-whatsapp:hover {
+    background: rgba(16, 185, 129, 0.25);
+    border-color: #10b981;
+    box-shadow: 0 0 12px rgba(16, 185, 129, 0.35);
+    transform: translateY(-1px);
   }
 
   /* WORKSPACE */

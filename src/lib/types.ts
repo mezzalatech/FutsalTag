@@ -154,9 +154,11 @@ export interface VideoTagEvent {
   drawings?: DrawingElement[];
   pauseDuration?: number; // duration to freeze keyframe during playback / export (default: 3s)
   freezeTimestamp?: number; // frame timestamp where drawings apply
+  voiceoverAudioBase64?: string; // Recorded coach audio instructions (WebM/WAV)
+  courtCoord?: Point2D; // Tactical pitch location (0..40m, 0..20m) for heatmap
 }
 
-export type WorkflowStage = 'hub' | 'tagging' | 'telestrator' | 'playlist_export' | 'coachboard';
+export type WorkflowStage = 'hub' | 'tagging' | 'telestrator' | 'playlist_export' | 'coachboard' | 'chalkboard';
 
 export interface ActionPlaylistItem {
   id: string;

@@ -134,6 +134,7 @@ fn burn_telestration_clip_ffmpeg(
     freeze_sec: f64,
     pause_duration: f64,
     overlay_base64: Option<String>,
+    voiceover_base64: Option<String>,
 ) -> Result<String, String> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -141,7 +142,25 @@ fn burn_telestration_clip_ffmpeg(
         .as_millis();
     let temp_dir = std::env::temp_dir();
 
-    // 1. If overlay base64 is provided, decode and save as temporary PNG
+    // 1. If voiceover base64 is provided, decode and save as temporary audio
+    let voiceover_path = if let Some(vo) = voiceover_base64 {
+        let clean_vo = if let Some(idx) = vo.find("base64,") {
+            &vo[idx + 7..]
+        } else {
+            &vo
+        };
+        if let Ok(decoded_audio) = BASE64_STANDARD.decode(clean_vo.trim()) {
+            let p = temp_dir.join(format!("futsaltag_vo_{}.webm", now));
+            let _ = fs::write(&p, decoded_audio);
+            Some(p)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // 2. If overlay base64 is provided, decode and save as temporary PNG
     let overlay_path = if let Some(b64) = overlay_base64 {
         let clean_b64 = if let Some(idx) = b64.find("base64,") {
             &b64[idx + 7..]
@@ -339,7 +358,65 @@ fn burn_telestration_clip_ffmpeg(
         let _ = fs::remove_file(p);
     }
 
+    // If voiceover audio was provided, mix with final output
+    if let Some(ref vp) = voiceover_path {
+        let temp_mixed = temp_dir.join(format!("futsaltag_mixed_{}.mp4", now));
+        let mix_st = Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-i", &output_path,
+                "-i", vp.to_str().unwrap(),
+                "-filter_complex", "[0:a][1:a]amix=inputs=2:duration=first:weights=1.5 5[aout]",
+                "-map", "0:v",
+                "-map", "[aout]",
+                "-c:v", "copy",
+                "-c:a", "aac",
+                temp_mixed.to_str().unwrap(),
+            ])
+            .status();
+
+        if let Ok(st) = mix_st {
+            if st.success() {
+                let _ = fs::copy(&temp_mixed, &output_path);
+                let _ = fs::remove_file(&temp_mixed);
+            }
+        }
+        let _ = fs::remove_file(vp);
+    }
+
     Ok(format!("Berhasil mengekspor klip telestrasi broadcast ke: {}", output_path))
+}
+
+// Command to export compressed, lightweight clip optimized for WhatsApp sharing (720p @ crf 26)
+#[tauri::command]
+fn export_whatsapp_clip_ffmpeg(
+    input_path: String,
+    output_path: String,
+    start_sec: f64,
+    duration_sec: f64,
+) -> Result<String, String> {
+    let st = Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-ss", &format!("{:.3}", start_sec),
+            "-i", &input_path,
+            "-t", &format!("{:.3}", duration_sec),
+            "-vf", "scale=-2:720",
+            "-c:v", "libx264",
+            "-crf", "26",
+            "-preset", "faster",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            &output_path,
+        ])
+        .status()
+        .map_err(|e| format!("Gagal menjalankan FFmpeg WhatsApp export: {}", e))?;
+
+    if st.success() {
+        Ok(format!("Berhasil mengekspor klip WhatsApp ke {}", output_path))
+    } else {
+        Err("FFmpeg gagal merender klip WhatsApp".to_string())
+    }
 }
 
 // Command to save project file (.futsal JSON)
@@ -366,6 +443,7 @@ pub fn run() {
             render_video_clip_ffmpeg,
             concat_playlist_ffmpeg,
             burn_telestration_clip_ffmpeg,
+            export_whatsapp_clip_ffmpeg,
             save_project_file,
             load_project_file,
         ])

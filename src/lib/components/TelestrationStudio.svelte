@@ -22,6 +22,7 @@
     type PitchCalibrationPoints,
   } from '$lib/pitch/homographyCalibration';
   import { renderDrawingsToDataUrl } from '$lib/export/telestrationRenderer';
+  import VoiceoverRecorder from '$lib/components/VoiceoverRecorder.svelte';
   import {
     Sparkles,
     MoveRight,
@@ -104,6 +105,15 @@
   let selectedElement = $derived(
     drawings.find((d) => d.id === selectedElementId) || null
   );
+
+  // Feature 2: Coach Voiceover Audio State
+  let voiceoverAudio = $state<string | null>(null);
+
+  $effect(() => {
+    if (activeClip) {
+      voiceoverAudio = activeClip.voiceoverAudioBase64 || null;
+    }
+  });
 
   const TOOLS: { id: DrawingToolType; label: string; icon: any; desc: string }[] = [
     { id: 'select', label: 'Pilih & Edit (Select)', icon: MousePointer, desc: 'Pilih elemen, geser posisi atau atur kelengkungan' },
@@ -1168,15 +1178,16 @@
 
   function handleSave() {
     if (!activeClip) return;
-    projectStore.saveTelestration(activeClip.id, drawings, pauseDuration);
+    projectStore.saveTelestration(activeClip.id, drawings, pauseDuration, voiceoverAudio || undefined);
   }
 
   function handleSaveAndNext() {
     if (!activeClip) return;
-    projectStore.saveAndNextClip(activeClip.id, drawings, pauseDuration);
+    projectStore.saveAndNextClip(activeClip.id, drawings, pauseDuration, voiceoverAudio || undefined);
     if (projectStore.activeClipForDrawing) {
       drawings = projectStore.activeClipForDrawing.drawings ? JSON.parse(JSON.stringify(projectStore.activeClipForDrawing.drawings)) : [];
       pauseDuration = projectStore.activeClipForDrawing.pauseDuration || 3.0;
+      voiceoverAudio = projectStore.activeClipForDrawing.voiceoverAudioBase64 || null;
       if (videoEl) {
         videoEl.currentTime = projectStore.activeClipForDrawing.startTime;
       }
@@ -1242,6 +1253,7 @@
         freezeSec,
         pauseDuration: pauseDuration || 3.0,
         overlayBase64,
+        voiceoverBase64: voiceoverAudio || null,
       });
 
       exportNotice = `Klip berhasil diekspor: ${filename}`;
@@ -1488,6 +1500,27 @@
             <Trash2 size={13} />
           </button>
         {/if}
+      </div>
+
+      <!-- COACH VOICEOVER RECORDER -->
+      <div class="voiceover-drawer-card">
+        <VoiceoverRecorder
+          existingAudioBase64={voiceoverAudio || undefined}
+          onSaveVoiceover={(b64) => {
+            voiceoverAudio = b64;
+            if (activeClip) {
+              activeClip.voiceoverAudioBase64 = b64;
+              projectStore.updateTag({ ...activeClip, voiceoverAudioBase64: b64 });
+            }
+          }}
+          onClearVoiceover={() => {
+            voiceoverAudio = null;
+            if (activeClip) {
+              activeClip.voiceoverAudioBase64 = undefined;
+              projectStore.updateTag({ ...activeClip, voiceoverAudioBase64: undefined });
+            }
+          }}
+        />
       </div>
 
       <!-- SELECTED ELEMENT PROPERTIES -->
@@ -2212,6 +2245,10 @@
     gap: 10px;
     flex-shrink: 0;
     overflow-y: auto;
+  }
+
+  .voiceover-drawer-card {
+    margin-bottom: 2px;
   }
 
   .inspector-header {

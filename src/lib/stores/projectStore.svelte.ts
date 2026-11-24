@@ -189,17 +189,20 @@ class ProjectStore {
     this.stage = 'telestrator';
   }
 
-  saveTelestration(clipId: string, drawings: DrawingElement[], pauseDuration: number) {
+  saveTelestration(clipId: string, drawings: DrawingElement[], pauseDuration: number, voiceoverAudioBase64?: string) {
     const tag = this.tags.find((t) => t.id === clipId);
     if (tag) {
       tag.drawings = drawings;
       tag.pauseDuration = pauseDuration;
+      if (voiceoverAudioBase64 !== undefined) {
+        tag.voiceoverAudioBase64 = voiceoverAudioBase64;
+      }
       this.updateTag({ ...tag });
     }
   }
 
-  saveAndNextClip(clipId: string, drawings: DrawingElement[], pauseDuration: number) {
-    this.saveTelestration(clipId, drawings, pauseDuration);
+  saveAndNextClip(clipId: string, drawings: DrawingElement[], pauseDuration: number, voiceoverAudioBase64?: string) {
+    this.saveTelestration(clipId, drawings, pauseDuration, voiceoverAudioBase64);
     const currIdx = this.tags.findIndex((t) => t.id === clipId);
     if (currIdx !== -1 && currIdx + 1 < this.tags.length) {
       this.activeClipForDrawing = this.tags[currIdx + 1];

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { projectStore } from "$lib/stores/projectStore.svelte";
+  import { projectStore } from '$lib/stores/projectStore.svelte';
   import {
     Video,
     Sparkles,
@@ -12,26 +12,45 @@
     Award,
     Shield,
     Users,
-  } from "lucide-svelte";
+    Trophy,
+    CheckCircle2,
+    Calendar,
+  } from 'lucide-svelte';
 
-  let homeTeam = $state("Tim Kami (Futsal Pro)");
-  let awayTeam = $state("Tim Lawan");
-  let matchHalf = $state<"Babak 1" | "Babak 2" | "Full Time">("Babak 1");
+  let homeTeam = $state('Tim Kami (Futsal Pro)');
+  let awayTeam = $state('Tim Lawan');
+  let tournamentName = $state('Liga Futsal Profesional 2026');
+  let matchHalf = $state<'Babak 1' | 'Babak 2' | 'Full Time'>('Babak 1');
+  let homeColor = $state('#0284c7');
+  let awayColor = $state('#ef4444');
   let isDragging = $state(false);
+
+  const TEAM_COLORS = ['#0284c7', '#ef4444', '#10b981', '#f59e0b', '#ffffff', '#1e293b'];
 
   function handleFileUpload(event: Event) {
     const input = event.target as HTMLInputElement;
     if (input.files && input.files.length > 0) {
-      const file = input.files[0];
-      const url = URL.createObjectURL(file);
-      projectStore.loadVideo(
-        url,
-        file.name,
-        `${homeTeam} vs ${awayTeam} (${matchHalf})`,
-        180,
-      );
-      projectStore.setStage("tagging");
+      processSelectedFile(input.files[0]);
     }
+  }
+
+  function handleDrop(e: DragEvent) {
+    e.preventDefault();
+    isDragging = false;
+    if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      processSelectedFile(e.dataTransfer.files[0]);
+    }
+  }
+
+  function processSelectedFile(file: File) {
+    const url = URL.createObjectURL(file);
+    projectStore.loadVideo(
+      url,
+      file.name,
+      `${homeTeam} vs ${awayTeam} (${matchHalf})`,
+      180
+    );
+    projectStore.setStage('tagging');
   }
 
   function handleQuickClipUpload(event: Event) {
@@ -43,18 +62,17 @@
         url,
         file.name,
         `Klip Telestrasi: ${file.name}`,
-        30,
+        30
       );
 
-      // Auto-create a single master tag clip so telestrator can immediately draw on it
       const quickTag = {
         id: `quick-clip-${Date.now()}`,
-        title: `Telestrasi: ${file.name.replace(/\.[^/.]+$/, "")}`,
-        category: "Transition Attack" as const,
+        title: `Telestrasi: ${file.name.replace(/\.[^/.]+$/, '')}`,
+        category: 'Transition Attack' as const,
         startTime: 0,
         endTime: 30,
-        color: "#38bdf8",
-        playerLabel: "#9 Pivot",
+        color: '#38bdf8',
+        playerLabel: '#9 Pivot',
         pauseDuration: 3.0,
         drawings: [],
       };
@@ -72,66 +90,95 @@
   <!-- WELCOME HERO -->
   <div class="hero-section">
     <div class="hero-badge">
-      <Award size={14} />
-      <span>FUTSAL TACTICAL & VIDEO ANALYSIS PLATFORM</span>
+      <Award size={13} />
+      <span>MOMEN & ONCE SPORT BROADCAST WORKFLOW</span>
     </div>
     <h1 class="hero-title">
       Selamat Datang di <span class="highlight">TELESLATOR</span>
     </h1>
     <p class="hero-desc">
-      Aplikasi analisis video pertandingan, telestrasi AI berstandar siaran TV,
-      dan papan taktik profesional untuk pelatih dan analis futsal modern.
+      Platform analisis video futsal profesional, auto pre/post roll tagging, telestrasi siaran TV, dan papan taktik standar FIFA (40m x 20m).
     </p>
   </div>
 
   <!-- WORKFLOW ENTRY CARDS -->
   <div class="cards-grid">
-    <!-- CARD 1: FULL MATCH ANALYSIS -->
-    <div class="workflow-card primary-card">
+    <!-- CARD 1: FULL MATCH ANALYSIS (MOMEN SPORTS WORKSPACE) -->
+    <div
+      class="workflow-card primary-card"
+      class:dragover={isDragging}
+      ondragover={(e) => { e.preventDefault(); isDragging = true; }}
+      ondragleave={() => (isDragging = false)}
+      ondrop={handleDrop}
+      role="region"
+      aria-label="Upload Video Pertandingan"
+    >
       <div class="card-badge">TAHAP LENGKAP</div>
       <div class="card-icon-wrap icon-blue">
-        <Video size={28} />
+        <Video size={26} />
       </div>
       <h3 class="card-title">Analisis Pertandingan Penuh</h3>
       <p class="card-desc">
-        Impor video 1 babak atau 40 menit pertandingan futsal. Lakukan
-        pemotongan video terpandu (tagging) dengan auto pre/post roll, labeling
-        pemain, dan matriks silang taktis.
+        Impor video pertandingan futsal (1 babak / 40 menit). Lakukan pemotongan momen instan (tagging) dengan tombol aksi cepat, labeling pemain, dan matriks silang statistik.
       </p>
 
+      <!-- MATCH SETUP FORM -->
       <div class="match-meta-form">
-        <div class="form-row">
+        <!-- Tournament Name -->
+        <div class="form-row-sm">
+          <Trophy size={11} class="text-sky-400" />
           <input
             type="text"
-            class="input-meta"
-            placeholder="Tim Sendiri"
-            bind:value={homeTeam}
-          />
-          <span class="vs-text">VS</span>
-          <input
-            type="text"
-            class="input-meta"
-            placeholder="Tim Lawan"
-            bind:value={awayTeam}
+            class="input-meta-compact"
+            placeholder="Nama Turnamen / Latihan"
+            bind:value={tournamentName}
           />
         </div>
-        <div class="form-row half-select">
-          <label class="radio-label">
-            <input type="radio" bind:group={matchHalf} value="Babak 1" /> Babak 1
+
+        <!-- Teams row with jersey color pills -->
+        <div class="form-row teams-setup-row">
+          <div class="team-input-group">
+            <span class="color-dot" style="background-color: {homeColor}"></span>
+            <input
+              type="text"
+              class="input-meta"
+              placeholder="Tim Kandang"
+              bind:value={homeTeam}
+            />
+          </div>
+
+          <span class="vs-text">VS</span>
+
+          <div class="team-input-group">
+            <span class="color-dot" style="background-color: {awayColor}"></span>
+            <input
+              type="text"
+              class="input-meta"
+              placeholder="Tim Tandang"
+              bind:value={awayTeam}
+            />
+          </div>
+        </div>
+
+        <!-- Period selector -->
+        <div class="half-select">
+          <label class="radio-label" class:selected={matchHalf === 'Babak 1'}>
+            <input type="radio" bind:group={matchHalf} value="Babak 1" /> Babak 1 (20m)
           </label>
-          <label class="radio-label">
-            <input type="radio" bind:group={matchHalf} value="Babak 2" /> Babak 2
+          <label class="radio-label" class:selected={matchHalf === 'Babak 2'}>
+            <input type="radio" bind:group={matchHalf} value="Babak 2" /> Babak 2 (20m)
           </label>
-          <label class="radio-label">
-            <input type="radio" bind:group={matchHalf} value="Full Time" /> Full
+          <label class="radio-label" class:selected={matchHalf === 'Full Time'}>
+            <input type="radio" bind:group={matchHalf} value="Full Time" /> Penuh (40m)
           </label>
         </div>
       </div>
 
+      <!-- ACTIONS -->
       <div class="card-actions">
         <label class="btn-primary-action">
-          <Upload size={16} />
-          <span>Pilih Video Pertandingan</span>
+          <Upload size={15} />
+          <span>Pilih / Seret Video MP4</span>
           <input
             type="file"
             accept="video/*"
@@ -141,39 +188,40 @@
         </label>
         <button class="btn-sample-action" onclick={loadSampleMatch}>
           <PlayCircle size={14} />
-          <span>Gunakan Sampel Demo</span>
+          <span>Muat Sampel Demo (Pendekar United vs Blacksteel)</span>
         </button>
       </div>
     </div>
 
-    <!-- CARD 2: QUICK TELESTRATOR CLIP -->
+    <!-- CARD 2: QUICK TELESTRATOR CLIP (ONCE SPORT STYLE) -->
     <div class="workflow-card quick-card">
       <div class="card-badge badge-amber">MODE CEPAT</div>
       <div class="card-icon-wrap icon-amber">
-        <Sparkles size={28} />
+        <Sparkles size={26} />
       </div>
       <h3 class="card-title">Studio Telestrasi Singkat</h3>
       <p class="card-desc">
-        Miliki klip 10–60 detik dari rekaman kamera HP, TikTok, atau cuplikan
-        gol? Masuk langsung ke Studio Telestrasi untuk menggambar spotlight 3D,
-        vision cone, dan AI tracking.
+        Punya cuplikan 10–60 detik rekaman ponsel atau cuplikan gol? Langsung buka Studio Telestrasi untuk menggambar spotlight 3D, lingkaran pemain, dan radar visi.
       </p>
 
       <div class="quick-clip-features">
         <div class="feature-item">
-          ✓ Langsung menggambar tanpa setup tagging
+          <CheckCircle2 size={12} class="text-sky-400" />
+          <span>Langsung menggambar tanpa setup tagging</span>
         </div>
         <div class="feature-item">
-          ✓ Spotlight 3D & efek pendar lapangan futsal
+          <CheckCircle2 size={12} class="text-sky-400" />
+          <span>Spotlight 3D & efek pendar lapangan futsal</span>
         </div>
         <div class="feature-item">
-          ✓ AI Auto-tracking pemain & lintasan bola
+          <CheckCircle2 size={12} class="text-sky-400" />
+          <span>Freeze-frame slider & preset durasi jeda</span>
         </div>
       </div>
 
       <div class="card-actions">
         <label class="btn-amber-action">
-          <FolderOpen size={16} />
+          <FolderOpen size={15} />
           <span>Impor Klip & Langsung Gambar</span>
           <input
             type="file"
@@ -189,13 +237,11 @@
     <div class="workflow-card coach-card">
       <div class="card-badge badge-green">PAPAN TAKTIK</div>
       <div class="card-icon-wrap icon-green">
-        <LayoutGrid size={28} />
+        <LayoutGrid size={26} />
       </div>
-      <h3 class="card-title">Papan Taktik Futsal 2D</h3>
+      <h3 class="card-title">Papan Taktik Futsal (2D)</h3>
       <p class="card-desc">
-        Rancang pola strategi rotasi 3-1, 4-0 flat, power play 5v4, dan skema
-        bola mati (kick-in & corner) dengan animasi pergerakan pemain dan ekspor
-        PDF taktik.
+        Rancang simulasi rotasi 3-1, 4-0 flat, power play 5v4, dan skema bola mati (kick-in & corner) dengan animasi pergerakan pemain dan ekspor dokumen taktik PDF.
       </p>
 
       <div class="coach-presets-preview">
@@ -208,29 +254,37 @@
       <div class="card-actions">
         <button
           class="btn-green-action"
-          onclick={() => projectStore.setStage("coachboard")}
+          onclick={() => projectStore.setStage('coachboard')}
         >
-          <ArrowRight size={16} />
+          <ArrowRight size={15} />
           <span>Buka Papan Taktik (Coach Board)</span>
         </button>
       </div>
     </div>
   </div>
 
-  <!-- BOTTOM PROJECT RECENT INFO -->
+  <!-- RECENT PROJECTS BAR (MOMEN SPORTS STYLE) -->
   <div class="recent-projects-bar">
     <div class="recent-title">
-      <Clock size={16} />
-      <span>Alur Kerja Terpandu Once Sport Style:</span>
+      <Clock size={15} class="text-sky-400" />
+      <span>Proyek & Sampel Tersedia:</span>
     </div>
-    <div class="workflow-breadcrumbs">
-      <div class="crumb active">1. Hub Proyek</div>
-      <div class="crumb-arrow">→</div>
-      <div class="crumb">2. Layar Tagging & Klip</div>
-      <div class="crumb-arrow">→</div>
-      <div class="crumb">3. Studio Telestrasi (Draw)</div>
-      <div class="crumb-arrow">→</div>
-      <div class="crumb">4. Playlist & Ekspor Multi-Format</div>
+    <div class="recent-chips-row">
+      <button class="recent-chip" onclick={loadSampleMatch}>
+        <span class="chip-status">⚽ Sampel Demo</span>
+        <span class="chip-name">Pendekar United vs Blacksteel</span>
+        <span class="chip-meta">(Babak 1 • 3 Klip Taktis)</span>
+      </button>
+      <div class="workflow-breadcrumbs">
+        <span class="crumb-text">Alur 4 Tahap:</span>
+        <span class="crumb active">1. Hub</span>
+        <span class="crumb-arrow">→</span>
+        <span class="crumb">2. Tagging</span>
+        <span class="crumb-arrow">→</span>
+        <span class="crumb">3. Telestrasi</span>
+        <span class="crumb-arrow">→</span>
+        <span class="crumb">4. Playlist & Ekspor</span>
+      </div>
     </div>
   </div>
 </div>
@@ -241,19 +295,21 @@
     height: 100%;
     overflow-y: auto;
     background: radial-gradient(ellipse at 50% 15%, #0e2347 0%, #060b14 80%);
-    color: #f8fafc;
-    padding: 32px 48px;
+    color: #f0f6fc;
+    padding: 28px 40px;
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
     justify-content: space-between;
+    gap: 24px;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
   }
 
   /* HERO */
   .hero-section {
     text-align: center;
-    max-width: 820px;
-    margin: 0 auto 32px auto;
+    max-width: 800px;
+    margin: 0 auto;
   }
 
   .hero-badge {
@@ -263,20 +319,20 @@
     background: rgba(14, 165, 233, 0.15);
     color: #38bdf8;
     border: 1px solid rgba(56, 189, 248, 0.4);
-    padding: 5px 14px;
+    padding: 4px 14px;
     border-radius: 999px;
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 800;
     letter-spacing: 0.08em;
-    margin-bottom: 12px;
+    margin-bottom: 10px;
     box-shadow: 0 0 15px rgba(56, 189, 248, 0.2);
   }
 
   .hero-title {
-    font-size: 34px;
+    font-size: 32px;
     font-weight: 900;
     letter-spacing: -0.02em;
-    margin: 0 0 12px 0;
+    margin: 0 0 8px 0;
     color: #ffffff;
   }
 
@@ -288,7 +344,7 @@
   }
 
   .hero-desc {
-    font-size: 14px;
+    font-size: 13px;
     line-height: 1.6;
     color: #94a3b8;
     margin: 0;
@@ -298,8 +354,8 @@
   .cards-grid {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: 24px;
-    max-width: 1240px;
+    gap: 20px;
+    max-width: 1200px;
     width: 100%;
     margin: 0 auto;
   }
@@ -308,7 +364,7 @@
     background: linear-gradient(180deg, #0d1e38 0%, #071222 100%);
     border: 1px solid #1a355d;
     border-radius: 14px;
-    padding: 24px;
+    padding: 22px;
     display: flex;
     flex-direction: column;
     position: relative;
@@ -317,9 +373,15 @@
   }
 
   .workflow-card:hover {
-    transform: translateY(-5px);
+    transform: translateY(-4px);
     border-color: #38bdf8;
     box-shadow: 0 20px 35px -10px rgba(0, 0, 0, 0.8), 0 0 25px rgba(56, 189, 248, 0.25);
+  }
+
+  .workflow-card.dragover {
+    border-color: #10b981;
+    background: linear-gradient(180deg, #0f2d48 0%, #071526 100%);
+    box-shadow: 0 0 24px rgba(16, 185, 129, 0.4);
   }
 
   .card-badge {
@@ -349,13 +411,13 @@
   }
 
   .card-icon-wrap {
-    width: 52px;
-    height: 52px;
+    width: 48px;
+    height: 48px;
     border-radius: 12px;
     display: flex;
     align-items: center;
     justify-content: center;
-    margin-bottom: 16px;
+    margin-bottom: 14px;
   }
 
   .icon-blue {
@@ -380,17 +442,17 @@
   }
 
   .card-title {
-    font-size: 18px;
+    font-size: 17px;
     font-weight: 800;
     margin: 0 0 8px 0;
-    color: #f1f5f9;
+    color: #f0f6fc;
   }
 
   .card-desc {
-    font-size: 12px;
+    font-size: 11px;
     line-height: 1.6;
     color: #94a3b8;
-    margin: 0 0 16px 0;
+    margin: 0 0 14px 0;
     flex-grow: 1;
   }
 
@@ -399,97 +461,111 @@
     background-color: #091528;
     border-radius: 8px;
     padding: 10px;
-    margin-bottom: 16px;
+    margin-bottom: 14px;
     border: 1px solid #1a355d;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
   }
 
-  .form-row {
+  .form-row-sm {
     display: flex;
     align-items: center;
     gap: 6px;
-    margin-bottom: 6px;
+    background: #060e1d;
+    border: 1px solid #1a355d;
+    padding: 4px 8px;
+    border-radius: 5px;
+  }
+
+  .input-meta-compact {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: #f0f6fc;
+    font-size: 10px;
+    font-weight: 600;
+  }
+
+  .teams-setup-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .team-input-group {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background-color: #060e1d;
+    border: 1px solid #1a355d;
+    border-radius: 5px;
+    padding: 2px 6px;
+  }
+
+  .color-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
   }
 
   .input-meta {
     flex: 1;
-    background-color: #060e1d;
-    border: 1px solid #1a355d;
-    color: #f8fafc;
-    font-size: 11px;
-    padding: 7px 10px;
-    border-radius: 5px;
-    box-sizing: border-box;
-  }
-
-  .input-meta:focus {
+    background: transparent;
+    border: none;
+    color: #f0f6fc;
+    font-size: 10px;
+    padding: 5px 0;
     outline: none;
-    border-color: #38bdf8;
-    box-shadow: 0 0 8px rgba(56, 189, 248, 0.25);
+    width: 100%;
   }
 
   .vs-text {
     font-size: 10px;
-    font-weight: 800;
+    font-weight: 900;
     color: #38bdf8;
   }
 
   .half-select {
     display: flex;
-    justify-content: space-around;
-    margin-bottom: 0;
-  }
-
-  .radio-label {
-    font-size: 10px;
-    color: #cbd5e1;
-    cursor: pointer;
-    display: flex;
     align-items: center;
+    justify-content: space-between;
     gap: 4px;
   }
 
-  .quick-clip-features {
-    background-color: #091528;
-    border-radius: 8px;
-    padding: 12px;
-    margin-bottom: 16px;
-    border: 1px solid #1a355d;
+  .radio-label {
+    flex: 1;
+    font-size: 9px;
+    color: #94a3b8;
+    cursor: pointer;
     display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-
-  .feature-item {
-    font-size: 11px;
-    color: #93c5fd;
-  }
-
-  .coach-presets-preview {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    margin-bottom: 16px;
-    background-color: #091528;
-    padding: 10px;
-    border-radius: 8px;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    background: #060e1d;
     border: 1px solid #1a355d;
-  }
-
-  .preset-tag {
-    font-size: 10px;
-    background-color: #060e1d;
-    color: #34d399;
-    border: 1px solid #064e3b;
-    padding: 3px 8px;
+    padding: 4px;
     border-radius: 4px;
+    transition: all 0.15s;
   }
 
-  /* BUTTONS */
+  .radio-label.selected {
+    color: #38bdf8;
+    border-color: #38bdf8;
+    background: rgba(56, 189, 248, 0.1);
+  }
+
+  .radio-label input {
+    accent-color: #38bdf8;
+  }
+
   .card-actions {
     display: flex;
     flex-direction: column;
     gap: 8px;
-    margin-top: auto;
   }
 
   .btn-primary-action {
@@ -497,22 +573,21 @@
     align-items: center;
     justify-content: center;
     gap: 8px;
-    background: linear-gradient(135deg, #0284c7, #2563eb);
+    background: linear-gradient(135deg, #0284c7 0%, #2563eb 100%);
     color: #ffffff;
-    font-size: 12px;
+    padding: 10px;
+    border-radius: 7px;
+    font-size: 11px;
     font-weight: 700;
-    padding: 10px 16px;
-    border-radius: 8px;
     cursor: pointer;
-    border: none;
-    box-shadow: 0 0 14px rgba(56, 189, 248, 0.35);
-    transition: all 0.2s;
+    box-shadow: 0 4px 14px rgba(2, 132, 199, 0.35);
+    border: 1px solid #38bdf8;
+    transition: all 0.2s ease;
   }
 
   .btn-primary-action:hover {
-    background: linear-gradient(135deg, #0369a1, #1d4ed8);
-    box-shadow: 0 0 20px rgba(56, 189, 248, 0.55);
-    transform: translateY(-1px);
+    background: linear-gradient(135deg, #0369a1 0%, #1d4ed8 100%);
+    box-shadow: 0 6px 20px rgba(2, 132, 199, 0.5);
   }
 
   .btn-sample-action {
@@ -520,21 +595,40 @@
     align-items: center;
     justify-content: center;
     gap: 6px;
-    background-color: transparent;
+    background: #091322;
+    border: 1px solid #1e3b68;
     color: #93c5fd;
-    font-size: 11px;
-    font-weight: 600;
-    padding: 7px 12px;
+    padding: 7px;
     border-radius: 6px;
+    font-size: 10px;
+    font-weight: 600;
     cursor: pointer;
-    border: 1px dashed #1e3b68;
-    transition: all 0.2s;
+    transition: all 0.15s ease;
   }
 
   .btn-sample-action:hover {
-    color: #38bdf8;
+    color: #ffffff;
     border-color: #38bdf8;
-    background-color: rgba(56, 189, 248, 0.1);
+    background: #112646;
+  }
+
+  .quick-clip-features {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    background-color: #091528;
+    padding: 10px 12px;
+    border-radius: 8px;
+    margin-bottom: 14px;
+    border: 1px solid #1a355d;
+  }
+
+  .feature-item {
+    font-size: 10px;
+    color: #cbd5e1;
+    display: flex;
+    align-items: center;
+    gap: 6px;
   }
 
   .btn-amber-action {
@@ -542,22 +636,39 @@
     align-items: center;
     justify-content: center;
     gap: 8px;
-    background: linear-gradient(135deg, #0284c7, #1d4ed8);
+    background: linear-gradient(135deg, #0284c7 0%, #1d4ed8 100%);
     color: #ffffff;
-    font-size: 12px;
+    padding: 10px;
+    border-radius: 7px;
+    font-size: 11px;
     font-weight: 700;
-    padding: 10px 16px;
-    border-radius: 8px;
     cursor: pointer;
-    border: none;
-    box-shadow: 0 0 14px rgba(96, 165, 250, 0.35);
-    transition: all 0.2s;
+    border: 1px solid #60a5fa;
   }
 
   .btn-amber-action:hover {
-    background: linear-gradient(135deg, #0369a1, #1e40af);
-    box-shadow: 0 0 20px rgba(96, 165, 250, 0.55);
-    transform: translateY(-1px);
+    background: linear-gradient(135deg, #0369a1 0%, #1e40af 100%);
+  }
+
+  .coach-presets-preview {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    background-color: #091528;
+    padding: 10px;
+    border-radius: 8px;
+    margin-bottom: 14px;
+    border: 1px solid #1a355d;
+  }
+
+  .preset-tag {
+    font-size: 9px;
+    font-weight: 600;
+    color: #34d399;
+    background: rgba(16, 185, 129, 0.1);
+    border: 1px solid rgba(16, 185, 129, 0.3);
+    padding: 3px 7px;
+    border-radius: 4px;
   }
 
   .btn-green-action {
@@ -565,72 +676,104 @@
     align-items: center;
     justify-content: center;
     gap: 8px;
-    background: linear-gradient(135deg, #059669, #047857);
+    background: linear-gradient(135deg, #059669 0%, #047857 100%);
     color: #ffffff;
-    font-size: 12px;
+    padding: 10px;
+    border-radius: 7px;
+    font-size: 11px;
     font-weight: 700;
-    padding: 10px 16px;
-    border-radius: 8px;
     cursor: pointer;
-    border: none;
-    box-shadow: 0 0 14px rgba(16, 185, 129, 0.35);
-    transition: all 0.2s;
+    border: 1px solid #34d399;
   }
 
   .btn-green-action:hover {
-    background: linear-gradient(135deg, #047857, #065f46);
-    box-shadow: 0 0 20px rgba(16, 185, 129, 0.55);
-    transform: translateY(-1px);
+    background: linear-gradient(135deg, #047857 0%, #065f46 100%);
   }
 
-  /* RECENT BAR */
+  /* RECENT PROJECTS BAR */
   .recent-projects-bar {
-    max-width: 1240px;
-    width: 100%;
-    margin: 32px auto 0 auto;
-    background: #091528;
+    background: linear-gradient(180deg, #0b172a 0%, #070e1c 100%);
     border: 1px solid #1a355d;
     border-radius: 10px;
-    padding: 12px 20px;
+    padding: 10px 16px;
     display: flex;
     align-items: center;
     justify-content: space-between;
+    max-width: 1200px;
+    width: 100%;
+    margin: 0 auto;
+    box-sizing: border-box;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
   }
 
   .recent-title {
     display: flex;
     align-items: center;
-    gap: 8px;
-    font-size: 12px;
-    font-weight: 600;
-    color: #93c5fd;
+    gap: 6px;
+    font-size: 11px;
+    font-weight: 700;
+    color: #f0f6fc;
+  }
+
+  .recent-chips-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .recent-chip {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: #091322;
+    border: 1px solid #1e3b68;
+    padding: 4px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .recent-chip:hover {
+    border-color: #38bdf8;
+    background: #102444;
+  }
+
+  .chip-status {
+    font-size: 9px;
+    font-weight: 700;
+    color: #10b981;
+  }
+
+  .chip-name {
+    font-size: 10px;
+    font-weight: 700;
+    color: #f0f6fc;
+  }
+
+  .chip-meta {
+    font-size: 9px;
+    color: #94a3b8;
   }
 
   .workflow-breadcrumbs {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
+    font-size: 10px;
+    color: #64748b;
   }
 
-  .crumb {
-    font-size: 11px;
-    font-weight: 600;
-    color: #64748b;
-    padding: 4px 10px;
-    border-radius: 5px;
-    background-color: #060e1d;
-    border: 1px solid #162c4a;
+  .crumb-text {
+    font-weight: 700;
+    color: #94a3b8;
   }
 
   .crumb.active {
     color: #38bdf8;
-    background: rgba(14, 165, 233, 0.15);
-    border: 1px solid #38bdf8;
-    box-shadow: 0 0 8px rgba(56, 189, 248, 0.3);
+    font-weight: 700;
   }
 
   .crumb-arrow {
-    color: #334e77;
-    font-size: 11px;
+    color: #1a355d;
   }
 </style>

@@ -270,6 +270,9 @@
                 class="playlist-item-row"
                 class:active-row={selectedItemIndex === idx}
                 onclick={() => playPresentationItem(idx)}
+                role="button"
+                tabindex="0"
+                onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') playPresentationItem(idx); }}
               >
                 <div class="item-order-box">{idx + 1}</div>
 

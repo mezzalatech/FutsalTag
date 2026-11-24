@@ -31,6 +31,7 @@
     Share2,
     Sliders,
     ArrowRight,
+    RotateCcw,
   } from 'lucide-svelte';
 
   // --- REFS & STATE ---
@@ -489,6 +490,13 @@
   function clearAllDrawings() {
     drawings = [];
   }
+
+  function undoLastDrawing() {
+    if (drawings.length > 0) {
+      drawings.pop();
+      drawings = [...drawings];
+    }
+  }
 </script>
 
 <div class="telestration-studio">
@@ -514,16 +522,20 @@
     </div>
 
     <div class="header-right">
+      <button class="btn-undo" onclick={undoLastDrawing} title="Batalkan gambar terakhir (Undo)">
+        <RotateCcw size={14} />
+        <span>Undo</span>
+      </button>
       <button class="btn-clear" onclick={clearAllDrawings} title="Hapus semua coretan">
         <Trash2 size={14} />
-        <span>Hapus Gambar</span>
+        <span>Hapus Semua</span>
       </button>
       <button class="btn-save" onclick={handleSave}>
         <Check size={14} />
         <span>Simpan</span>
       </button>
       <button class="btn-save-next" onclick={handleSaveAndNext}>
-        <span>Simpan & Lanjut Klip Berikutnya</span>
+        <span>Simpan & Klip Berikutnya</span>
         <ArrowRight size={15} />
       </button>
     </div>
@@ -573,6 +585,8 @@
             style="background-color: {color}"
             class:selected={activeColor === color}
             onclick={() => (activeColor = color)}
+            aria-label="Pilih warna {color}"
+            title="Warna: {color}"
           ></button>
         {/each}
       </div>
@@ -723,7 +737,28 @@
   .header-right {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
+  }
+
+  .btn-undo {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: #0f2444;
+    border: 1px solid #1e3b68;
+    color: #93c5fd;
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .btn-undo:hover {
+    color: #ffffff;
+    border-color: #38bdf8;
+    background: #163666;
   }
 
   .btn-clear {

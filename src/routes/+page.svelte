@@ -20,15 +20,29 @@
 </svelte:head>
 
 <div class="app-container">
-  <!-- PRIMARY APP HEADER BAR WITH ONCE SPORT STYLE STEPPER -->
+  <!-- PRIMARY APP HEADER BAR WITH MOMEN & ONCE SPORT BROADCAST STYLE -->
   <header class="app-header">
-    <div class="brand" onclick={() => projectStore.setStage('hub')} style="cursor: pointer;">
-      <div class="brand-icon">⚽</div>
+    <div class="brand" onclick={() => projectStore.setStage('hub')} role="button" tabindex="0">
+      <div class="brand-badge-circle">
+        <span class="brand-icon">⚽</span>
+      </div>
       <div class="brand-text">
-        <span class="brand-title">TELESLATOR</span>
-        <span class="brand-sub">FUTSAL ANALYTICS</span>
+        <div class="brand-title-wrap">
+          <span class="brand-title">TELESLATOR</span>
+          <span class="brand-tag">PRO</span>
+        </div>
+        <span class="brand-sub">MOMEN & ONCE SPORT WORKFLOW</span>
       </div>
     </div>
+
+    <!-- ACTIVE MATCH PILL (MOMEN SPORTS STYLE) -->
+    {#if projectStore.videoTitle}
+      <div class="active-match-pill" onclick={() => projectStore.setStage('tagging')} role="button" tabindex="0">
+        <span class="live-indicator"></span>
+        <span class="match-name">{projectStore.videoTitle}</span>
+        <span class="clips-count">{projectStore.tags.length} Klip</span>
+      </div>
+    {/if}
 
     <!-- WORKFLOW STEPPER TABS -->
     <nav class="workflow-stepper">
@@ -44,7 +58,7 @@
       </button>
 
       <div class="step-separator">
-        <ChevronRight size={14} />
+        <ChevronRight size={13} />
       </div>
 
       <!-- STEP 2: TAGGING & CLIPPING -->
@@ -56,10 +70,13 @@
         <Scissors size={14} />
         <span class="step-num">2</span>
         <span class="step-label">Tagging & Klip</span>
+        {#if projectStore.tags.length > 0}
+          <span class="tab-counter-badge">{projectStore.tags.length}</span>
+        {/if}
       </button>
 
       <div class="step-separator">
-        <ChevronRight size={14} />
+        <ChevronRight size={13} />
       </div>
 
       <!-- STEP 3: TELESTRATOR STUDIO -->
@@ -74,7 +91,7 @@
       </button>
 
       <div class="step-separator">
-        <ChevronRight size={14} />
+        <ChevronRight size={13} />
       </div>
 
       <!-- STEP 4: PLAYLIST & EXPORT -->
@@ -103,8 +120,8 @@
 
     <!-- RIGHT BADGES -->
     <div class="header-badges">
-      <span class="badge-fifa">FIFA Standard (40m x 20m)</span>
-      <span class="badge-version">v2.0 Once Flow</span>
+      <span class="badge-fifa">FIFA Futsal (40m x 20m)</span>
+      <span class="badge-version">Momen + Once Studio</span>
     </div>
   </header>
 
@@ -162,21 +179,35 @@
     flex-shrink: 0;
   }
 
+  /* BRAND (MOMEN SPORTS STYLE) */
   .brand {
     display: flex;
     align-items: center;
     gap: 10px;
     user-select: none;
+    cursor: pointer;
     transition: opacity 0.15s;
   }
 
   .brand:hover {
-    opacity: 0.9;
+    opacity: 0.92;
+  }
+
+  .brand-badge-circle {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    background: linear-gradient(135deg, #0284c7 0%, #1e3a8a 100%);
+    border: 1px solid #38bdf8;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 0 12px rgba(56, 189, 248, 0.35);
   }
 
   .brand-icon {
-    font-size: 20px;
-    filter: drop-shadow(0 0 8px rgba(56, 189, 248, 0.5));
+    font-size: 16px;
+    line-height: 1;
   }
 
   .brand-text {
@@ -184,21 +215,100 @@
     flex-direction: column;
   }
 
+  .brand-title-wrap {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+
   .brand-title {
     font-size: 13px;
     font-weight: 900;
     letter-spacing: 0.12em;
-    color: #38bdf8;
+    color: #f0f6fc;
     line-height: 1.1;
-    text-shadow: 0 0 12px rgba(56, 189, 248, 0.4);
+  }
+
+  .brand-tag {
+    font-size: 8px;
+    font-weight: 900;
+    background: linear-gradient(135deg, #0284c7, #38bdf8);
+    color: #060b14;
+    padding: 1px 4px;
+    border-radius: 3px;
+    letter-spacing: 0.05em;
   }
 
   .brand-sub {
     font-size: 8px;
     font-weight: 700;
-    letter-spacing: 0.08em;
-    color: #7dd3fc;
-    opacity: 0.7;
+    letter-spacing: 0.06em;
+    color: #38bdf8;
+    opacity: 0.85;
+  }
+
+  /* ACTIVE MATCH PILL (MOMEN STYLE) */
+  .active-match-pill {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background-color: #0d1e38;
+    border: 1px solid #1a355d;
+    padding: 4px 12px;
+    border-radius: 20px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+
+  .active-match-pill:hover {
+    border-color: #38bdf8;
+    background-color: #122849;
+    box-shadow: 0 0 12px rgba(56, 189, 248, 0.2);
+  }
+
+  .live-indicator {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background-color: #10b981;
+    box-shadow: 0 0 8px #10b981;
+    animation: pulse 2s infinite;
+  }
+
+  @keyframes pulse {
+    0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+    70% { transform: scale(1); box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
+    100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+  }
+
+  .match-name {
+    font-size: 11px;
+    font-weight: 600;
+    color: #f0f6fc;
+    max-width: 220px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .clips-count {
+    font-size: 10px;
+    font-weight: 700;
+    color: #38bdf8;
+    background-color: #071224;
+    padding: 1px 6px;
+    border-radius: 10px;
+    border: 1px solid #1a355d;
+  }
+
+  .tab-counter-badge {
+    font-size: 9px;
+    font-weight: 800;
+    color: #060b14;
+    background-color: #38bdf8;
+    padding: 1px 5px;
+    border-radius: 8px;
+    margin-left: 2px;
   }
 
   /* WORKFLOW STEPPER */

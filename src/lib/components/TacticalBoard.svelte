@@ -758,18 +758,19 @@
   }
 
   .select-clean {
-    background-color: #0f172a;
+    background-color: #0b172a;
     color: #cbd5e1;
-    border: 1px solid #334155;
+    border: 1px solid #1a355d;
     padding: 5px 10px;
     border-radius: 6px;
-    font-size: 12px;
+    font-size: 11px;
+    outline: none;
   }
 
   .btn-formation {
-    background-color: #0f172a;
-    color: #94a3b8;
-    border: 1px solid #334155;
+    background-color: #0b172a;
+    color: #93c5fd;
+    border: 1px solid #1a355d;
     padding: 4px 10px;
     border-radius: 6px;
     font-size: 11px;
@@ -780,8 +781,8 @@
   }
 
   .btn-formation:hover {
-    background-color: #38bdf8;
-    color: #0f172a;
+    background-color: #122c4d;
+    color: #ffffff;
     border-color: #38bdf8;
   }
 
@@ -794,28 +795,32 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    background-color: #334155;
-    color: #f1f5f9;
-    border: 1px solid #475569;
+    background-color: #0f2444;
+    color: #93c5fd;
+    border: 1px solid #1e3b68;
     padding: 6px 12px;
     border-radius: 6px;
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 600;
     cursor: pointer;
     transition: all 0.15s;
   }
 
   .btn-action:hover {
-    background-color: #475569;
+    background-color: #163666;
+    border-color: #38bdf8;
+    color: #ffffff;
   }
 
   .btn-pdf {
-    background-color: #0284c7;
-    border-color: #0ea5e9;
+    background: linear-gradient(135deg, #0284c7, #2563eb);
+    border-color: #38bdf8;
+    color: #ffffff;
+    box-shadow: 0 0 10px rgba(56, 189, 248, 0.3);
   }
 
   .btn-pdf:hover {
-    background-color: #0369a1;
+    background: linear-gradient(135deg, #0369a1, #1d4ed8);
   }
 
   /* WORKSPACE BODY */
@@ -828,8 +833,8 @@
   /* LEFT TOOLBAR */
   .left-toolbar {
     width: 68px;
-    background-color: #1e293b;
-    border-right: 1px solid #334155;
+    background: linear-gradient(180deg, #0b1528 0%, #07101e 100%);
+    border-right: 1px solid #1a355d;
     display: flex;
     flex-direction: column;
     padding: 10px 6px;

@@ -151,7 +151,8 @@
 
 {#if isOpen}
   <div class="modal-backdrop" onclick={onClose} role="presentation">
-    <div class="editor-drawer" onclick={(e) => e.stopPropagation()} role="dialog">
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <div class="editor-drawer" onclick={(e) => e.stopPropagation()} role="dialog" tabindex="-1">
       <!-- DRAWER HEADER (DEEP SAPPHIRE BLUE) -->
       <header class="drawer-header">
         <div class="header-title-box">

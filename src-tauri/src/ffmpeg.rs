@@ -42,14 +42,30 @@ pub fn resolve_bin(name: &str) -> String {
 
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let candidate = dir.join(name);
-            if candidate.exists() {
-                return candidate.to_string_lossy().to_string();
+            for candidate in [
+                dir.join(name),
+                dir.join(format!("{}.exe", name)),
+                dir.join("resources").join("bin").join(name),
+                dir.join("resources").join("bin").join(format!("{}.exe", name)),
+                dir.join("bin").join(name),
+                dir.join("bin").join(format!("{}.exe", name)),
+            ] {
+                if candidate.exists() {
+                    return candidate.to_string_lossy().to_string();
+                }
             }
-            let exe_candidate = dir.join(format!("{}.exe", name));
-            if exe_candidate.exists() {
-                return exe_candidate.to_string_lossy().to_string();
-            }
+        }
+    }
+
+    let manifest_bin = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("resources")
+        .join("bin");
+    for candidate in [
+        manifest_bin.join(name),
+        manifest_bin.join(format!("{}.exe", name)),
+    ] {
+        if candidate.exists() {
+            return candidate.to_string_lossy().to_string();
         }
     }
 

@@ -4,6 +4,7 @@ mod ffmpeg;
 mod player_segmentation;
 mod whistle_detector;
 mod whisper_asr;
+mod xlsx_export;
 
 use base64::prelude::*;
 use std::fs;
@@ -191,6 +192,7 @@ pub fn run() {
             whisper_asr::check_whisper_status,
             whisper_asr::transcribe_voiceover_base64_whisper,
             whisper_asr::transcribe_video_clip_whisper,
+            xlsx_export::export_native_xlsx,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

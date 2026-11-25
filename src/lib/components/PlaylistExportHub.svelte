@@ -35,7 +35,7 @@
   import {
     exportSportsCodeXml,
     importSportsCodeXml,
-    exportMultiSheetExcelXml,
+    exportNativeXlsxPortable,
     saveTextFilePortable,
     openTextFilePortable,
   } from '$lib/export/interopExporters';
@@ -387,32 +387,28 @@
   }
 
   async function handleExportExcelWorkbook() {
-    const xmlWorkbook = exportMultiSheetExcelXml({
-      matchTitle: projectStore.videoTitle,
-      tags: projectStore.tags,
-      roster: projectStore.roster,
-      duration: projectStore.duration,
-      periodKickoffs: projectStore.periodKickoffs,
-      startingLineupIds: projectStore.startingLineupIds,
-      substitutions: projectStore.substitutions,
-      formatMatchClock: (s) => projectStore.formatMatchClock(s),
-      getPlayerDisplayLabel: (p) => projectStore.getPlayerDisplayLabel(p),
-      normalizePlayerLabel: (lbl) => projectStore.normalizePlayerLabel(lbl),
-      isGoalkeeper: (p) => projectStore.isGoalkeeper(p),
-    });
     const safeName = (projectStore.videoTitle || 'laporan_futsal')
       .replace(/[^a-zA-Z0-9_-]/g, '_')
       .toLowerCase();
-    const saved = await saveTextFilePortable(
-      `${safeName}_4sheet.xls`,
-      xmlWorkbook,
-      'application/vnd.ms-excel;charset=utf-8',
-      'Laporan Excel Multi-Sheet (.xls)',
-      ['xls', 'xml']
+    const saved = await exportNativeXlsxPortable(
+      {
+        matchTitle: projectStore.videoTitle,
+        tags: projectStore.tags,
+        roster: projectStore.roster,
+        duration: projectStore.duration,
+        periodKickoffs: projectStore.periodKickoffs,
+        startingLineupIds: projectStore.startingLineupIds,
+        substitutions: projectStore.substitutions,
+        formatMatchClock: (s) => projectStore.formatMatchClock(s),
+        getPlayerDisplayLabel: (p) => projectStore.getPlayerDisplayLabel(p),
+        normalizePlayerLabel: (lbl) => projectStore.normalizePlayerLabel(lbl),
+        isGoalkeeper: (p) => projectStore.isGoalkeeper(p),
+      },
+      `${safeName}_5sheet.xlsx`
     );
     if (saved) {
       exportSuccessPath = saved;
-      exportStatusMessage = `Laporan Excel Multi-Sheet (4 lembar kerja) tersimpan: ${saved}`;
+      exportStatusMessage = `Laporan Excel Asli (.xlsx, 5 lembar kerja) tersimpan: ${saved}`;
     }
   }
 </script>
@@ -727,7 +723,7 @@
           </button>
           <button type="button" class="btn-interop btn-interop-excel" onclick={handleExportExcelWorkbook}>
             <FileSpreadsheet size={13} />
-            <span>Laporan Excel (4 Sheet)</span>
+            <span>Ekspor Excel (.xlsx)</span>
           </button>
           <button type="button" class="btn-interop btn-interop-pdf" onclick={handleExportMatchPdf}>
             <Download size={13} />

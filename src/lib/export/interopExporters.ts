@@ -575,6 +575,425 @@ export function exportMultiSheetExcelXml(input: MultiSheetExportInput): string {
   ].join('\n');
 }
 
+export interface XlsxRowPayload {
+  cells: Array<string | number>;
+  style?: 'title' | 'header' | 'total';
+}
+
+export interface XlsxSheetPayload {
+  name: string;
+  rows: XlsxRowPayload[];
+  freeze_header_row?: number;
+}
+
+export interface XlsxWorkbookPayload {
+  title: string;
+  sheets: XlsxSheetPayload[];
+}
+
+export function buildMultiSheetXlsxWorkbook(input: MultiSheetExportInput): XlsxWorkbookPayload {
+  const {
+    matchTitle,
+    tags,
+    roster,
+    duration,
+    periodKickoffs,
+    startingLineupIds,
+    substitutions,
+    formatMatchClock,
+    getPlayerDisplayLabel,
+    normalizePlayerLabel,
+    isGoalkeeper,
+  } = input;
+
+  const isAwayTag = (t: VideoTagEvent) =>
+    t.teamSide === 'away' || normalizePlayerLabel(t.playerLabel) === 'Tim Lawan';
+  const goalsFor = tags.filter((t) => /\b(goal|gol)\b/i.test(t.category) && !isAwayTag(t)).length;
+  const goalsAgainst = tags.filter(
+    (t) =>
+      (/\b(goal|gol)\b/i.test(t.category) && isAwayTag(t)) ||
+      /kebobolan|conceded|gol lawan/i.test(t.category)
+  ).length;
+  const shotsOnTarget = tags.filter(
+    (t) =>
+      /shot on target|shoot ot|\bsot\b|tembakan tepat|on target/i.test(t.category) &&
+      !isAwayTag(t)
+  ).length;
+  const voiceTranscriptCount = tags.filter(
+    (t) => Boolean(t.voiceoverTranscript && t.voiceoverTranscript.trim().length > 0)
+  ).length;
+  const totalClipSec = tags.reduce((acc, t) => acc + Math.max(0, t.endTime - t.startTime), 0);
+  const squad = roster.filter((p) => !p.isOpponent && p.name !== 'Tim Lawan');
+
+  // --- SHEET 1: RINGKASAN PERTANDINGAN ---
+  const summaryRows: XlsxRowPayload[] = [
+    { cells: [`RINGKASAN PERTANDINGAN FUTSALTAG PRO — ${matchTitle}`], style: 'title' },
+    { cells: ['Metrik Pertandingan', 'Nilai'], style: 'header' },
+    { cells: ['Judul Proyek / Video', matchTitle || 'FutsalTag Pro'] },
+    { cells: ['Durasi Total Video (detik)', Number((duration || 0).toFixed(1))] },
+    { cells: ['Total Klip / Event Ditandai', tags.length] },
+    { cells: ['Total Durasi Klip (detik)', Number(totalClipSec.toFixed(1))] },
+    { cells: ['Gol Dicetak (Tim Sendiri)', goalsFor] },
+    { cells: ['Kebobolan (Tim Lawan)', goalsAgainst] },
+    { cells: ['Tembakan Tepat Sasaran (SoT)', shotsOnTarget] },
+    { cells: ['Jumlah Pemain Skuad Terdaftar', squad.length] },
+    { cells: ['Klip dengan Transkrip Suara Pelatih', voiceTranscriptCount] },
+  ];
+
+  // --- SHEET 2: DAFTAR KLIP & TRANSKRIP ---
+  const clipRows: XlsxRowPayload[] = [
+    { cells: [`LAPORAN ANALISIS FUTSAL — ${matchTitle}`], style: 'title' },
+    {
+      cells: [
+        'No',
+        'Judul Klip',
+        'Kategori',
+        'Tim',
+        'Pemain',
+        'Penerima Operan',
+        'Label / Descriptor',
+        'Match Clock Mulai',
+        'Match Clock Selesai',
+        'Video Mulai (s)',
+        'Video Selesai (s)',
+        'Durasi (s)',
+        'Hasil',
+        'Zona',
+        'Rating',
+        'Favorit',
+        'Catatan',
+        'Transkrip Voiceover',
+      ],
+      style: 'header',
+    },
+  ];
+  tags.forEach((t, idx) => {
+    const playersStr =
+      t.playersInvolved && t.playersInvolved.length > 0
+        ? t.playersInvolved.join('; ')
+        : t.playerLabel || '-';
+    const labelsStr =
+      t.labels && t.labels.length > 0 ? t.labels.map((l) => l.name).join('; ') : '-';
+    clipRows.push({
+      cells: [
+        idx + 1,
+        t.title,
+        t.category,
+        (t.teamSide || 'home').toUpperCase(),
+        playersStr,
+        t.passTargetPlayer || '-',
+        labelsStr,
+        formatMatchClock(t.startTime),
+        formatMatchClock(t.endTime),
+        Number(t.startTime.toFixed(2)),
+        Number(t.endTime.toFixed(2)),
+        Number(Math.max(0, t.endTime - t.startTime).toFixed(2)),
+        t.outcomeLabel || '-',
+        t.zoneLabel || '-',
+        t.rating || '-',
+        t.favorite ? 'Ya' : 'Tidak',
+        t.notes || '',
+        t.voiceoverTranscript || '',
+      ],
+    });
+  });
+
+  // --- SHEET 3: TAG x PEMAIN ---
+  const categories = Array.from(new Set(tags.map((t) => t.category).filter(Boolean)));
+  const players = roster.map((p) => getPlayerDisplayLabel(p));
+  for (const t of tags) {
+    const ps =
+      t.playersInvolved && t.playersInvolved.length > 0
+        ? t.playersInvolved
+        : t.playerLabel
+          ? [t.playerLabel]
+          : [];
+    for (const p of ps) {
+      const norm = normalizePlayerLabel(p);
+      if (!players.includes(norm)) players.push(norm);
+    }
+  }
+  const matchesPlayer = (t: VideoTagEvent, p: string) =>
+    normalizePlayerLabel(t.playerLabel) === p ||
+    Boolean(t.playersInvolved?.some((x) => normalizePlayerLabel(x) === p));
+
+  const tagPlayerRows: XlsxRowPayload[] = [
+    { cells: ['Pemain / Roster', ...categories, 'TOTAL KLIP', 'DURASI (s)'], style: 'header' },
+  ];
+  for (const p of players) {
+    const rowClips = tags.filter((t) => matchesPlayer(t, p));
+    const counts = categories.map((cat) => rowClips.filter((t) => t.category === cat).length);
+    const dur = rowClips.reduce((acc, t) => acc + Math.max(0, t.endTime - t.startTime), 0);
+    tagPlayerRows.push({
+      cells: [p, ...counts, rowClips.length, Number(dur.toFixed(1))],
+    });
+  }
+  tagPlayerRows.push({
+    cells: [
+      'TOTAL TIM',
+      ...categories.map((cat) => tags.filter((t) => t.category === cat).length),
+      tags.length,
+      Number(totalClipSec.toFixed(1)),
+    ],
+    style: 'total',
+  });
+
+  // --- SHEET 4: MENIT & QUARTET 4v4 ---
+  const koStart =
+    periodKickoffs.length > 0 ? Math.min(...periodKickoffs.map((k) => k.videoTime)) : 0;
+  const maxSub = substitutions.reduce((m, s) => Math.max(m, s.atTime + 1), 0);
+  const maxTag = tags.reduce((m, t) => Math.max(m, t.endTime), 0);
+  const matchEnd = Math.max(duration || 120, maxSub, maxTag, koStart + 10);
+  const totalSpan = Math.max(1, matchEnd - koStart);
+  const sortedSubs = [...substitutions].sort((a, b) => a.atTime - b.atTime);
+  const getLineupAt = (tSec: number): string[] => {
+    let lineup = [...startingLineupIds];
+    for (const sub of sortedSubs) {
+      if (sub.atTime > tSec + 0.001) break;
+      const idx = lineup.indexOf(sub.playerOut);
+      if (idx !== -1) {
+        if (!lineup.includes(sub.playerIn)) lineup[idx] = sub.playerIn;
+        else lineup = lineup.filter((id) => id !== sub.playerOut);
+      } else if (!lineup.includes(sub.playerIn)) {
+        lineup.push(sub.playerIn);
+      }
+    }
+    return lineup;
+  };
+  const cuts = Array.from(
+    new Set([
+      koStart,
+      ...sortedSubs.map((s) => s.atTime).filter((t) => t > koStart + 0.01 && t < matchEnd - 0.01),
+      matchEnd,
+    ])
+  ).sort((a, b) => a - b);
+  const intervals: { start: number; end: number; lineupIds: string[] }[] = [];
+  for (let i = 0; i < cuts.length - 1; i++) {
+    if (cuts[i + 1] - cuts[i] >= 0.05) {
+      intervals.push({ start: cuts[i], end: cuts[i + 1], lineupIds: getLineupAt(cuts[i] + 0.01) });
+    }
+  }
+  const byId = new Map(roster.map((p) => [p.id, p]));
+  const minutesRows: XlsxRowPayload[] = [
+    { cells: ['BAGIAN A: MENIT BERMAIN PER PEMAIN'], style: 'title' },
+    {
+      cells: ['No', 'Nama Pemain', 'Peran', 'Total Menit (s)', 'Persentase (%)', 'Jumlah Shift'],
+      style: 'header',
+    },
+  ];
+  for (const p of squad) {
+    let sec = 0;
+    let shifts = 0;
+    let inPrev = false;
+    for (const iv of intervals) {
+      const on = iv.lineupIds.includes(p.id);
+      if (on) {
+        sec += iv.end - iv.start;
+        if (!inPrev) shifts += 1;
+      }
+      inPrev = on;
+    }
+    minutesRows.push({
+      cells: [
+        p.num,
+        p.name,
+        p.role,
+        Number(sec.toFixed(1)),
+        Number(((sec / totalSpan) * 100).toFixed(1)),
+        shifts,
+      ],
+    });
+  }
+  minutesRows.push({ cells: [''] });
+  minutesRows.push({ cells: ['BAGIAN B: ANALISIS QUARTET 4v4 (+/-)'], style: 'title' });
+  minutesRows.push({
+    cells: ['Kombinasi Quartet', 'Durasi (s)', 'Shift', 'GF', 'GA', '+/-', 'Shot OT'],
+    style: 'header',
+  });
+  const quartetMap = new Map<
+    string,
+    { label: string; dur: number; shifts: number; gf: number; ga: number; sot: number }
+  >();
+  for (const iv of intervals) {
+    const outfield = iv.lineupIds
+      .map((id) => byId.get(id))
+      .filter((p): p is RosterPlayer => Boolean(p))
+      .filter((p) => !isGoalkeeper(p));
+    if (outfield.length === 0) continue;
+    const key = outfield
+      .map((p) => p.id)
+      .sort()
+      .join('|');
+    let row = quartetMap.get(key);
+    if (!row) {
+      row = {
+        label: outfield.map((p) => `${p.num} ${p.name}`).join(' · '),
+        dur: 0,
+        shifts: 0,
+        gf: 0,
+        ga: 0,
+        sot: 0,
+      };
+      quartetMap.set(key, row);
+    }
+    row.dur += iv.end - iv.start;
+    row.shifts += 1;
+  }
+  for (const t of tags) {
+    const mid = Math.max(koStart, Math.min(matchEnd - 0.01, (t.startTime + t.endTime) / 2));
+    const iv = intervals.find((x) => mid >= x.start && mid <= x.end) ?? intervals[intervals.length - 1];
+    if (!iv) continue;
+    const key = iv.lineupIds
+      .map((id) => byId.get(id))
+      .filter((p): p is RosterPlayer => Boolean(p))
+      .filter((p) => !isGoalkeeper(p))
+      .map((p) => p.id)
+      .sort()
+      .join('|');
+    const row = quartetMap.get(key);
+    if (!row) continue;
+    const away = isAwayTag(t);
+    const isGoal = /\b(goal|gol)\b/i.test(t.category);
+    const isConceded =
+      /kebobolan|conceded|gol lawan/i.test(t.category) || (/kebobolan/i.test(t.title) && away);
+    const isSot =
+      /shot on target|shoot ot|\bsot\b|tembakan tepat|on target/i.test(t.category) && !away;
+    if (isGoal && !away) row.gf += 1;
+    if ((isGoal && away) || isConceded) row.ga += 1;
+    if (isSot) row.sot += 1;
+  }
+  for (const q of Array.from(quartetMap.values()).sort(
+    (a, b) => b.gf - b.ga - (a.gf - a.ga) || b.dur - a.dur
+  )) {
+    minutesRows.push({
+      cells: [q.label, Number(q.dur.toFixed(1)), q.shifts, q.gf, q.ga, q.gf - q.ga, q.sot],
+    });
+  }
+
+  // --- SHEET 5: JARINGAN OPERAN & TAG x LABEL ---
+  const passPairs = new Map<string, number>();
+  const passPlayersSet = new Set<string>();
+  for (const t of tags) {
+    if (!t.passTargetPlayer) continue;
+    const passer = normalizePlayerLabel(t.playerLabel || t.playersInvolved?.[0] || '');
+    const receiver = normalizePlayerLabel(t.passTargetPlayer);
+    if (!passer || !receiver) continue;
+    passPlayersSet.add(passer);
+    passPlayersSet.add(receiver);
+    const k = `${passer}=>${receiver}`;
+    passPairs.set(k, (passPairs.get(k) || 0) + 1);
+  }
+  const passRows: XlsxRowPayload[] = [
+    { cells: ['BAGIAN A: MATRIKS JARINGAN OPERAN (PENGUMPAN -> PENERIMA)'], style: 'title' },
+  ];
+  const passPlayers = Array.from(passPlayersSet);
+  if (passPlayers.length > 0) {
+    passRows.push({
+      cells: ['Pengumpan \\ Penerima', ...passPlayers, 'TOTAL UMPAN'],
+      style: 'header',
+    });
+    for (const pFrom of passPlayers) {
+      let rowTotal = 0;
+      const counts = passPlayers.map((pTo) => {
+        const c = passPairs.get(`${pFrom}=>${pTo}`) || 0;
+        rowTotal += c;
+        return c;
+      });
+      passRows.push({ cells: [pFrom, ...counts, rowTotal] });
+    }
+  } else {
+    passRows.push({
+      cells: ['Belum ada tag dengan data Penerima Operan (passTargetPlayer).'],
+    });
+  }
+
+  const labelNamesSet = new Set<string>();
+  let hasUnlabeled = false;
+  for (const t of tags) {
+    if (t.labels && t.labels.length > 0) {
+      for (const l of t.labels) labelNamesSet.add(l.name);
+    } else {
+      hasUnlabeled = true;
+    }
+  }
+  const labelCols = Array.from(labelNamesSet);
+  if (hasUnlabeled) labelCols.push('Tanpa Label');
+  passRows.push({ cells: [''] });
+  passRows.push({ cells: ['BAGIAN B: MATRIKS TAG x LABEL'], style: 'title' });
+  passRows.push({
+    cells: ['Tag / Kategori', ...labelCols, 'TOTAL KLIP', 'DURASI (s)'],
+    style: 'header',
+  });
+  for (const cat of categories) {
+    const catClips = tags.filter((t) => t.category === cat);
+    const counts = labelCols.map((lbl) =>
+      catClips.filter((t) =>
+        lbl === 'Tanpa Label'
+          ? !t.labels || t.labels.length === 0
+          : Boolean(t.labels?.some((l) => l.name === lbl))
+      ).length
+    );
+    const dur = catClips.reduce((acc, t) => acc + Math.max(0, t.endTime - t.startTime), 0);
+    passRows.push({ cells: [cat, ...counts, catClips.length, Number(dur.toFixed(1))] });
+  }
+  passRows.push({
+    cells: [
+      'TOTAL LABEL',
+      ...labelCols.map(
+        (lbl) =>
+          tags.filter((t) =>
+            lbl === 'Tanpa Label'
+              ? !t.labels || t.labels.length === 0
+              : Boolean(t.labels?.some((l) => l.name === lbl))
+          ).length
+      ),
+      tags.length,
+      Number(totalClipSec.toFixed(1)),
+    ],
+    style: 'total',
+  });
+
+  return {
+    title: matchTitle || 'FutsalTag Pro Report',
+    sheets: [
+      { name: 'Ringkasan Pertandingan', rows: summaryRows, freeze_header_row: 2 },
+      { name: 'Daftar Klip & Transkrip', rows: clipRows, freeze_header_row: 2 },
+      { name: 'Tag x Pemain', rows: tagPlayerRows, freeze_header_row: 1 },
+      { name: 'Menit & Quartet 4v4', rows: minutesRows, freeze_header_row: 2 },
+      { name: 'Jaringan Operan', rows: passRows, freeze_header_row: 2 },
+    ],
+  };
+}
+
+export async function exportNativeXlsxPortable(
+  input: MultiSheetExportInput,
+  defaultFilename: string
+): Promise<string | null> {
+  const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+  if (isTauri) {
+    const { save } = await import('@tauri-apps/plugin-dialog');
+    const selected = await save({
+      title: 'Simpan Laporan Excel Multi-Sheet (.xlsx)',
+      defaultPath: defaultFilename.endsWith('.xlsx') ? defaultFilename : `${defaultFilename}.xlsx`,
+      filters: [{ name: 'Excel Workbook (.xlsx)', extensions: ['xlsx'] }],
+    });
+    if (!selected) return null;
+    const workbook = buildMultiSheetXlsxWorkbook(input);
+    await invoke<string>('export_native_xlsx', { filePath: selected, workbook });
+    return selected;
+  }
+
+  const xmlWorkbook = exportMultiSheetExcelXml(input);
+  const xmlName = defaultFilename.replace(/\.xlsx$/i, '.xls');
+  return saveTextFilePortable(
+    xmlName,
+    xmlWorkbook,
+    'application/vnd.ms-excel;charset=utf-8',
+    'Laporan Excel Multi-Sheet (.xls)',
+    ['xls', 'xml']
+  );
+}
+
 // =========================================================================
 // 3. PORTABLE SAVE / OPEN HELPERS (TAURI DESKTOP + BROWSER)
 // =========================================================================

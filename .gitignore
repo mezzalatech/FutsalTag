@@ -14,4 +14,7 @@ vite.config.ts.timestamp-*
 /target/
 src-tauri/gen/schemas/
 *.exe
+!src-tauri/resources/whisper/whisper-cli.exe
+src-tauri/resources/bin/ffmpeg.exe
+src-tauri/resources/bin/ffprobe.exe
 

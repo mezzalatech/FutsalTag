@@ -669,7 +669,7 @@ class ProjectStore {
           id: `pl-item-${idx}`,
           tagEventId: tag.id,
           order: idx + 1,
-          pauseDuration: tag.pauseDuration || 3.0,
+          pauseDuration: tag.pauseDuration ?? 3.0,
           title: tag.title,
           tagEvent: tag,
         })),
@@ -687,7 +687,7 @@ class ProjectStore {
         id: `pl-item-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         tagEventId: normalized.id,
         order: this.playlists[0].items.length + 1,
-        pauseDuration: normalized.pauseDuration || 3.0,
+        pauseDuration: normalized.pauseDuration ?? 3.0,
         title: normalized.title,
         tagEvent: normalized,
       });
@@ -708,7 +708,7 @@ class ProjectStore {
       if (pIdx !== -1) {
         pl.items[pIdx].tagEvent = norm;
         pl.items[pIdx].title = norm.title;
-        pl.items[pIdx].pauseDuration = norm.pauseDuration || 3.0;
+        pl.items[pIdx].pauseDuration = norm.pauseDuration ?? 3.0;
       }
     }
   }
@@ -785,7 +785,7 @@ class ProjectStore {
           id: `pl-item-${Date.now()}`,
           tagEventId: clip.id,
           order: targetPl.items.length + 1,
-          pauseDuration: clip.pauseDuration || 3.0,
+          pauseDuration: clip.pauseDuration ?? 3.0,
           title: clip.title,
           tagEvent: clip,
         });

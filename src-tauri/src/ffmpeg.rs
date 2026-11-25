@@ -1110,6 +1110,7 @@ pub fn extract_rgb_frames(
         .args([
             "-v",
             "error",
+            "-accurate_seek",
             "-ss",
             &format!("{:.3}", start_sec.max(0.0)),
             "-i",
@@ -1117,7 +1118,10 @@ pub fn extract_rgb_frames(
             "-t",
             &format!("{:.3}", dur),
             "-vf",
-            &format!("fps={:.3},scale={}:{}", sample_fps, out_w, out_h),
+            &format!(
+                "setpts=PTS-STARTPTS,fps={:.3}:start_time=0:round=down,scale={}:{}",
+                sample_fps, out_w, out_h
+            ),
             "-f",
             "rawvideo",
             "-pix_fmt",

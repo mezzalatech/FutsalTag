@@ -101,7 +101,7 @@
           startSec: clip.startTime,
           durationSec: clip.endTime - clip.startTime,
           freezeSec,
-          pauseDuration: clip.pauseDuration || 3.0,
+          pauseDuration: clip.pauseDuration ?? 3.0,
           overlayBase64,
           voiceoverBase64,
         });

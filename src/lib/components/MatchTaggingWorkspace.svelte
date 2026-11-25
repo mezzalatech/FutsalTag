@@ -1,22 +1,25 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { invoke } from '@tauri-apps/api/core';
-  import { isTauriDesktop, projectStore } from '$lib/stores/projectStore.svelte';
-  import { exportMomenBoardJson } from '$lib/tagging/momenBoards';
-  import { renderDrawingsToDataUrl } from '$lib/export/telestrationRenderer';
+  import { onMount } from "svelte";
+  import { invoke } from "@tauri-apps/api/core";
+  import {
+    isTauriDesktop,
+    projectStore,
+  } from "$lib/stores/projectStore.svelte";
+  import { exportMomenBoardJson } from "$lib/tagging/momenBoards";
+  import { renderDrawingsToDataUrl } from "$lib/export/telestrationRenderer";
   import type {
     VideoTagEvent,
     TagCategory,
     TaggingButton,
     TagDescriptor,
     ActiveContinuousTag,
-  } from '$lib/types';
-  import StatsMatrixModal from '$lib/components/StatsMatrixModal.svelte';
-  import TagLabelEditorModal from '$lib/components/TagLabelEditorModal.svelte';
-  import MomenTaggingBoard from '$lib/components/MomenTaggingBoard.svelte';
-  import LinimasaTimeline from '$lib/components/LinimasaTimeline.svelte';
-  import VisualCodingBoard from '$lib/components/VisualCodingBoard.svelte';
-  import MatchMinutesView from '$lib/components/MatchMinutesView.svelte';
+  } from "$lib/types";
+  import StatsMatrixModal from "$lib/components/StatsMatrixModal.svelte";
+  import TagLabelEditorModal from "$lib/components/TagLabelEditorModal.svelte";
+  import MomenTaggingBoard from "$lib/components/MomenTaggingBoard.svelte";
+  import LinimasaTimeline from "$lib/components/LinimasaTimeline.svelte";
+  import VisualCodingBoard from "$lib/components/VisualCodingBoard.svelte";
+  import MatchMinutesView from "$lib/components/MatchMinutesView.svelte";
   import {
     Play,
     Pause,
@@ -54,7 +57,7 @@
     ThumbsUp,
     ThumbsDown,
     Timer,
-  } from 'lucide-svelte';
+  } from "lucide-svelte";
 
   // --- REFS & STATE ---
   let videoEl = $state<HTMLVideoElement | null>(null);
@@ -64,9 +67,13 @@
   let playbackRate = $state(1.0);
 
   // Workspace subtab: 'tagging' | 'coding_board' | 'minutes' | 'lineup'
-  let workspaceSubTab = $state<'tagging' | 'coding_board' | 'minutes' | 'lineup'>('tagging');
+  let workspaceSubTab = $state<
+    "tagging" | "coding_board" | "minutes" | "lineup"
+  >("tagging");
   let showKickoffMenu = $state<boolean>(false);
-  let microFilter = $state<'all' | 'home' | 'away' | 'fav' | 'good' | 'eval'>('all');
+  let microFilter = $state<"all" | "home" | "away" | "fav" | "good" | "eval">(
+    "all",
+  );
   let exportingQuickClipId = $state<string | null>(null);
 
   // 2-Tier Momen Layout State
@@ -75,24 +82,24 @@
   let isResizingCanvas = $state<boolean>(false);
   let linimasaHeight = $state<number>(200);
   let isResizingLinimasa = $state<boolean>(false);
-  let rightPanelTab = $state<'clips' | 'playlist'>('clips');
-  let leftSearchQuery = $state<string>('');
+  let rightPanelTab = $state<"clips" | "playlist">("clips");
+  let leftSearchQuery = $state<string>("");
   let codingBoardFocusButtonId = $state<string | null>(null);
-  let newPlayerInput = $state<string>('');
+  let newPlayerInput = $state<string>("");
   let boardImportInputEl = $state<HTMLInputElement | undefined>(undefined);
 
   // Active selected player & Momen/Once live tagging state
-  let activeSelectedPlayer = $state<string>('#9 Pivot');
-  let activeTeamSide = $state<'home' | 'away'>('home');
+  let activeSelectedPlayer = $state<string>("#9 Pivot");
+  let activeTeamSide = $state<"home" | "away">("home");
   let lastTaggedNotification = $state<string | null>(null);
   let activeContinuousTags = $state<Record<string, ActiveContinuousTag>>({});
   let stickyAutoDescriptors = $state<string[]>([]);
-  let lastSyncedBoardId = $state<string>('');
+  let lastSyncedBoardId = $state<string>("");
   let selectedClipId = $state<string | null>(null);
   let copiedMeta = $state<{
     labels: TagDescriptor[];
     players: string[];
-    teamSide?: 'home' | 'away';
+    teamSide?: "home" | "away";
   } | null>(null);
 
   // Smart Pre-roll & Post-roll
@@ -105,12 +112,12 @@
   let activeLoopClip = $state<VideoTagEvent | null>(null);
   let activeClipQueue = $state<VideoTagEvent[]>([]);
   let activeQueueIndex = $state<number>(0);
-  let activeQueueTitle = $state<string>('');
+  let activeQueueTitle = $state<string>("");
 
   // Filters & Search
-  let searchQuery = $state('');
-  let filterCategory = $state('ALL');
-  let filterPlayer = $state('ALL');
+  let searchQuery = $state("");
+  let filterCategory = $state("ALL");
+  let filterPlayer = $state("ALL");
 
   // Modals State
   let showStatsMatrix = $state(false);
@@ -126,7 +133,7 @@
     if (b && b.id !== lastSyncedBoardId) {
       lastSyncedBoardId = b.id;
       stickyAutoDescriptors = b.buttons
-        .filter((btn) => btn.kind === 'descriptor' && btn.autoAdd)
+        .filter((btn) => btn.kind === "descriptor" && btn.autoAdd)
         .map((btn) => btn.id);
     }
   });
@@ -135,34 +142,34 @@
   const primaryActiveContinuous = $derived(
     activeContinuousList.length > 0
       ? activeContinuousList[activeContinuousList.length - 1]
-      : null
+      : null,
   );
   const targetExistingClip = $derived(
     projectStore.tags.find((t) => t.id === selectedClipId) ||
       (projectStore.tags.length > 0
         ? projectStore.tags[projectStore.tags.length - 1]
-        : null)
+        : null),
   );
   const targetTagName = $derived(
     primaryActiveContinuous
       ? primaryActiveContinuous.name
       : targetExistingClip
         ? targetExistingClip.title
-        : null
+        : null,
   );
   const targetTagButtonId = $derived(
     primaryActiveContinuous
       ? primaryActiveContinuous.buttonId
       : targetExistingClip
         ? targetExistingClip.boardButtonId || targetExistingClip.category
-        : null
+        : null,
   );
   const targetAttachedDescriptorIds = $derived(
     primaryActiveContinuous
       ? primaryActiveContinuous.labels.map((l) => l.id)
       : targetExistingClip?.labels
         ? targetExistingClip.labels.map((l) => l.id)
-        : []
+        : [],
   );
   const targetAttachedPlayers = $derived(
     primaryActiveContinuous
@@ -172,15 +179,19 @@
           targetExistingClip.playersInvolved.length > 0
           ? targetExistingClip.playersInvolved
           : targetExistingClip.playerLabel
-            ? [projectStore.normalizePlayerLabel(targetExistingClip.playerLabel)]
+            ? [
+                projectStore.normalizePlayerLabel(
+                  targetExistingClip.playerLabel,
+                ),
+              ]
             : []
-        : []
+        : [],
   );
 
   const availableFilterCategories = $derived.by(() => {
     const set = new Set<string>();
     for (const btn of activeBoard.buttons) {
-      if (btn.kind === 'category') set.add(btn.name);
+      if (btn.kind === "category") set.add(btn.name);
     }
     for (const t of projectStore.tags) {
       if (t.category) set.add(t.category);
@@ -192,17 +203,18 @@
     const q = leftSearchQuery.trim().toLowerCase();
     return activeBoard.buttons.filter(
       (b) =>
-        b.kind === 'category' &&
+        b.kind === "category" &&
         (!q ||
           b.name.toLowerCase().includes(q) ||
-          (b.hotkey && b.hotkey.toLowerCase() === q))
+          (b.hotkey && b.hotkey.toLowerCase() === q)),
     );
   });
 
   const leftDescriptors = $derived.by(() => {
     const q = leftSearchQuery.trim().toLowerCase();
     return activeBoard.buttons.filter(
-      (b) => b.kind === 'descriptor' && (!q || b.name.toLowerCase().includes(q))
+      (b) =>
+        b.kind === "descriptor" && (!q || b.name.toLowerCase().includes(q)),
     );
   });
 
@@ -219,7 +231,7 @@
   }
 
   function handleLeftButtonClick(btn: TaggingButton) {
-    if (btn.kind === 'category') {
+    if (btn.kind === "category") {
       handleCategoryPress(btn);
     } else {
       handleDescriptorPress(btn);
@@ -228,18 +240,20 @@
 
   function openButtonInCodingBoard(buttonId: string | null) {
     codingBoardFocusButtonId = buttonId;
-    workspaceSubTab = 'coding_board';
+    workspaceSubTab = "coding_board";
   }
 
   function handleHeaderAddNewButton() {
-    const existingCanvas = activeBoard.buttons.filter((b) => b.w > 0 && b.h > 0);
+    const existingCanvas = activeBoard.buttons.filter(
+      (b) => b.w > 0 && b.h > 0,
+    );
     const idx = existingCanvas.length;
     const newBtn: TaggingButton = {
       id: `TAG_${Date.now().toString(36).toUpperCase()}`,
       name: `TAG ${idx + 1}`,
-      kind: 'category',
+      kind: "category",
       hotkey: null,
-      color: '#0284c7',
+      color: "#0284c7",
       x: 24 + (idx % 6) * 156,
       y: 24 + Math.floor(idx / 6) * 82,
       w: 140,
@@ -247,7 +261,7 @@
       leadSec: 2,
       lagSec: 3,
       continuous: true,
-      shape: 'rounded',
+      shape: "rounded",
       forTags: [],
       links: [],
       exclusionGroup: null,
@@ -266,13 +280,13 @@
     const cat = leftCategories[0];
     if (cat) {
       handleCategoryPress(cat);
-      leftSearchQuery = '';
+      leftSearchQuery = "";
       return;
     }
     const desc = leftDescriptors[0];
     if (desc) {
       handleDescriptorPress(desc);
-      leftSearchQuery = '';
+      leftSearchQuery = "";
     }
   }
 
@@ -281,7 +295,7 @@
     if (!raw) return;
     const added = projectStore.addRosterPlayer(raw);
     if (added) handlePlayerPress(added);
-    newPlayerInput = '';
+    newPlayerInput = "";
   }
 
   function handleTrimClip(tagId: string, newStart: number, newEnd: number) {
@@ -292,7 +306,9 @@
       startTime: newStart,
       endTime: newEnd,
     });
-    notifyUser(`Klip dipangkas: ${formatTime(newStart)} - ${formatTime(newEnd)}`);
+    notifyUser(
+      `Klip dipangkas: ${formatTime(newStart)} - ${formatTime(newEnd)}`,
+    );
   }
 
   function handleMoveClip(tagId: string, newStart: number, newEnd: number) {
@@ -303,14 +319,16 @@
       startTime: newStart,
       endTime: newEnd,
     });
-    notifyUser(`Klip digeser ke ${formatTime(newStart)} - ${formatTime(newEnd)}`);
+    notifyUser(
+      `Klip digeser ke ${formatTime(newStart)} - ${formatTime(newEnd)}`,
+    );
   }
 
   function handleReassignClipCategory(
     tagId: string,
     targetCategory: string,
     targetColor: string,
-    targetButtonId?: string
+    targetButtonId?: string,
   ) {
     const target = projectStore.tags.find((t) => t.id === tagId);
     if (!target || target.category === targetCategory) return;
@@ -338,22 +356,22 @@
   async function handleQuickExportSingleClip(tag: VideoTagEvent) {
     if (exportingQuickClipId) return;
     if (!isTauriDesktop()) {
-      notifyUser('Quick Export MP4 memerlukan aplikasi desktop Tauri.');
+      notifyUser("Quick Export MP4 memerlukan aplikasi desktop Tauri.");
       return;
     }
     const path = projectStore.videoFilePath;
-    if (!path || (!path.startsWith('/') && !/^[A-Za-z]:[\\/]/.test(path))) {
-      notifyUser('Buka file video asli di Hub Proyek sebelum ekspor MP4.');
+    if (!path || (!path.startsWith("/") && !/^[A-Za-z]:[\\/]/.test(path))) {
+      notifyUser("Buka file video asli di Hub Proyek sebelum ekspor MP4.");
       return;
     }
 
     try {
-      const { save } = await import('@tauri-apps/plugin-dialog');
-      const cleanCat = tag.category.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const cleanCat = tag.category.replace(/[^a-zA-Z0-9_-]/g, "_");
       const outPath = await save({
         title: `Quick Export MP4 — ${tag.category}`,
         defaultPath: `FutsalTag_${cleanCat}_${Math.round(tag.startTime)}s.mp4`,
-        filters: [{ name: 'MP4 Video', extensions: ['mp4'] }],
+        filters: [{ name: "MP4 Video", extensions: ["mp4"] }],
       });
       if (!outPath) return;
 
@@ -363,7 +381,8 @@
       const hasDrawings = Boolean(tag.drawings && tag.drawings.length > 0);
       const hasVoice = Boolean(tag.voiceoverAudioBase64);
       if (hasDrawings || hasVoice) {
-        const freezeSec = tag.freezeTimestamp ?? (tag.startTime + tag.endTime) / 2;
+        const freezeSec =
+          tag.freezeTimestamp ?? (tag.startTime + tag.endTime) / 2;
         const overlayBase64 = hasDrawings
           ? renderDrawingsToDataUrl(tag.drawings || [], 1280, 720, freezeSec, {
               chromaConfig: projectStore.chromaFloorConfig,
@@ -371,19 +390,19 @@
               animElapsedSec: 1.0,
             })
           : null;
-        await invoke<string>('burn_telestration_clip_ffmpeg', {
+        await invoke<string>("burn_telestration_clip_ffmpeg", {
           inputPath: path,
           outputPath: outPath,
           startSec: tag.startTime,
           durationSec: Math.max(0.4, tag.endTime - tag.startTime),
           freezeSec,
-          pauseDuration: tag.pauseDuration || 3.0,
+          pauseDuration: tag.pauseDuration ?? 3.0,
           overlayBase64,
           voiceoverBase64: tag.voiceoverAudioBase64 || null,
           targetHeight: 720,
         });
       } else {
-        await invoke<string>('render_video_clip_ffmpeg', {
+        await invoke<string>("render_video_clip_ffmpeg", {
           inputPath: path,
           outputPath: outPath,
           startSec: tag.startTime,
@@ -402,14 +421,16 @@
   async function handleHeaderImportBoard() {
     if (isTauriDesktop()) {
       try {
-        const { open } = await import('@tauri-apps/plugin-dialog');
+        const { open } = await import("@tauri-apps/plugin-dialog");
         const selected = await open({
-          title: 'Impor Papan Tagging Momen (.momen.json / .json)',
+          title: "Impor Papan Tagging Momen (.momen.json / .json)",
           multiple: false,
-          filters: [{ name: 'Momen / JSON', extensions: ['json', 'momen'] }],
+          filters: [{ name: "Momen / JSON", extensions: ["json", "momen"] }],
         });
-        if (!selected || typeof selected !== 'string') return;
-        const content = await invoke<string>('read_project_file', { filePath: selected });
+        if (!selected || typeof selected !== "string") return;
+        const content = await invoke<string>("read_project_file", {
+          filePath: selected,
+        });
         handleImportBoardJson(content);
       } catch (err: any) {
         alert(`Gagal mengimpor papan Momen: ${err?.message || err}`);
@@ -434,14 +455,16 @@
       }
     };
     reader.readAsText(input.files[0]);
-    input.value = '';
+    input.value = "";
   }
 
   function formatCompactElapsed(sec: number): string {
     const s = Math.max(0, Math.floor(sec));
     const m = Math.floor(s / 60);
     const rem = s % 60;
-    return m > 0 ? `${m}:${rem.toString().padStart(2, '0')}` : `${sec.toFixed(1)}s`;
+    return m > 0
+      ? `${m}:${rem.toString().padStart(2, "0")}`
+      : `${sec.toFixed(1)}s`;
   }
 
   function startCanvasResize(e: PointerEvent) {
@@ -462,12 +485,12 @@
 
     function onUp() {
       isResizingCanvas = false;
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
     }
 
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
   }
 
   function startLinimasaResize(e: PointerEvent) {
@@ -483,12 +506,12 @@
 
     function onUp() {
       isResizingLinimasa = false;
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
     }
 
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
   }
 
   onMount(() => {
@@ -499,57 +522,57 @@
     function handleKeyDown(e: KeyboardEvent) {
       const targetTag = (e.target as HTMLElement)?.tagName;
       if (
-        targetTag === 'INPUT' ||
-        targetTag === 'TEXTAREA' ||
-        targetTag === 'SELECT'
+        targetTag === "INPUT" ||
+        targetTag === "TEXTAREA" ||
+        targetTag === "SELECT"
       ) {
         return;
       }
-      if (e.code === 'Space') {
+      if (e.code === "Space") {
         e.preventDefault();
         togglePlay();
-      } else if (e.key === 'Escape') {
+      } else if (e.key === "Escape") {
         if (showKickoffMenu) {
           showKickoffMenu = false;
         } else if (Object.keys(activeContinuousTags).length > 0) {
           e.preventDefault();
           stopAllContinuousTags();
         }
-      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
         e.preventDefault();
         handleUndoLastTag();
-      } else if (e.altKey && e.key.toLowerCase() === 'u') {
+      } else if (e.altKey && e.key.toLowerCase() === "u") {
         e.preventDefault();
         createClipFromInOut();
-      } else if (e.key === '/') {
+      } else if (e.key === "/") {
         e.preventDefault();
-        document.getElementById('quick-tag-search-input')?.focus();
-      } else if (e.key === 'ArrowLeft') {
+        document.getElementById("quick-tag-search-input")?.focus();
+      } else if (e.key === "ArrowLeft") {
         stepFrame(-1);
-      } else if (e.key === 'ArrowRight') {
+      } else if (e.key === "ArrowRight") {
         stepFrame(1);
       } else {
         const keyUpper = e.key.toUpperCase();
         const boardMatch = activeBoard.buttons.find(
-          (b) => b.hotkey && b.hotkey.toUpperCase() === keyUpper
+          (b) => b.hotkey && b.hotkey.toUpperCase() === keyUpper,
         );
         if (boardMatch) {
           e.preventDefault();
-          if (boardMatch.kind === 'category') {
+          if (boardMatch.kind === "category") {
             handleCategoryPress(boardMatch);
           } else {
             handleDescriptorPress(boardMatch);
           }
-        } else if (keyUpper === 'I') {
+        } else if (keyUpper === "I") {
           setInPoint();
-        } else if (keyUpper === 'O') {
+        } else if (keyUpper === "O") {
           setOutPoint();
         }
       }
     }
 
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
   });
 
   function togglePlay() {
@@ -568,7 +591,10 @@
     projectStore.currentTime = currentTime;
 
     // Sequential Queue Playback (e.g. from Cross-Tabulation Matrix)
-    if (activeClipQueue.length > 0 && activeQueueIndex < activeClipQueue.length) {
+    if (
+      activeClipQueue.length > 0 &&
+      activeQueueIndex < activeClipQueue.length
+    ) {
       const currentQueueClip = activeClipQueue[activeQueueIndex];
       if (currentTime >= currentQueueClip.endTime) {
         if (activeQueueIndex + 1 < activeClipQueue.length) {
@@ -614,7 +640,10 @@
     videoEl.pause();
     isPlaying = false;
     const fps = 25;
-    videoEl.currentTime = Math.max(0, Math.min(videoEl.currentTime + step / fps, duration));
+    videoEl.currentTime = Math.max(
+      0,
+      Math.min(videoEl.currentTime + step / fps, duration),
+    );
     currentTime = videoEl.currentTime;
     projectStore.currentTime = currentTime;
   }
@@ -629,15 +658,15 @@
       const newTag: VideoTagEvent = {
         id: `tag-${Date.now()}`,
         title: `Klip Manual (${formatTime(inPoint)} - ${formatTime(outPoint)})`,
-        category: 'Transition Attack',
+        category: "Transition Attack",
         startTime: Number(inPoint.toFixed(2)),
         endTime: Number(outPoint.toFixed(2)),
-        color: '#38bdf8',
+        color: "#38bdf8",
         playerLabel: activeSelectedPlayer,
         playersInvolved: [activeSelectedPlayer],
         teamSide: activeTeamSide,
-        outcomeLabel: 'Gol / Sukses',
-        rating: '⭐⭐⭐ Bagus',
+        outcomeLabel: "Gol / Sukses",
+        rating: "⭐⭐⭐ Bagus",
         pauseDuration: 3.0,
         drawings: [],
       };
@@ -651,26 +680,32 @@
 
   function createClipFromInOut() {
     if (inPoint === null) {
-      notifyUser('Tandai titik IN (I) terlebih dahulu lalu tekan Alt+U');
+      notifyUser("Tandai titik IN (I) terlebih dahulu lalu tekan Alt+U");
       return;
     }
     const start = inPoint;
-    let end = outPoint !== null && outPoint > start + 0.2 ? outPoint : currentTime;
+    let end =
+      outPoint !== null && outPoint > start + 0.2 ? outPoint : currentTime;
     if (end <= start + 0.2) {
-      end = Math.min(Math.max(duration, start + 1), start + Math.max(1, lagTimeSeconds));
+      end = Math.min(
+        Math.max(duration, start + 1),
+        start + Math.max(1, lagTimeSeconds),
+      );
     }
 
-    const firstBoardCat = activeBoard.buttons.find((b) => b.kind === 'category');
+    const firstBoardCat = activeBoard.buttons.find(
+      (b) => b.kind === "category",
+    );
     const resolvedCategory = primaryActiveContinuous
       ? primaryActiveContinuous.name
       : targetExistingClip
         ? targetExistingClip.category
-        : firstBoardCat?.name || 'Transition Attack';
+        : firstBoardCat?.name || "Transition Attack";
     const resolvedColor = primaryActiveContinuous
       ? primaryActiveContinuous.color
       : targetExistingClip
         ? targetExistingClip.color
-        : firstBoardCat?.color || '#38bdf8';
+        : firstBoardCat?.color || "#38bdf8";
     const resolvedBtnId = primaryActiveContinuous
       ? primaryActiveContinuous.buttonId
       : targetExistingClip?.boardButtonId || firstBoardCat?.id;
@@ -687,8 +722,8 @@
       labels: resolvedBtnId ? buildSeedLabels(resolvedBtnId) : [],
       teamSide: activeTeamSide,
       boardButtonId: resolvedBtnId,
-      outcomeLabel: 'Gol / Sukses',
-      rating: '⭐⭐⭐ Bagus',
+      outcomeLabel: "Gol / Sukses",
+      rating: "⭐⭐⭐ Bagus",
       pauseDuration: 3.0,
       drawings: [],
     };
@@ -696,15 +731,20 @@
     selectedClipId = newTag.id;
     inPoint = null;
     outPoint = null;
-    notifyUser(`Klip Alt+U: ${resolvedCategory} (${(end - start).toFixed(1)}s)`);
+    notifyUser(
+      `Klip Alt+U: ${resolvedCategory} (${(end - start).toFixed(1)}s)`,
+    );
   }
 
   function buildSeedLabels(catButtonId: string): TagDescriptor[] {
     const out: TagDescriptor[] = [];
     for (const stickyId of stickyAutoDescriptors) {
-      const btn = activeBoard.buttons.find((b) => b.id === stickyId && b.kind === 'descriptor');
+      const btn = activeBoard.buttons.find(
+        (b) => b.id === stickyId && b.kind === "descriptor",
+      );
       if (!btn) continue;
-      if (btn.forTags.length > 0 && !btn.forTags.includes(catButtonId)) continue;
+      if (btn.forTags.length > 0 && !btn.forTags.includes(catButtonId))
+        continue;
       out.push({
         id: btn.id,
         name: btn.name,
@@ -719,7 +759,7 @@
   function toggleDescriptorInList(
     list: TagDescriptor[],
     btn: TaggingButton,
-    desc: TagDescriptor
+    desc: TagDescriptor,
   ): TagDescriptor[] {
     if (list.some((l) => l.id === btn.id)) {
       return list.filter((l) => l.id !== btn.id);
@@ -736,7 +776,7 @@
 
     const endTime = Math.min(
       Math.max(duration, currentTime + 1),
-      Math.max(active.startTime + 0.5, currentTime + active.lagSec)
+      Math.max(active.startTime + 0.5, currentTime + active.lagSec),
     );
     const primaryPlayer = active.players[0] || activeSelectedPlayer;
     const newTag: VideoTagEvent = {
@@ -752,9 +792,9 @@
       teamSide: active.teamSide,
       isContinuous: true,
       boardButtonId: buttonId,
-      outcomeLabel: 'Gol / Sukses',
-      zoneLabel: 'Area Penalti Lawan',
-      rating: '⭐⭐⭐ Bagus',
+      outcomeLabel: "Gol / Sukses",
+      zoneLabel: "Area Penalti Lawan",
+      rating: "⭐⭐⭐ Bagus",
       pauseDuration: 3.0,
       drawings: [],
     };
@@ -764,7 +804,9 @@
     const next = { ...activeContinuousTags };
     delete next[buttonId];
     activeContinuousTags = next;
-    notifyUser(`Klip Kontinu Disimpan: ${active.name} (${(endTime - active.startTime).toFixed(1)}s)`);
+    notifyUser(
+      `Klip Kontinu Disimpan: ${active.name} (${(endTime - active.startTime).toFixed(1)}s)`,
+    );
   }
 
   function handleCategoryPress(btn: TaggingButton) {
@@ -806,12 +848,13 @@
     }
 
     // Single-click Auto Mode
-    const lead = btn.leadSec > 0 || btn.continuous ? btn.leadSec : leadTimeSeconds;
+    const lead =
+      btn.leadSec > 0 || btn.continuous ? btn.leadSec : leadTimeSeconds;
     const lag = btn.lagSec > 0 ? btn.lagSec : lagTimeSeconds;
     const start = Math.max(0, currentTime - lead);
     const end = Math.min(
       Math.max(duration, currentTime + lag),
-      Math.max(start + 1, currentTime + lag)
+      Math.max(start + 1, currentTime + lag),
     );
     const seedLabels = buildSeedLabels(btn.id);
     const newTag: VideoTagEvent = {
@@ -827,9 +870,9 @@
       teamSide: activeTeamSide,
       isContinuous: false,
       boardButtonId: btn.id,
-      outcomeLabel: 'Gol / Sukses',
-      zoneLabel: 'Area Penalti Lawan',
-      rating: '⭐⭐⭐ Bagus',
+      outcomeLabel: "Gol / Sukses",
+      zoneLabel: "Area Penalti Lawan",
+      rating: "⭐⭐⭐ Bagus",
       pauseDuration: 3.0,
       drawings: [],
     };
@@ -847,9 +890,11 @@
       atTime: Number(currentTime.toFixed(2)),
     };
 
-    if (btn.autoAdd || btn.group === 'period') {
+    if (btn.autoAdd || btn.group === "period") {
       if (stickyAutoDescriptors.includes(btn.id)) {
-        stickyAutoDescriptors = stickyAutoDescriptors.filter((id) => id !== btn.id);
+        stickyAutoDescriptors = stickyAutoDescriptors.filter(
+          (id) => id !== btn.id,
+        );
       } else {
         const cleaned = btn.group
           ? stickyAutoDescriptors.filter((id) => {
@@ -889,7 +934,9 @@
         ...targetExistingClip,
         labels: updatedLabels,
       });
-      notifyUser(`Label "${btn.name}" diperbarui di "${targetExistingClip.title}"`);
+      notifyUser(
+        `Label "${btn.name}" diperbarui di "${targetExistingClip.title}"`,
+      );
     } else {
       notifyUser(`Label sticky "${btn.name}" siap untuk klip berikutnya`);
     }
@@ -913,16 +960,23 @@
           players: nextPlayers,
         },
       };
-      notifyUser(`Pemain [${nextPlayers.join(', ')}] → ${primaryActiveContinuous.name}`);
+      notifyUser(
+        `Pemain [${nextPlayers.join(", ")}] → ${primaryActiveContinuous.name}`,
+      );
       return;
     }
 
     if (targetExistingClip) {
       const existing =
-        targetExistingClip.playersInvolved && targetExistingClip.playersInvolved.length > 0
+        targetExistingClip.playersInvolved &&
+        targetExistingClip.playersInvolved.length > 0
           ? targetExistingClip.playersInvolved
           : targetExistingClip.playerLabel
-            ? [projectStore.normalizePlayerLabel(targetExistingClip.playerLabel)]
+            ? [
+                projectStore.normalizePlayerLabel(
+                  targetExistingClip.playerLabel,
+                ),
+              ]
             : [];
       const hasPlayer = existing.includes(playerLabel);
       const nextPlayers = hasPlayer
@@ -936,7 +990,7 @@
         playerLabel: nextPlayers[0] || playerLabel,
         playersInvolved: nextPlayers,
       });
-      notifyUser(`Pemain [${nextPlayers.join(', ')}] pada klip`);
+      notifyUser(`Pemain [${nextPlayers.join(", ")}] pada klip`);
     }
   }
 
@@ -958,7 +1012,11 @@
   function handleCopyClipMeta(tag: VideoTagEvent) {
     copiedMeta = {
       labels: JSON.parse(JSON.stringify(tag.labels || [])),
-      players: tag.playersInvolved ? [...tag.playersInvolved] : tag.playerLabel ? [tag.playerLabel] : [],
+      players: tag.playersInvolved
+        ? [...tag.playersInvolved]
+        : tag.playerLabel
+          ? [tag.playerLabel]
+          : [],
       teamSide: tag.teamSide,
     };
     notifyUser(`Label & pemain disalin dari "${tag.category}"`);
@@ -966,7 +1024,10 @@
 
   function handlePasteClipMeta(tag: VideoTagEvent) {
     if (!copiedMeta) return;
-    const players = copiedMeta.players.length > 0 ? [...copiedMeta.players] : tag.playersInvolved;
+    const players =
+      copiedMeta.players.length > 0
+        ? [...copiedMeta.players]
+        : tag.playersInvolved;
     projectStore.updateTag({
       ...tag,
       labels: JSON.parse(JSON.stringify(copiedMeta.labels)),
@@ -979,17 +1040,22 @@
 
   async function handleExportBoardJson() {
     const json = exportMomenBoardJson(activeBoard);
-    const safeName = activeBoard.name.replace(/[^a-zA-Z0-9_-]/g, '_').toLowerCase();
+    const safeName = activeBoard.name
+      .replace(/[^a-zA-Z0-9_-]/g, "_")
+      .toLowerCase();
     if (isTauriDesktop()) {
       try {
-        const { save } = await import('@tauri-apps/plugin-dialog');
+        const { save } = await import("@tauri-apps/plugin-dialog");
         const selected = await save({
-          title: 'Ekspor Papan Momen (.momen.json)',
+          title: "Ekspor Papan Momen (.momen.json)",
           defaultPath: `${safeName}.momen.json`,
-          filters: [{ name: 'Momen Board JSON', extensions: ['json'] }],
+          filters: [{ name: "Momen Board JSON", extensions: ["json"] }],
         });
         if (!selected) return;
-        await invoke<string>('save_project_file', { filePath: selected, content: json });
+        await invoke<string>("save_project_file", {
+          filePath: selected,
+          content: json,
+        });
         notifyUser(`Papan diekspor ke "${selected}"`);
         return;
       } catch (err: any) {
@@ -997,9 +1063,9 @@
         return;
       }
     }
-    const blob = new Blob([json], { type: 'application/json' });
+    const blob = new Blob([json], { type: "application/json" });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
+    const a = document.createElement("a");
     a.href = url;
     a.download = `${safeName}.momen.json`;
     a.click();
@@ -1009,7 +1075,9 @@
 
   function handleImportBoardJson(jsonStr: string) {
     const imported = projectStore.importMomenBoard(jsonStr);
-    notifyUser(`Papan "${imported.name}" (${imported.buttons.length} tombol) aktif!`);
+    notifyUser(
+      `Papan "${imported.name}" (${imported.buttons.length} tombol) aktif!`,
+    );
   }
 
   function notifyUser(msg: string) {
@@ -1057,13 +1125,15 @@
     videoEl.currentTime = clip.startTime;
     videoEl.play();
     isPlaying = true;
-    notifyUser(`[${activeQueueIndex + 1}/${activeClipQueue.length}] ${clip.title}`);
+    notifyUser(
+      `[${activeQueueIndex + 1}/${activeClipQueue.length}] ${clip.title}`,
+    );
   }
 
   function stopSequentialQueue() {
     activeClipQueue = [];
     activeQueueIndex = 0;
-    activeQueueTitle = '';
+    activeQueueTitle = "";
     if (videoEl) videoEl.pause();
     isPlaying = false;
   }
@@ -1072,14 +1142,14 @@
     const m = Math.floor(sec / 60);
     const s = Math.floor(sec % 60);
     const ms = Math.floor((sec % 1) * 10);
-    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}.${ms}`;
+    return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}.${ms}`;
   }
 
   let filteredTags = $derived(
     projectStore.tags.filter((t) => {
       const q = searchQuery.toLowerCase();
       const matchSearch =
-        q === '' ||
+        q === "" ||
         t.title.toLowerCase().includes(q) ||
         t.category.toLowerCase().includes(q) ||
         (t.notes && t.notes.toLowerCase().includes(q)) ||
@@ -1087,28 +1157,34 @@
         Boolean(t.playersInvolved?.some((p) => p.toLowerCase().includes(q))) ||
         Boolean(t.labels?.some((l) => l.name.toLowerCase().includes(q)));
 
-      const matchCat = filterCategory === 'ALL' || t.category === filterCategory;
+      const matchCat =
+        filterCategory === "ALL" || t.category === filterCategory;
       const matchPlayer =
-        filterPlayer === 'ALL' ||
-        projectStore.normalizePlayerLabel(t.playerLabel) === projectStore.normalizePlayerLabel(filterPlayer) ||
+        filterPlayer === "ALL" ||
+        projectStore.normalizePlayerLabel(t.playerLabel) ===
+          projectStore.normalizePlayerLabel(filterPlayer) ||
         Boolean(
           t.playersInvolved?.some(
-            (p) => projectStore.normalizePlayerLabel(p) === projectStore.normalizePlayerLabel(filterPlayer)
-          )
+            (p) =>
+              projectStore.normalizePlayerLabel(p) ===
+              projectStore.normalizePlayerLabel(filterPlayer),
+          ),
         );
 
       const isAwayClip =
-        t.teamSide === 'away' || projectStore.normalizePlayerLabel(t.playerLabel) === 'Tim Lawan';
+        t.teamSide === "away" ||
+        projectStore.normalizePlayerLabel(t.playerLabel) === "Tim Lawan";
       const matchMicro =
-        microFilter === 'all' ||
-        (microFilter === 'home' && !isAwayClip) ||
-        (microFilter === 'away' && isAwayClip) ||
-        (microFilter === 'fav' && Boolean(t.favorite)) ||
-        (microFilter === 'good' && t.rating === '⭐⭐⭐ Bagus') ||
-        (microFilter === 'eval' && (t.rating === '⚠️ Evaluasi' || t.rating === '❌ Kesalahan Fatal'));
+        microFilter === "all" ||
+        (microFilter === "home" && !isAwayClip) ||
+        (microFilter === "away" && isAwayClip) ||
+        (microFilter === "fav" && Boolean(t.favorite)) ||
+        (microFilter === "good" && t.rating === "⭐⭐⭐ Bagus") ||
+        (microFilter === "eval" &&
+          (t.rating === "⚠️ Evaluasi" || t.rating === "❌ Kesalahan Fatal"));
 
       return matchSearch && matchCat && matchPlayer && matchMicro;
-    })
+    }),
   );
 
   let currentPlaylist = $derived(projectStore.playlists[0]);
@@ -1122,8 +1198,8 @@
       <nav class="subnav-segmented">
         <button
           class="subnav-btn"
-          class:active={workspaceSubTab === 'tagging'}
-          onclick={() => (workspaceSubTab = 'tagging')}
+          class:active={workspaceSubTab === "tagging"}
+          onclick={() => (workspaceSubTab = "tagging")}
           title="Video & Multi-Track Timeline"
         >
           <Film size={12} />
@@ -1131,8 +1207,8 @@
         </button>
         <button
           class="subnav-btn"
-          class:active={workspaceSubTab === 'coding_board'}
-          onclick={() => (workspaceSubTab = 'coding_board')}
+          class:active={workspaceSubTab === "coding_board"}
+          onclick={() => (workspaceSubTab = "coding_board")}
           title="Papan Tagging (Action Pad)"
         >
           <LayoutGrid size={12} />
@@ -1140,8 +1216,8 @@
         </button>
         <button
           class="subnav-btn"
-          class:active={workspaceSubTab === 'minutes'}
-          onclick={() => (workspaceSubTab = 'minutes')}
+          class:active={workspaceSubTab === "minutes"}
+          onclick={() => (workspaceSubTab = "minutes")}
           title="Menit Bermain, Pergantian & Analisis Quartet 4v4"
         >
           <Timer size={12} />
@@ -1149,8 +1225,8 @@
         </button>
         <button
           class="subnav-btn"
-          class:active={workspaceSubTab === 'lineup'}
-          onclick={() => (workspaceSubTab = 'lineup')}
+          class:active={workspaceSubTab === "lineup"}
+          onclick={() => (workspaceSubTab = "lineup")}
           title="Skuad Futsal 5v5"
         >
           <Users size={12} />
@@ -1159,12 +1235,15 @@
       </nav>
 
       <!-- BOARD CONTROLS IN SLIM SUB-HEADER (MOMEN 2-TIER) -->
-      {#if workspaceSubTab === 'tagging'}
+      {#if workspaceSubTab === "tagging"}
         <div class="board-header-controls">
           <select
             class="hdr-board-select"
             value={activeBoard.id}
-            onchange={(e) => projectStore.selectBoard((e.currentTarget as HTMLSelectElement).value)}
+            onchange={(e) =>
+              projectStore.selectBoard(
+                (e.currentTarget as HTMLSelectElement).value,
+              )}
             title="Pilih Papan Tombol Tagging"
           >
             {#each projectStore.boards as b}
@@ -1257,27 +1336,37 @@
         class="btn-label-menu"
         disabled={projectStore.tags.length === 0}
         onclick={() => {
-          const target = targetExistingClip || projectStore.tags[projectStore.tags.length - 1];
+          const target =
+            targetExistingClip ||
+            projectStore.tags[projectStore.tags.length - 1];
           if (target) {
             openTagEditor(target);
           }
         }}
         title={projectStore.tags.length > 0
-          ? 'Edit metadata klip terpilih (atau klik 2x klip / linimasa)'
-          : 'Buat minimal 1 klip terlebih dahulu untuk mengedit detail klip'}
+          ? "Edit metadata klip terpilih (atau klik 2x klip / linimasa)"
+          : "Buat minimal 1 klip terlebih dahulu untuk mengedit detail klip"}
       >
         <Tag size={12} />
         <span>Edit Klip</span>
       </button>
 
       <!-- STATS MATRIX -->
-      <button class="btn-stats-blue" onclick={() => (showStatsMatrix = true)} title="Buka Matriks Silang Statistik Futsal">
+      <button
+        class="btn-stats-blue"
+        onclick={() => (showStatsMatrix = true)}
+        title="Buka Matriks Silang Statistik Futsal"
+      >
         <Table size={12} />
         <span>Matriks</span>
       </button>
 
       <!-- NEXT STEP -->
-      <button class="btn-next-step" onclick={() => projectStore.setStage('telestrator')} title="Lanjut ke Studio Telestrasi">
+      <button
+        class="btn-next-step"
+        onclick={() => projectStore.setStage("telestrator")}
+        title="Lanjut ke Studio Telestrasi"
+      >
         <span>Telestrasi</span>
         <ArrowRight size={12} />
       </button>
@@ -1286,7 +1375,7 @@
 
   <!-- WORKSPACE BODY (CONDITIONAL ON SUBTAB) -->
   <main class="workspace-main">
-    {#if workspaceSubTab === 'tagging'}
+    {#if workspaceSubTab === "tagging"}
       <!-- MODE 1: MOMEN SPORTS 2-TIER WORKSPACE (LEFT TAG/LABEL · CENTER VIDEO/PLAYERS/CANVAS · RIGHT CLIPS · BOTTOM 100% LINIMASA) -->
       <div class="tagging-two-tier">
         <div class="tagging-top-tier">
@@ -1301,12 +1390,12 @@
                 placeholder="Cari tag / label (/)"
                 class="left-search-input"
                 onkeydown={(e) => {
-                  if (e.key === 'Enter') {
+                  if (e.key === "Enter") {
                     e.preventDefault();
                     handleQuickSearchEnter();
                     (e.currentTarget as HTMLInputElement).blur();
-                  } else if (e.key === 'Escape') {
-                    leftSearchQuery = '';
+                  } else if (e.key === "Escape") {
+                    leftSearchQuery = "";
                     (e.currentTarget as HTMLInputElement).blur();
                   }
                 }}
@@ -1315,7 +1404,7 @@
                 <button
                   type="button"
                   class="left-search-clear"
-                  onclick={() => (leftSearchQuery = '')}
+                  onclick={() => (leftSearchQuery = "")}
                   title="Bersihkan pencarian"
                 >
                   <X size={11} />
@@ -1334,26 +1423,51 @@
                     {@const rec = activeContinuousTags[btn.id]}
                     {@const isOn = Boolean(rec)}
                     {@const catCount = getCategoryClipCount(btn.name)}
-                    <div class="left-tag-row-wrap" class:on={isOn} style="--row-col: {btn.color};">
+                    <div
+                      class="left-tag-row-wrap"
+                      class:on={isOn}
+                      style="--row-col: {btn.color};"
+                    >
                       <button
                         type="button"
                         class="left-tag-row"
                         class:on={isOn}
                         onclick={() => handleLeftButtonClick(btn)}
-                        title="{btn.name}{btn.hotkey ? ` [${btn.hotkey}]` : ''} — {btn.continuous ? 'Mode Kontinu (Start/Stop)' : `Single Click (-${btn.leadSec}s/+${btn.lagSec}s)`}{btn.links.length > 0 ? ` · Terhubung ke ${btn.links.length} tag` : ''}"
+                        title="{btn.name}{btn.hotkey
+                          ? ` [${btn.hotkey}]`
+                          : ''} — {btn.continuous
+                          ? 'Mode Kontinu (Start/Stop)'
+                          : `Single Click (-${btn.leadSec}s/+${btn.lagSec}s)`}{btn
+                          .links.length > 0
+                          ? ` · Terhubung ke ${btn.links.length} tag`
+                          : ''}"
                       >
-                        <span class="ltr-grip" style="background-color: {btn.color};"></span>
+                        <span
+                          class="ltr-grip"
+                          style="background-color: {btn.color};"
+                        ></span>
                         {#if btn.continuous}
-                          <span class="ltr-switch" class:on={isOn}><i></i></span>
+                          <span class="ltr-switch" class:on={isOn}><i></i></span
+                          >
                         {:else}
-                          <span class="ltr-single-dot" style="border-color: {btn.color};"></span>
+                          <span
+                            class="ltr-single-dot"
+                            style="border-color: {btn.color};"
+                          ></span>
                         {/if}
                         <span class="ltr-name">{btn.name}</span>
                         {#if isOn && rec}
-                          <span class="ltr-live-timer">● {formatCompactElapsed(Math.max(0, currentTime - rec.startTime))}</span>
+                          <span class="ltr-live-timer"
+                            >● {formatCompactElapsed(
+                              Math.max(0, currentTime - rec.startTime),
+                            )}</span
+                          >
                         {:else}
                           {#if btn.links.length > 0}
-                            <span class="ltr-link-ico" title="Terhubung ke {btn.links.length} tag">
+                            <span
+                              class="ltr-link-ico"
+                              title="Terhubung ke {btn.links.length} tag"
+                            >
                               <Link2 size={9} />
                             </span>
                           {/if}
@@ -1399,10 +1513,13 @@
                         style="--desc-col: {btn.color};"
                         onclick={() => handleLeftButtonClick(btn)}
                         title={isDimmed
-                          ? `Scope terbatas (forTags: ${btn.forTags.join(', ')})`
+                          ? `Scope terbatas (forTags: ${btn.forTags.join(", ")})`
                           : `Label: ${btn.name}`}
                       >
-                        <span class="ldc-dot" style="background-color: {btn.color};"></span>
+                        <span
+                          class="ldc-dot"
+                          style="background-color: {btn.color};"
+                        ></span>
                         <span class="ldc-name">{btn.name}</span>
                         {#if btn.autoAdd}
                           <span class="ldc-auto">A</span>
@@ -1435,11 +1552,17 @@
               {:else}
                 <div class="empty-video-placeholder">
                   <div class="futsal-glow-orb">⚽</div>
-                  <h3 class="placeholder-title">Layar Video Pertandingan Futsal</h3>
+                  <h3 class="placeholder-title">
+                    Layar Video Pertandingan Futsal
+                  </h3>
                   <p class="placeholder-desc">
-                    Silakan buka video di Hub Proyek atau gunakan sampel demo untuk memotong momen dengan akurasi sub-detik.
+                    Silakan buka video di Hub Proyek atau gunakan sampel demo
+                    untuk memotong momen dengan akurasi sub-detik.
                   </p>
-                  <button class="btn-sample-inline" onclick={() => projectStore.loadSampleDemo()}>
+                  <button
+                    class="btn-sample-inline"
+                    onclick={() => projectStore.loadSampleDemo()}
+                  >
                     Muat Video Sampel Demo
                   </button>
                 </div>
@@ -1498,9 +1621,15 @@
 
             <!-- PINNED LIVE PLAYERS BAR (DIRECTLY UNDER VIDEO) -->
             <div class="pinned-players-bar">
-              <div class="target-badge" class:live={activeContinuousList.length > 0}>
+              <div
+                class="target-badge"
+                class:live={activeContinuousList.length > 0}
+              >
                 <span class="target-dot"></span>
-                <span class="target-lbl" title={targetTagName || 'Belum ada tag'}>
+                <span
+                  class="target-lbl"
+                  title={targetTagName || "Belum ada tag"}
+                >
                   {#if activeContinuousList.length > 0}
                     Merekam: {targetTagName}
                   {:else if targetTagName}
@@ -1514,11 +1643,13 @@
               <button
                 type="button"
                 class="team-side-pill"
-                class:away={activeTeamSide === 'away'}
-                onclick={() => (activeTeamSide = activeTeamSide === 'home' ? 'away' : 'home')}
+                class:away={activeTeamSide === "away"}
+                onclick={() =>
+                  (activeTeamSide =
+                    activeTeamSide === "home" ? "away" : "home")}
                 title="Ganti sisi tim default (HOME / AWAY)"
               >
-                {activeTeamSide === 'home' ? 'HOME' : 'AWAY'}
+                {activeTeamSide === "home" ? "HOME" : "AWAY"}
               </button>
 
               <div class="pinned-players-strip">
@@ -1534,7 +1665,9 @@
                     onclick={() => handlePlayerPress(plLabel)}
                     title="Klik untuk menempel/lepas {plLabel} ke tag aktif atau klip terakhir"
                   >
-                    <span class="pp-num" style="background-color: {p.color};">{p.num}</span>
+                    <span class="pp-num" style="background-color: {p.color};"
+                      >{p.num}</span
+                    >
                     <span class="pp-name">{p.name}</span>
                     {#if isAttached}
                       <Check size={10} />
@@ -1551,7 +1684,7 @@
                   placeholder="+ Pemain"
                   class="pinned-add-input"
                   onkeydown={(e) => {
-                    if (e.key === 'Enter') {
+                    if (e.key === "Enter") {
                       e.preventDefault();
                       submitQuickAddPlayer();
                     }
@@ -1563,7 +1696,12 @@
             <!-- MOMEN-STYLE TRANSPORT BAR -->
             <div class="momen-transport-bar">
               <div class="mtb-left">
-                <button type="button" class="btn-momen-play" onclick={togglePlay} title="Play/Pause (Spasi)">
+                <button
+                  type="button"
+                  class="btn-momen-play"
+                  onclick={togglePlay}
+                  title="Play/Pause (Spasi)"
+                >
                   {#if isPlaying}
                     <Pause size={15} />
                   {:else}
@@ -1573,17 +1711,19 @@
                 <button
                   type="button"
                   class="curr-time-hero-btn"
-                  class:match-clock={projectStore.useMatchClock && projectStore.periodKickoffs.length > 0}
+                  class:match-clock={projectStore.useMatchClock &&
+                    projectStore.periodKickoffs.length > 0}
                   onclick={() => {
                     if (projectStore.periodKickoffs.length > 0) {
                       projectStore.useMatchClock = !projectStore.useMatchClock;
                     }
                   }}
                   title={projectStore.periodKickoffs.length > 0
-                    ? 'Klik untuk beralih antara Waktu Video dan Match Clock (B1/B2)'
-                    : 'Waktu Video (atur Kick-off di tombol KO untuk Match Clock)'}
+                    ? "Klik untuk beralih antara Waktu Video dan Match Clock (B1/B2)"
+                    : "Waktu Video (atur Kick-off di tombol KO untuk Match Clock)"}
                 >
-                  {projectStore.useMatchClock && projectStore.periodKickoffs.length > 0
+                  {projectStore.useMatchClock &&
+                  projectStore.periodKickoffs.length > 0
                     ? projectStore.formatMatchClock(currentTime)
                     : formatCompactElapsed(currentTime)}
                 </button>
@@ -1602,8 +1742,13 @@
                   {#if showKickoffMenu}
                     <div class="kickoff-popover" role="menu">
                       <div class="ko-pop-hdr">
-                        <span>Kick-off di sini ({formatTime(currentTime)})</span>
-                        <button type="button" class="ko-close" onclick={() => (showKickoffMenu = false)}>
+                        <span>Kick-off di sini ({formatTime(currentTime)})</span
+                        >
+                        <button
+                          type="button"
+                          class="ko-close"
+                          onclick={() => (showKickoffMenu = false)}
+                        >
                           <X size={11} />
                         </button>
                       </div>
@@ -1613,7 +1758,9 @@
                         onclick={() => {
                           projectStore.setPeriodKickoff(1, currentTime);
                           showKickoffMenu = false;
-                          notifyUser(`Kick-off Babak 1 diset di ${formatTime(currentTime)}`);
+                          notifyUser(
+                            `Kick-off Babak 1 diset di ${formatTime(currentTime)}`,
+                          );
                         }}
                       >
                         <Flag size={11} class="text-emerald-400" />
@@ -1625,7 +1772,9 @@
                         onclick={() => {
                           projectStore.setPeriodKickoff(2, currentTime);
                           showKickoffMenu = false;
-                          notifyUser(`Kick-off Babak 2 diset di ${formatTime(currentTime)}`);
+                          notifyUser(
+                            `Kick-off Babak 2 diset di ${formatTime(currentTime)}`,
+                          );
                         }}
                       >
                         <Flag size={11} class="text-amber-400" />
@@ -1637,7 +1786,9 @@
                         onclick={() => {
                           projectStore.setPeriodKickoff(3, currentTime);
                           showKickoffMenu = false;
-                          notifyUser(`Kick-off Extra diset di ${formatTime(currentTime)}`);
+                          notifyUser(
+                            `Kick-off Extra diset di ${formatTime(currentTime)}`,
+                          );
                         }}
                       >
                         <Flag size={11} class="text-purple-400" />
@@ -1661,7 +1812,8 @@
                             <button
                               type="button"
                               class="ko-del-btn"
-                              onclick={() => projectStore.clearPeriodKickoff(ko.period)}
+                              onclick={() =>
+                                projectStore.clearPeriodKickoff(ko.period)}
                               title="Hapus penanda {ko.label}"
                             >
                               <X size={10} />
@@ -1673,7 +1825,7 @@
                   {/if}
                 </div>
                 <span class="play-status-pill" class:running={isPlaying}>
-                  ● {isPlaying ? 'jalan' : 'jeda'}
+                  ● {isPlaying ? "jalan" : "jeda"}
                 </span>
               </div>
 
@@ -1684,7 +1836,8 @@
                   max={Math.max(duration, 0.1)}
                   step="0.05"
                   value={currentTime}
-                  oninput={(e) => seekTo(Number((e.currentTarget as HTMLInputElement).value))}
+                  oninput={(e) =>
+                    seekTo(Number((e.currentTarget as HTMLInputElement).value))}
                   class="video-range-slider"
                   aria-label="Posisi Video"
                 />
@@ -1692,16 +1845,36 @@
               </div>
 
               <div class="mtb-right">
-                <button type="button" class="btn-ctrl-sm" onclick={() => stepFrame(-1)} title="Mundur 1 Frame">
+                <button
+                  type="button"
+                  class="btn-ctrl-sm"
+                  onclick={() => stepFrame(-1)}
+                  title="Mundur 1 Frame"
+                >
                   -1F
                 </button>
-                <button type="button" class="btn-ctrl-sm" onclick={() => stepFrame(1)} title="Maju 1 Frame">
+                <button
+                  type="button"
+                  class="btn-ctrl-sm"
+                  onclick={() => stepFrame(1)}
+                  title="Maju 1 Frame"
+                >
                   +1F
                 </button>
-                <button type="button" class="btn-ctrl-sm" onclick={() => seekTo(currentTime - 5)} title="Mundur 5 Detik">
+                <button
+                  type="button"
+                  class="btn-ctrl-sm"
+                  onclick={() => seekTo(currentTime - 5)}
+                  title="Mundur 5 Detik"
+                >
                   -5s
                 </button>
-                <button type="button" class="btn-ctrl-sm" onclick={() => seekTo(currentTime + 5)} title="Maju 5 Detik">
+                <button
+                  type="button"
+                  class="btn-ctrl-sm"
+                  onclick={() => seekTo(currentTime + 5)}
+                  title="Maju 5 Detik"
+                >
                   +5s
                 </button>
 
@@ -1712,9 +1885,14 @@
                   onclick={setInPoint}
                   title="Tandai Titik Masuk (I)"
                 >
-                  [IN{inPoint !== null ? ` ${formatTime(inPoint)}` : ''}
+                  [IN{inPoint !== null ? ` ${formatTime(inPoint)}` : ""}
                 </button>
-                <button type="button" class="btn-inout" onclick={setOutPoint} title="Potong Klip (O)">
+                <button
+                  type="button"
+                  class="btn-inout"
+                  onclick={setOutPoint}
+                  title="Potong Klip (O)"
+                >
                   OUT]
                 </button>
 
@@ -1738,11 +1916,13 @@
                   type="button"
                   class="btn-draw-quick"
                   onclick={() => {
-                    const target = targetExistingClip || projectStore.tags[projectStore.tags.length - 1];
+                    const target =
+                      targetExistingClip ||
+                      projectStore.tags[projectStore.tags.length - 1];
                     if (target) {
                       projectStore.openClipInTelestrator(target);
                     } else {
-                      projectStore.setStage('telestrator');
+                      projectStore.setStage("telestrator");
                     }
                   }}
                   title="Gambar Telestrasi pada klip terpilih atau posisi video saat ini"
@@ -1782,7 +1962,10 @@
               >
                 <span class="resize-pill"></span>
               </div>
-              <div class="center-spatial-canvas" style="height: {spatialCanvasHeight}px;">
+              <div
+                class="center-spatial-canvas"
+                style="height: {spatialCanvasHeight}px;"
+              >
                 <MomenTaggingBoard
                   board={activeBoard}
                   boards={projectStore.boards}
@@ -1814,7 +1997,8 @@
                   onUndoLastTag={handleUndoLastTag}
                   onUpsertButton={(btn) => projectStore.upsertBoardButton(btn)}
                   onDeleteButton={(id) => projectStore.deleteBoardButton(id)}
-                  onOpenFullscreenCanvas={() => (workspaceSubTab = 'coding_board')}
+                  onOpenFullscreenCanvas={() =>
+                    (workspaceSubTab = "coding_board")}
                 />
               </div>
             {:else}
@@ -1824,9 +2008,14 @@
                 onclick={() => (showSpatialCanvas = true)}
               >
                 <ChevronUp size={12} />
-                <span>Papan kanvas disembunyikan. Klik di sini untuk menampilkan. Tombol kiri & keyboard tetap berjalan.</span>
+                <span
+                  >Papan kanvas disembunyikan. Klik di sini untuk menampilkan.
+                  Tombol kiri & keyboard tetap berjalan.</span
+                >
                 {#if activeContinuousList.length > 0}
-                  <span class="dock-live-pill">● {activeContinuousList.length} Merekam</span>
+                  <span class="dock-live-pill"
+                    >● {activeContinuousList.length} Merekam</span
+                  >
                 {/if}
               </button>
             {/if}
@@ -1838,8 +2027,8 @@
               <button
                 type="button"
                 class="tab-pill"
-                class:active={rightPanelTab === 'clips'}
-                onclick={() => (rightPanelTab = 'clips')}
+                class:active={rightPanelTab === "clips"}
+                onclick={() => (rightPanelTab = "clips")}
               >
                 <Scissors size={12} />
                 <span>Klip ({filteredTags.length})</span>
@@ -1847,338 +2036,411 @@
               <button
                 type="button"
                 class="tab-pill"
-                class:active={rightPanelTab === 'playlist'}
-                onclick={() => (rightPanelTab = 'playlist')}
+                class:active={rightPanelTab === "playlist"}
+                onclick={() => (rightPanelTab = "playlist")}
               >
                 <ListOrdered size={12} />
-                <span>Playlist ({currentPlaylist ? currentPlaylist.items.length : 0})</span>
+                <span
+                  >Playlist ({currentPlaylist
+                    ? currentPlaylist.items.length
+                    : 0})</span
+                >
               </button>
             </div>
 
-            {#if rightPanelTab === 'clips'}
-            <!-- PANEL A: SUPER-COMPACT 1-ROW CLIP LIST -->
-            <div class="actions-list-panel">
-              <div class="list-header">
-                <div class="list-filter-row">
-                  <div class="search-wrap-blue">
-                    <Search size={12} />
-                    <input
-                      type="text"
-                      placeholder="Cari klip, label, pemain..."
-                      bind:value={searchQuery}
-                      class="search-input-blue"
-                    />
+            {#if rightPanelTab === "clips"}
+              <!-- PANEL A: SUPER-COMPACT 1-ROW CLIP LIST -->
+              <div class="actions-list-panel">
+                <div class="list-header">
+                  <div class="list-filter-row">
+                    <div class="search-wrap-blue">
+                      <Search size={12} />
+                      <input
+                        type="text"
+                        placeholder="Cari klip, label, pemain..."
+                        bind:value={searchQuery}
+                        class="search-input-blue"
+                      />
+                    </div>
+                    <select
+                      bind:value={filterCategory}
+                      class="filter-select-blue"
+                    >
+                      <option value="ALL">Semua Aksi</option>
+                      {#each availableFilterCategories as catName}
+                        <option value={catName}>{catName}</option>
+                      {/each}
+                    </select>
                   </div>
-                  <select bind:value={filterCategory} class="filter-select-blue">
-                    <option value="ALL">Semua Aksi</option>
-                    {#each availableFilterCategories as catName}
-                      <option value={catName}>{catName}</option>
-                    {/each}
-                  </select>
-                </div>
 
-                <div class="micro-filter-bar">
-                  <button
-                    type="button"
-                    class="mf-pill"
-                    class:active={microFilter === 'all'}
-                    onclick={() => (microFilter = 'all')}
-                  >
-                    Semua
-                  </button>
-                  <button
-                    type="button"
-                    class="mf-pill"
-                    class:active={microFilter === 'home'}
-                    onclick={() => (microFilter = microFilter === 'home' ? 'all' : 'home')}
-                    title="Filter Klip Tim Home"
-                  >
-                    H
-                  </button>
-                  <button
-                    type="button"
-                    class="mf-pill"
-                    class:active={microFilter === 'away'}
-                    onclick={() => (microFilter = microFilter === 'away' ? 'all' : 'away')}
-                    title="Filter Klip Tim Lawan (Away)"
-                  >
-                    A
-                  </button>
-                  <button
-                    type="button"
-                    class="mf-pill mf-star"
-                    class:active={microFilter === 'fav'}
-                    onclick={() => (microFilter = microFilter === 'fav' ? 'all' : 'fav')}
-                    title="Filter Momen Favorit (★)"
-                  >
-                    ★
-                  </button>
-                  <button
-                    type="button"
-                    class="mf-pill"
-                    class:active={microFilter === 'good'}
-                    onclick={() => (microFilter = microFilter === 'good' ? 'all' : 'good')}
-                    title="Filter Rating Bagus"
-                  >
-                    <ThumbsUp size={9} />
-                  </button>
-                  <button
-                    type="button"
-                    class="mf-pill"
-                    class:active={microFilter === 'eval'}
-                    onclick={() => (microFilter = microFilter === 'eval' ? 'all' : 'eval')}
-                    title="Filter Klip Evaluasi / Kesalahan"
-                  >
-                    <ThumbsDown size={9} />
-                  </button>
-                </div>
-
-                {#if filterPlayer !== 'ALL'}
-                  <div class="active-player-filter-chip">
-                    <span>Pemain: <strong>{filterPlayer}</strong></span>
-                    <button type="button" onclick={() => (filterPlayer = 'ALL')} title="Reset filter pemain">
-                      <X size={10} />
+                  <div class="micro-filter-bar">
+                    <button
+                      type="button"
+                      class="mf-pill"
+                      class:active={microFilter === "all"}
+                      onclick={() => (microFilter = "all")}
+                    >
+                      Semua
+                    </button>
+                    <button
+                      type="button"
+                      class="mf-pill"
+                      class:active={microFilter === "home"}
+                      onclick={() =>
+                        (microFilter = microFilter === "home" ? "all" : "home")}
+                      title="Filter Klip Tim Home"
+                    >
+                      H
+                    </button>
+                    <button
+                      type="button"
+                      class="mf-pill"
+                      class:active={microFilter === "away"}
+                      onclick={() =>
+                        (microFilter = microFilter === "away" ? "all" : "away")}
+                      title="Filter Klip Tim Lawan (Away)"
+                    >
+                      A
+                    </button>
+                    <button
+                      type="button"
+                      class="mf-pill mf-star"
+                      class:active={microFilter === "fav"}
+                      onclick={() =>
+                        (microFilter = microFilter === "fav" ? "all" : "fav")}
+                      title="Filter Momen Favorit (★)"
+                    >
+                      ★
+                    </button>
+                    <button
+                      type="button"
+                      class="mf-pill"
+                      class:active={microFilter === "good"}
+                      onclick={() =>
+                        (microFilter = microFilter === "good" ? "all" : "good")}
+                      title="Filter Rating Bagus"
+                    >
+                      <ThumbsUp size={9} />
+                    </button>
+                    <button
+                      type="button"
+                      class="mf-pill"
+                      class:active={microFilter === "eval"}
+                      onclick={() =>
+                        (microFilter = microFilter === "eval" ? "all" : "eval")}
+                      title="Filter Klip Evaluasi / Kesalahan"
+                    >
+                      <ThumbsDown size={9} />
                     </button>
                   </div>
-                {/if}
-              </div>
 
-              <div class="list-items-scroll">
-                {#if filteredTags.length === 0}
-                  <div class="empty-list-futsal">
-                    <div class="empty-icon">✂️</div>
-                    <h4 class="empty-title">Belum Ada Klip</h4>
-                    <p class="empty-guide">
-                      Putar video (<strong>Spasi</strong>) lalu klik tombol <strong>Tag Kontinu / 1-Klik</strong> atau tekan <strong>Hotkey</strong>.
-                    </p>
-                  </div>
-                {:else}
-                  {#each filteredTags as tag (tag.id)}
-                    {@const clipPlayers = tag.playersInvolved && tag.playersInvolved.length > 0 ? tag.playersInvolved : tag.playerLabel ? [tag.playerLabel] : []}
-                    {@const hasMetaRow = Boolean(tag.labels?.length) || clipPlayers.length > 1 || Boolean(tag.drawings?.length)}
-                    <!-- svelte-ignore a11y_click_events_have_key_events -->
-                    <div
-                      class="clip-row"
-                      class:active-loop={activeLoopClip?.id === tag.id}
-                      class:selected-clip={selectedClipId === tag.id}
-                      onclick={() => (selectedClipId = tag.id)}
-                      ondblclick={() => openTagEditor(tag)}
-                      role="button"
-                      tabindex="0"
-                    >
-                      <div class="clip-row-main">
-                        <span class="clip-color-bar" style="background-color: {tag.color};"></span>
-                        <button
-                          type="button"
-                          class="clip-star-btn"
-                          class:starred={Boolean(tag.favorite)}
-                          onclick={(e) => {
-                            e.stopPropagation();
-                            toggleClipFavorite(tag);
-                          }}
-                          title={tag.favorite ? 'Hapus dari Favorit' : 'Tandai Favorit (★)'}
-                        >
-                          <Star size={10} fill={tag.favorite ? '#f59e0b' : 'none'} />
-                        </button>
-                        <span class="clip-cat-chip" title={tag.title}>
-                          {#if tag.isContinuous}<span class="clip-cont-dot">●</span>{/if}
-                          {tag.category}
-                        </span>
-                        <span
-                          class="clip-time-mono"
-                          title="Video: {formatTime(tag.startTime).slice(0, 5)}–{formatTime(tag.endTime).slice(0, 5)}"
-                        >
-                          {projectStore.useMatchClock && projectStore.periodKickoffs.length > 0
-                            ? projectStore.formatMatchClock(tag.startTime)
-                            : `${formatTime(tag.startTime).slice(0, 5)}–${formatTime(tag.endTime).slice(0, 5)}`}
-                        </span>
-                        <span class="clip-dur-micro">{(tag.endTime - tag.startTime).toFixed(1)}s</span>
-                      </div>
-
-                      <div class="clip-row-sub">
-                        <div class="clip-sub-left">
-                          {#if clipPlayers.length > 0}
-                            <span class="clip-player-chip" title={clipPlayers.join(', ')}>
-                              <User size={9} />
-                              <span>{clipPlayers[0]}{clipPlayers.length > 1 ? ` +${clipPlayers.length - 1}` : ''}</span>
-                            </span>
-                          {/if}
-                        </div>
-
-                        <div class="clip-row-actions">
-                          <button
-                            type="button"
-                            class="icon-act-btn"
-                            class:playing={activeLoopClip?.id === tag.id}
-                            onclick={(e) => {
-                              e.stopPropagation();
-                              if (activeLoopClip?.id === tag.id) stopClipLoop();
-                              else playClipLoop(tag);
-                            }}
-                            title="Putar / Loop Klip"
-                          >
-                            {#if activeLoopClip?.id === tag.id}
-                              <Pause size={10} />
-                            {:else}
-                              <Play size={10} />
-                            {/if}
-                          </button>
-                          <button
-                            type="button"
-                            class="icon-act-btn icon-draw"
-                            onclick={(e) => {
-                              e.stopPropagation();
-                              projectStore.openClipInTelestrator(tag);
-                            }}
-                            title="Gambar / Studio Telestrasi"
-                          >
-                            <Sparkles size={10} />
-                          </button>
-                          <button
-                            type="button"
-                            class="icon-act-btn"
-                            onclick={(e) => {
-                              e.stopPropagation();
-                              openTagEditor(tag);
-                            }}
-                            title="Edit Tag, Label & Pemain"
-                          >
-                            <Edit3 size={10} />
-                          </button>
-                          <button
-                            type="button"
-                            class="icon-act-btn"
-                            onclick={(e) => {
-                              e.stopPropagation();
-                              handleCopyClipMeta(tag);
-                            }}
-                            title="Salin Label & Pemain"
-                          >
-                            <Copy size={10} />
-                          </button>
-                          {#if copiedMeta}
-                            <button
-                              type="button"
-                              class="icon-act-btn icon-paste"
-                              onclick={(e) => {
-                                e.stopPropagation();
-                                handlePasteClipMeta(tag);
-                              }}
-                              title="Tempel Label & Pemain"
-                            >
-                              <Clipboard size={10} />
-                            </button>
-                          {/if}
-                          <button
-                            type="button"
-                            class="icon-act-btn"
-                            disabled={exportingQuickClipId !== null}
-                            onclick={(e) => {
-                              e.stopPropagation();
-                              handleQuickExportSingleClip(tag);
-                            }}
-                            title="Quick Export MP4 Klip Ini"
-                          >
-                            <Download size={10} />
-                          </button>
-                          <button
-                            type="button"
-                            class="icon-act-btn"
-                            onclick={(e) => {
-                              e.stopPropagation();
-                              handleAddToPlaylist(tag);
-                            }}
-                            title="Tambah ke Playlist"
-                          >
-                            <Plus size={10} />
-                          </button>
-                          <button
-                            type="button"
-                            class="icon-act-btn icon-del"
-                            onclick={(e) => {
-                              e.stopPropagation();
-                              projectStore.deleteTag(tag.id);
-                            }}
-                            title="Hapus Klip"
-                          >
-                            <Trash2 size={10} />
-                          </button>
-                        </div>
-                      </div>
-
-                      {#if hasMetaRow}
-                        <div class="clip-row-labels">
-                          {#if clipPlayers.length > 1}
-                            {#each clipPlayers.slice(1) as extraP}
-                              <span class="micro-pill micro-player">{extraP}</span>
-                            {/each}
-                          {/if}
-                          {#if tag.labels && tag.labels.length > 0}
-                            {#each tag.labels as lbl}
-                              <span class="micro-pill" style="border-color: {lbl.color || '#38bdf8'};">
-                                <i class="micro-dot" style="background-color: {lbl.color || '#38bdf8'};"></i>
-                                {lbl.name}
-                              </span>
-                            {/each}
-                          {/if}
-                          {#if tag.drawings && tag.drawings.length > 0}
-                            <span class="micro-pill micro-draw">★ {tag.drawings.length} gambar</span>
-                          {/if}
-                        </div>
-                      {/if}
-                    </div>
-                  {/each}
-                {/if}
-              </div>
-            </div>
-          {:else}
-            <!-- PANEL B: PLAYLIST ANTRIAN (PRESENTATION QUEUE) -->
-            <div class="playlist-quick-panel">
-              <div class="playlist-quick-header">
-                <span class="pl-quick-title">Antrian Playlist Presentasi</span>
-                <span class="pl-quick-count">{currentPlaylist ? currentPlaylist.items.length : 0} Klip</span>
-              </div>
-
-              <div class="playlist-items-scroll">
-                {#if !currentPlaylist || currentPlaylist.items.length === 0}
-                  <div class="empty-list-futsal">
-                    <div class="empty-icon">📋</div>
-                    <h4 class="empty-title">Playlist Masih Kosong</h4>
-                    <p class="empty-guide">
-                      Klik tombol <strong>+Playlist</strong> pada kartu aksi untuk mengumpulkan momen terbaik ke playlist siaran.
-                    </p>
-                  </div>
-                {:else}
-                  {#each currentPlaylist.items as item, idx}
-                    <div class="playlist-quick-row">
-                      <span class="pl-order">{idx + 1}</span>
-                      <div class="pl-info">
-                        <span class="pl-name">{item.title}</span>
-                        <span class="pl-meta">{formatTime(item.tagEvent.startTime)} - {formatTime(item.tagEvent.endTime)}</span>
-                      </div>
+                  {#if filterPlayer !== "ALL"}
+                    <div class="active-player-filter-chip">
+                      <span>Pemain: <strong>{filterPlayer}</strong></span>
                       <button
-                        class="btn-pl-remove"
-                        onclick={() => {
-                          currentPlaylist.items.splice(idx, 1);
-                        }}
-                        title="Hapus dari playlist"
+                        type="button"
+                        onclick={() => (filterPlayer = "ALL")}
+                        title="Reset filter pemain"
                       >
-                        <Trash2 size={11} />
+                        <X size={10} />
                       </button>
                     </div>
-                  {/each}
-                {/if}
-              </div>
+                  {/if}
+                </div>
 
-              <div class="playlist-quick-footer">
-                <button class="btn-open-export" onclick={() => projectStore.setStage('playlist_export')}>
-                  <span>Buka di Playlist & Ekspor</span>
-                  <ArrowRight size={13} />
-                </button>
+                <div class="list-items-scroll">
+                  {#if filteredTags.length === 0}
+                    <div class="empty-list-futsal">
+                      <div class="empty-icon">✂️</div>
+                      <h4 class="empty-title">Belum Ada Klip</h4>
+                      <p class="empty-guide">
+                        Putar video (<strong>Spasi</strong>) lalu klik tombol
+                        <strong>Tag Kontinu / 1-Klik</strong>
+                        atau tekan <strong>Hotkey</strong>.
+                      </p>
+                    </div>
+                  {:else}
+                    {#each filteredTags as tag (tag.id)}
+                      {@const clipPlayers =
+                        tag.playersInvolved && tag.playersInvolved.length > 0
+                          ? tag.playersInvolved
+                          : tag.playerLabel
+                            ? [tag.playerLabel]
+                            : []}
+                      {@const hasMetaRow =
+                        Boolean(tag.labels?.length) ||
+                        clipPlayers.length > 1 ||
+                        Boolean(tag.drawings?.length)}
+                      <!-- svelte-ignore a11y_click_events_have_key_events -->
+                      <div
+                        class="clip-row"
+                        class:active-loop={activeLoopClip?.id === tag.id}
+                        class:selected-clip={selectedClipId === tag.id}
+                        onclick={() => (selectedClipId = tag.id)}
+                        ondblclick={() => openTagEditor(tag)}
+                        role="button"
+                        tabindex="0"
+                      >
+                        <div class="clip-row-main">
+                          <span
+                            class="clip-color-bar"
+                            style="background-color: {tag.color};"
+                          ></span>
+                          <button
+                            type="button"
+                            class="clip-star-btn"
+                            class:starred={Boolean(tag.favorite)}
+                            onclick={(e) => {
+                              e.stopPropagation();
+                              toggleClipFavorite(tag);
+                            }}
+                            title={tag.favorite
+                              ? "Hapus dari Favorit"
+                              : "Tandai Favorit (★)"}
+                          >
+                            <Star
+                              size={10}
+                              fill={tag.favorite ? "#f59e0b" : "none"}
+                            />
+                          </button>
+                          <span class="clip-cat-chip" title={tag.title}>
+                            {#if tag.isContinuous}<span class="clip-cont-dot"
+                                >●</span
+                              >{/if}
+                            {tag.category}
+                          </span>
+                          <span
+                            class="clip-time-mono"
+                            title="Video: {formatTime(tag.startTime).slice(
+                              0,
+                              5,
+                            )}–{formatTime(tag.endTime).slice(0, 5)}"
+                          >
+                            {projectStore.useMatchClock &&
+                            projectStore.periodKickoffs.length > 0
+                              ? projectStore.formatMatchClock(tag.startTime)
+                              : `${formatTime(tag.startTime).slice(0, 5)}–${formatTime(tag.endTime).slice(0, 5)}`}
+                          </span>
+                          <span class="clip-dur-micro"
+                            >{(tag.endTime - tag.startTime).toFixed(1)}s</span
+                          >
+                        </div>
+
+                        <div class="clip-row-sub">
+                          <div class="clip-sub-left">
+                            {#if clipPlayers.length > 0}
+                              <span
+                                class="clip-player-chip"
+                                title={clipPlayers.join(", ")}
+                              >
+                                <User size={9} />
+                                <span
+                                  >{clipPlayers[0]}{clipPlayers.length > 1
+                                    ? ` +${clipPlayers.length - 1}`
+                                    : ""}</span
+                                >
+                              </span>
+                            {/if}
+                          </div>
+
+                          <div class="clip-row-actions">
+                            <button
+                              type="button"
+                              class="icon-act-btn"
+                              class:playing={activeLoopClip?.id === tag.id}
+                              onclick={(e) => {
+                                e.stopPropagation();
+                                if (activeLoopClip?.id === tag.id)
+                                  stopClipLoop();
+                                else playClipLoop(tag);
+                              }}
+                              title="Putar / Loop Klip"
+                            >
+                              {#if activeLoopClip?.id === tag.id}
+                                <Pause size={10} />
+                              {:else}
+                                <Play size={10} />
+                              {/if}
+                            </button>
+                            <button
+                              type="button"
+                              class="icon-act-btn icon-draw"
+                              onclick={(e) => {
+                                e.stopPropagation();
+                                projectStore.openClipInTelestrator(tag);
+                              }}
+                              title="Gambar / Studio Telestrasi"
+                            >
+                              <Sparkles size={10} />
+                            </button>
+                            <button
+                              type="button"
+                              class="icon-act-btn"
+                              onclick={(e) => {
+                                e.stopPropagation();
+                                openTagEditor(tag);
+                              }}
+                              title="Edit Tag, Label & Pemain"
+                            >
+                              <Edit3 size={10} />
+                            </button>
+                            <button
+                              type="button"
+                              class="icon-act-btn"
+                              onclick={(e) => {
+                                e.stopPropagation();
+                                handleCopyClipMeta(tag);
+                              }}
+                              title="Salin Label & Pemain"
+                            >
+                              <Copy size={10} />
+                            </button>
+                            {#if copiedMeta}
+                              <button
+                                type="button"
+                                class="icon-act-btn icon-paste"
+                                onclick={(e) => {
+                                  e.stopPropagation();
+                                  handlePasteClipMeta(tag);
+                                }}
+                                title="Tempel Label & Pemain"
+                              >
+                                <Clipboard size={10} />
+                              </button>
+                            {/if}
+                            <button
+                              type="button"
+                              class="icon-act-btn"
+                              disabled={exportingQuickClipId !== null}
+                              onclick={(e) => {
+                                e.stopPropagation();
+                                handleQuickExportSingleClip(tag);
+                              }}
+                              title="Quick Export MP4 Klip Ini"
+                            >
+                              <Download size={10} />
+                            </button>
+                            <button
+                              type="button"
+                              class="icon-act-btn"
+                              onclick={(e) => {
+                                e.stopPropagation();
+                                handleAddToPlaylist(tag);
+                              }}
+                              title="Tambah ke Playlist"
+                            >
+                              <Plus size={10} />
+                            </button>
+                            <button
+                              type="button"
+                              class="icon-act-btn icon-del"
+                              onclick={(e) => {
+                                e.stopPropagation();
+                                projectStore.deleteTag(tag.id);
+                              }}
+                              title="Hapus Klip"
+                            >
+                              <Trash2 size={10} />
+                            </button>
+                          </div>
+                        </div>
+
+                        {#if hasMetaRow}
+                          <div class="clip-row-labels">
+                            {#if clipPlayers.length > 1}
+                              {#each clipPlayers.slice(1) as extraP}
+                                <span class="micro-pill micro-player"
+                                  >{extraP}</span
+                                >
+                              {/each}
+                            {/if}
+                            {#if tag.labels && tag.labels.length > 0}
+                              {#each tag.labels as lbl}
+                                <span
+                                  class="micro-pill"
+                                  style="border-color: {lbl.color ||
+                                    '#38bdf8'};"
+                                >
+                                  <i
+                                    class="micro-dot"
+                                    style="background-color: {lbl.color ||
+                                      '#38bdf8'};"
+                                  ></i>
+                                  {lbl.name}
+                                </span>
+                              {/each}
+                            {/if}
+                            {#if tag.drawings && tag.drawings.length > 0}
+                              <span class="micro-pill micro-draw"
+                                >★ {tag.drawings.length} gambar</span
+                              >
+                            {/if}
+                          </div>
+                        {/if}
+                      </div>
+                    {/each}
+                  {/if}
+                </div>
               </div>
-            </div>
-          {/if}
-        </div>
+            {:else}
+              <!-- PANEL B: PLAYLIST ANTRIAN (PRESENTATION QUEUE) -->
+              <div class="playlist-quick-panel">
+                <div class="playlist-quick-header">
+                  <span class="pl-quick-title">Antrian Playlist Presentasi</span
+                  >
+                  <span class="pl-quick-count"
+                    >{currentPlaylist ? currentPlaylist.items.length : 0} Klip</span
+                  >
+                </div>
+
+                <div class="playlist-items-scroll">
+                  {#if !currentPlaylist || currentPlaylist.items.length === 0}
+                    <div class="empty-list-futsal">
+                      <div class="empty-icon">📋</div>
+                      <h4 class="empty-title">Playlist Masih Kosong</h4>
+                      <p class="empty-guide">
+                        Klik tombol <strong>+Playlist</strong> pada kartu aksi untuk
+                        mengumpulkan momen terbaik ke playlist siaran.
+                      </p>
+                    </div>
+                  {:else}
+                    {#each currentPlaylist.items as item, idx}
+                      <div class="playlist-quick-row">
+                        <span class="pl-order">{idx + 1}</span>
+                        <div class="pl-info">
+                          <span class="pl-name">{item.title}</span>
+                          <span class="pl-meta"
+                            >{formatTime(item.tagEvent.startTime)} - {formatTime(
+                              item.tagEvent.endTime,
+                            )}</span
+                          >
+                        </div>
+                        <button
+                          class="btn-pl-remove"
+                          onclick={() => {
+                            currentPlaylist.items.splice(idx, 1);
+                          }}
+                          title="Hapus dari playlist"
+                        >
+                          <Trash2 size={11} />
+                        </button>
+                      </div>
+                    {/each}
+                  {/if}
+                </div>
+
+                <div class="playlist-quick-footer">
+                  <button
+                    class="btn-open-export"
+                    onclick={() => projectStore.setStage("playlist_export")}
+                  >
+                    <span>Buka di Playlist & Ekspor</span>
+                    <ArrowRight size={13} />
+                  </button>
+                </div>
+              </div>
+            {/if}
+          </div>
         </div>
 
         <!-- BOTTOM TIER (100% FULL WIDTH): RESIZE HANDLE + ALL-CATEGORY LINIMASA -->
@@ -2223,12 +2485,17 @@
           />
         </div>
       </div>
-    {:else if workspaceSubTab === 'coding_board'}
+    {:else if workspaceSubTab === "coding_board"}
       <!-- MODE 2: FULLSCREEN MOMEN & ONCE SPORT ACTION PAD -->
       <div class="momen-fullscreen-pad">
         <div class="mini-transport-strip">
           <div class="mts-left">
-            <button type="button" class="btn-overlay-play" onclick={togglePlay} title="Play/Pause (Spasi)">
+            <button
+              type="button"
+              class="btn-overlay-play"
+              onclick={togglePlay}
+              title="Play/Pause (Spasi)"
+            >
               {#if isPlaying}
                 <Pause size={15} />
               {:else}
@@ -2240,14 +2507,24 @@
               <span class="time-sep">/</span>
               <span class="dur-time">{formatTime(duration)}</span>
             </div>
-            <button type="button" class="btn-ctrl-sm" onclick={() => seekTo(currentTime - 5)}>-5s</button>
-            <button type="button" class="btn-ctrl-sm" onclick={() => seekTo(currentTime + 5)}>+5s</button>
+            <button
+              type="button"
+              class="btn-ctrl-sm"
+              onclick={() => seekTo(currentTime - 5)}>-5s</button
+            >
+            <button
+              type="button"
+              class="btn-ctrl-sm"
+              onclick={() => seekTo(currentTime + 5)}>+5s</button
+            >
           </div>
           <div class="mts-right">
-            <span class="mts-clips-count">Total Klip: <strong>{projectStore.tags.length}</strong></span>
+            <span class="mts-clips-count"
+              >Total Klip: <strong>{projectStore.tags.length}</strong></span
+            >
             {#if activeContinuousList.length > 0}
               <span class="dock-live-pill">
-                ● {activeContinuousList.map((c) => c.name).join(' · ')}
+                ● {activeContinuousList.map((c) => c.name).join(" · ")}
               </span>
             {/if}
           </div>
@@ -2259,19 +2536,21 @@
           initialSelectedButtonId={codingBoardFocusButtonId}
           onSelectBoard={(id) => projectStore.selectBoard(id)}
           onCreateBoard={() => projectStore.createNewBoard()}
-          onUpdateBoardMeta={(patch) => projectStore.updateActiveBoardMeta(patch)}
+          onUpdateBoardMeta={(patch) =>
+            projectStore.updateActiveBoardMeta(patch)}
           onImportBoardJson={handleImportBoardJson}
           onExportBoardJson={handleExportBoardJson}
           onUpsertButton={(btn) => projectStore.upsertBoardButton(btn)}
           onDeleteButton={(id) => projectStore.deleteBoardButton(id)}
-          onToggleLink={(src, dst) => projectStore.toggleBoardButtonLink(src, dst)}
+          onToggleLink={(src, dst) =>
+            projectStore.toggleBoardButtonLink(src, dst)}
           onBackToVideo={() => {
             codingBoardFocusButtonId = null;
-            workspaceSubTab = 'tagging';
+            workspaceSubTab = "tagging";
           }}
         />
       </div>
-    {:else if workspaceSubTab === 'minutes'}
+    {:else if workspaceSubTab === "minutes"}
       <!-- MODE 2B: FUTSAL ROTATION, MENIT BERMAIN & QUARTET 4v4 -->
       <MatchMinutesView
         {currentTime}
@@ -2280,16 +2559,19 @@
         onTogglePlay={togglePlay}
         onSeek={seekTo}
         onPlayClips={(clips, title) => {
-          workspaceSubTab = 'tagging';
+          workspaceSubTab = "tagging";
           playSequentialClips(clips, title);
         }}
       />
-    {:else if workspaceSubTab === 'lineup'}
+    {:else if workspaceSubTab === "lineup"}
       <!-- MODE 3: FUTSAL ROSTER & LINEUP COURT (MOMEN SPORTS STYLE) -->
       <div class="lineup-fullscreen">
         <div class="lineup-header">
           <h3>Susunan Pemain & Roster Futsal (Starting 5 & Cadangan)</h3>
-          <p>Klik pemain untuk menyaring klip kejadian yang melibatkan pemain tersebut.</p>
+          <p>
+            Klik pemain untuk menyaring klip kejadian yang melibatkan pemain
+            tersebut.
+          </p>
         </div>
 
         <div class="lineup-grid-layout">
@@ -2302,27 +2584,62 @@
 
               <!-- Posisi Pemain Futsal FIFA -->
               <!-- Kiper -->
-              <button type="button" class="player-marker kiper-pos" onclick={() => { filterPlayer = '#1 Kiper'; workspaceSubTab = 'tagging'; }}>
+              <button
+                type="button"
+                class="player-marker kiper-pos"
+                onclick={() => {
+                  filterPlayer = "#1 Kiper";
+                  workspaceSubTab = "tagging";
+                }}
+              >
                 <span class="pos-badge">#1</span>
                 <span class="pos-name">Kiper</span>
               </button>
               <!-- Anchor -->
-              <button type="button" class="player-marker anchor-pos" onclick={() => { filterPlayer = '#4 Anchor'; workspaceSubTab = 'tagging'; }}>
+              <button
+                type="button"
+                class="player-marker anchor-pos"
+                onclick={() => {
+                  filterPlayer = "#4 Anchor";
+                  workspaceSubTab = "tagging";
+                }}
+              >
                 <span class="pos-badge">#4</span>
                 <span class="pos-name">Anchor</span>
               </button>
               <!-- Flank Kiri -->
-              <button type="button" class="player-marker flank-l-pos" onclick={() => { filterPlayer = '#7 Flank Kiri'; workspaceSubTab = 'tagging'; }}>
+              <button
+                type="button"
+                class="player-marker flank-l-pos"
+                onclick={() => {
+                  filterPlayer = "#7 Flank Kiri";
+                  workspaceSubTab = "tagging";
+                }}
+              >
                 <span class="pos-badge">#7</span>
                 <span class="pos-name">Flank Kiri</span>
               </button>
               <!-- Flank Kanan -->
-              <button type="button" class="player-marker flank-r-pos" onclick={() => { filterPlayer = '#11 Flank Kanan'; workspaceSubTab = 'tagging'; }}>
+              <button
+                type="button"
+                class="player-marker flank-r-pos"
+                onclick={() => {
+                  filterPlayer = "#11 Flank Kanan";
+                  workspaceSubTab = "tagging";
+                }}
+              >
                 <span class="pos-badge">#11</span>
                 <span class="pos-name">Flank Kanan</span>
               </button>
               <!-- Pivot -->
-              <button type="button" class="player-marker pivot-pos" onclick={() => { filterPlayer = '#9 Pivot'; workspaceSubTab = 'tagging'; }}>
+              <button
+                type="button"
+                class="player-marker pivot-pos"
+                onclick={() => {
+                  filterPlayer = "#9 Pivot";
+                  workspaceSubTab = "tagging";
+                }}
+              >
                 <span class="pos-badge">#9</span>
                 <span class="pos-name">Pivot</span>
               </button>
@@ -2346,9 +2663,18 @@
                 <tbody>
                   {#each FUTSAL_ROSTER as p}
                     {@const label = projectStore.getPlayerDisplayLabel(p)}
-                    {@const count = projectStore.tags.filter((t) => projectStore.normalizePlayerLabel(t.playerLabel) === label).length}
+                    {@const count = projectStore.tags.filter(
+                      (t) =>
+                        projectStore.normalizePlayerLabel(t.playerLabel) ===
+                        label,
+                    ).length}
                     <tr>
-                      <td><span class="badge-num" style="background-color: {p.color}">{p.num}</span></td>
+                      <td
+                        ><span
+                          class="badge-num"
+                          style="background-color: {p.color}">{p.num}</span
+                        ></td
+                      >
                       <td class="font-bold">{p.name}</td>
                       <td class="text-muted">{p.role}</td>
                       <td><span class="count-pill">{count} Klip</span></td>
@@ -2357,7 +2683,7 @@
                           class="btn-filter-player"
                           onclick={() => {
                             filterPlayer = label;
-                            workspaceSubTab = 'tagging';
+                            workspaceSubTab = "tagging";
                           }}
                         >
                           Lihat Klip
@@ -2419,7 +2745,11 @@
     background: radial-gradient(circle at 50% 0%, #0c1c38 0%, #060b14 100%);
     color: #f0f6fc;
     overflow: hidden;
-    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-family:
+      "Inter",
+      system-ui,
+      -apple-system,
+      sans-serif;
   }
 
   /* SLIM TOP SUB-HEADER (34px) */
@@ -2533,7 +2863,11 @@
   }
 
   .subnav-btn.active {
-    background: linear-gradient(135deg, rgba(2, 132, 199, 0.4), rgba(30, 58, 138, 0.6));
+    background: linear-gradient(
+      135deg,
+      rgba(2, 132, 199, 0.4),
+      rgba(30, 58, 138, 0.6)
+    );
     border-color: #38bdf8;
     color: #ffffff;
     box-shadow: 0 0 8px rgba(56, 189, 248, 0.25);
@@ -2556,8 +2890,14 @@
   }
 
   @keyframes fadeIn {
-    from { opacity: 0; transform: translateY(-4px); }
-    to { opacity: 1; transform: translateY(0); }
+    from {
+      opacity: 0;
+      transform: translateY(-4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
   }
 
   .header-right {
@@ -2738,7 +3078,7 @@
 
   .left-sec-cnt {
     color: #38bdf8;
-    font-family: 'Fira Code', monospace;
+    font-family: "Fira Code", monospace;
   }
 
   .left-tag-list {
@@ -2764,7 +3104,11 @@
   }
 
   .left-tag-row-wrap.on {
-    background: linear-gradient(90deg, rgba(220, 38, 38, 0.28) 0%, #0b1629 100%);
+    background: linear-gradient(
+      90deg,
+      rgba(220, 38, 38, 0.28) 0%,
+      #0b1629 100%
+    );
     border-color: #ef4444;
     box-shadow: inset 0 0 0 1px rgba(239, 68, 68, 0.3);
   }
@@ -2791,7 +3135,7 @@
   }
 
   .ltr-clip-cnt {
-    font-family: 'Fira Code', monospace;
+    font-family: "Fira Code", monospace;
     font-size: 8px;
     font-weight: 800;
     color: #38bdf8;
@@ -2815,7 +3159,9 @@
     opacity: 0;
     padding: 0;
     flex-shrink: 0;
-    transition: opacity 0.12s, color 0.12s;
+    transition:
+      opacity 0.12s,
+      color 0.12s;
   }
 
   .left-tag-row-wrap:hover .ltr-edit-btn {
@@ -2898,7 +3244,7 @@
   }
 
   .ltr-live-timer {
-    font-family: 'Fira Code', monospace;
+    font-family: "Fira Code", monospace;
     font-size: 8px;
     font-weight: 800;
     color: #fecaca;
@@ -3042,7 +3388,9 @@
     display: flex;
     align-items: center;
     gap: 14px;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6), 0 0 16px rgba(14, 165, 233, 0.4);
+    box-shadow:
+      0 4px 20px rgba(0, 0, 0, 0.6),
+      0 0 16px rgba(14, 165, 233, 0.4);
     backdrop-filter: blur(8px);
     z-index: 25;
     animation: fadeInSlideDown 0.2s ease-out;
@@ -3333,7 +3681,7 @@
   }
 
   .dur-total-lbl {
-    font-family: 'Fira Code', monospace;
+    font-family: "Fira Code", monospace;
     font-size: 9px;
     color: #94a3b8;
     white-space: nowrap;
@@ -3361,7 +3709,7 @@
   }
 
   .time-display {
-    font-family: 'Fira Code', monospace;
+    font-family: "Fira Code", monospace;
     font-size: 11px;
     font-weight: 700;
     color: #38bdf8;
@@ -3779,7 +4127,7 @@
   }
 
   .clip-time-mono {
-    font-family: 'Fira Code', monospace;
+    font-family: "Fira Code", monospace;
     font-size: 9px;
     color: #38bdf8;
     font-weight: 700;
@@ -3949,7 +4297,7 @@
   }
 
   .pl-order {
-    font-family: 'Fira Code', monospace;
+    font-family: "Fira Code", monospace;
     font-size: 9px;
     font-weight: 900;
     color: #38bdf8;
@@ -4151,11 +4499,26 @@
     transform: scale(1.15);
   }
 
-  .kiper-pos { left: 24px; top: 100px; }
-  .anchor-pos { left: 120px; top: 100px; }
-  .flank-l-pos { left: 220px; top: 40px; }
-  .flank-r-pos { left: 220px; top: 160px; }
-  .pivot-pos { left: 320px; top: 100px; }
+  .kiper-pos {
+    left: 24px;
+    top: 100px;
+  }
+  .anchor-pos {
+    left: 120px;
+    top: 100px;
+  }
+  .flank-l-pos {
+    left: 220px;
+    top: 40px;
+  }
+  .flank-r-pos {
+    left: 220px;
+    top: 160px;
+  }
+  .pivot-pos {
+    left: 320px;
+    top: 100px;
+  }
 
   .pos-badge {
     width: 22px;
@@ -4257,7 +4620,7 @@
   .curr-time-hero-btn {
     background: transparent;
     border: 1px solid transparent;
-    font-family: 'Fira Code', monospace;
+    font-family: "Fira Code", monospace;
     font-size: 12px;
     font-weight: 900;
     color: #ffffff;
@@ -4375,7 +4738,7 @@
     background: transparent;
     border: none;
     color: #34d399;
-    font-family: 'Fira Code', monospace;
+    font-family: "Fira Code", monospace;
     font-size: 9.5px;
     font-weight: 700;
     cursor: pointer;

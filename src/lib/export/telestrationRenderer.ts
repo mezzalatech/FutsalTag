@@ -34,6 +34,7 @@ export function isFloorElType(type: DrawingToolType): boolean {
   return (
     type === 'spotlight-3d' ||
     type === 'player-circle' ||
+    type === 'player-link' ||
     type === 'pressing-zone' ||
     type === 'distance-line' ||
     type === 'compactness-hull'
@@ -329,10 +330,14 @@ function drawSingleElement(
     case 'spotlight-3d': {
       const cx = centerPt.x * width;
       const cy = centerPt.y * height;
-      const rx = 80 * scaleFactor;
-      const ry = 32 * scaleFactor;
-      const beamHeight = 180 * scaleFactor;
-      const beamTopWidth = 36 * scaleFactor;
+      const radMult = el.spotlightRadius ?? 1.0;
+      const heightMult = el.spotlightHeight ?? 1.0;
+      const rx = 80 * scaleFactor * radMult;
+      const ry = 32 * scaleFactor * radMult;
+      const beamHeight = el.spotlightFullHeight
+        ? Math.max(120 * scaleFactor, cy - 28 * scaleFactor)
+        : 180 * scaleFactor * heightMult;
+      const beamTopWidth = 36 * scaleFactor * radMult;
 
       const beamGrad = ctx.createLinearGradient(cx, cy - beamHeight, cx, cy);
       beamGrad.addColorStop(0, 'rgba(0, 0, 0, 0)');
@@ -601,8 +606,7 @@ function drawSingleElement(
       break;
     }
 
-    case 'compactness-hull':
-    case 'pressing-zone': {
+    case 'compactness-hull': {
       if (pts.length < 3) break;
       ctx.beginPath();
       ctx.moveTo(pts[0].x * width, pts[0].y * height);
@@ -625,15 +629,13 @@ function drawSingleElement(
       const cx = (sumX / pts.length) * width;
       const cy = (sumY / pts.length) * height;
       let areaLabel = el.label || '';
-      if (el.type === 'compactness-hull') {
-        if (options.homographyResult) {
-          const mPts = pts.map((p) => canvasToCourtMeters(p, options.homographyResult!.H_inv));
-          const areaM2 = polygonAreaShoelace(mPts);
-          areaLabel = `Kompak: ${areaM2.toFixed(1)} m²`;
-        } else {
-          const areaNorm = polygonAreaShoelace(pts);
-          areaLabel = `~${(areaNorm * 800).toFixed(1)} m²`;
-        }
+      if (options.homographyResult) {
+        const mPts = pts.map((p) => canvasToCourtMeters(p, options.homographyResult!.H_inv));
+        const areaM2 = polygonAreaShoelace(mPts);
+        areaLabel = `Kompak: ${areaM2.toFixed(1)} m²`;
+      } else {
+        const areaNorm = polygonAreaShoelace(pts);
+        areaLabel = `~${(areaNorm * 800).toFixed(1)} m²`;
       }
       if (areaLabel) {
         ctx.font = `bold ${Math.round(12 * scaleFactor)}px system-ui`;
@@ -657,6 +659,203 @@ function drawSingleElement(
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(areaLabel, cx, cy);
+      }
+      break;
+    }
+
+    case 'pressing-zone': {
+      if (pts.length < 3) break;
+      const baseColor = el.color || '#f59e0b';
+      const zoneAlpha = animStyle === 'draw-on' ? 0.22 * eased : 0.22;
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x * width, pts[0].y * height);
+      let sumX = pts[0].x;
+      let sumY = pts[0].y;
+      let minPxX = pts[0].x * width;
+      let maxPxX = minPxX;
+      let minPxY = pts[0].y * height;
+      let maxPxY = minPxY;
+      for (let i = 1; i < pts.length; i++) {
+        const px = pts[i].x * width;
+        const py = pts[i].y * height;
+        ctx.lineTo(px, py);
+        sumX += pts[i].x;
+        sumY += pts[i].y;
+        if (px < minPxX) minPxX = px;
+        if (px > maxPxX) maxPxX = px;
+        if (py < minPxY) minPxY = py;
+        if (py > maxPxY) maxPxY = py;
+      }
+      ctx.closePath();
+      ctx.fillStyle = hexToRgba(baseColor, zoneAlpha);
+      ctx.fill();
+      ctx.clip();
+
+      // Animated diagonal hatched texture lines inside clipped polygon
+      const spacing = 16 * scaleFactor;
+      const diagSpan = maxPxY - minPxY + (maxPxX - minPxX) + spacing * 2;
+      const phase = (Math.max(0, currentTime) * 24 * scaleFactor) % spacing;
+      ctx.strokeStyle = hexToRgba(baseColor, 0.42);
+      ctx.lineWidth = 2 * scaleFactor;
+      ctx.beginPath();
+      for (let sx = minPxX - (maxPxY - minPxY) - spacing + phase; sx <= maxPxX + spacing; sx += spacing) {
+        ctx.moveTo(sx, minPxY - spacing);
+        ctx.lineTo(sx + diagSpan, minPxY - spacing + diagSpan);
+      }
+      ctx.stroke();
+      ctx.restore();
+
+      // Solid glowing outer border
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x * width, pts[0].y * height);
+      for (let i = 1; i < pts.length; i++) {
+        ctx.lineTo(pts[i].x * width, pts[i].y * height);
+      }
+      ctx.closePath();
+      ctx.strokeStyle = baseColor;
+      ctx.lineWidth = (isSelected ? 4 : 3) * scaleFactor;
+      ctx.stroke();
+
+      // Animated sliding dashed accent line on top
+      ctx.save();
+      ctx.strokeStyle = '#ffffff';
+      ctx.globalAlpha *= 0.65;
+      ctx.lineWidth = 1.6 * scaleFactor;
+      ctx.setLineDash([10 * scaleFactor, 10 * scaleFactor]);
+      ctx.lineDashOffset = -(Math.max(0, currentTime) * 32 * scaleFactor);
+      ctx.stroke();
+      ctx.restore();
+
+      // Vertex anchor dots
+      for (const p of pts) {
+        ctx.beginPath();
+        ctx.arc(p.x * width, p.y * height, 4.5 * scaleFactor, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffffff';
+        ctx.fill();
+        ctx.strokeStyle = baseColor;
+        ctx.lineWidth = 2 * scaleFactor;
+        ctx.stroke();
+      }
+
+      const cx = (sumX / pts.length) * width;
+      const cy = (sumY / pts.length) * height;
+      const zoneLabel = el.label || 'Zona Pressing';
+      ctx.font = `bold ${Math.round(12 * scaleFactor)}px system-ui`;
+      const tm = ctx.measureText(zoneLabel);
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.92)';
+      ctx.fillRect(
+        cx - tm.width / 2 - 8 * scaleFactor,
+        cy - 12 * scaleFactor,
+        tm.width + 16 * scaleFactor,
+        24 * scaleFactor
+      );
+      ctx.strokeStyle = baseColor;
+      ctx.lineWidth = 1.5 * scaleFactor;
+      ctx.strokeRect(
+        cx - tm.width / 2 - 8 * scaleFactor,
+        cy - 12 * scaleFactor,
+        tm.width + 16 * scaleFactor,
+        24 * scaleFactor
+      );
+      ctx.fillStyle = '#ffffff';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(zoneLabel, cx, cy);
+      break;
+    }
+
+    case 'player-link': {
+      if (pts.length < 2) break;
+      const linkColor = el.color || '#00f0ff';
+      const drawT = animStyle === 'draw-on' ? eased : 1;
+      const segs = pts.length - 1;
+      const activeProg = drawT * segs;
+
+      // Glowing formation connecting lines
+      for (let i = 0; i < segs; i++) {
+        const segT = Math.max(0, Math.min(1, activeProg - i));
+        if (segT <= 0) break;
+        const p1 = { x: pts[i].x * width, y: pts[i].y * height };
+        const p2Full = { x: pts[i + 1].x * width, y: pts[i + 1].y * height };
+        const p2 = {
+          x: p1.x + (p2Full.x - p1.x) * segT,
+          y: p1.y + (p2Full.y - p1.y) * segT,
+        };
+
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(p1.x, p1.y);
+        ctx.lineTo(p2.x, p2.y);
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.78)';
+        ctx.lineWidth = 7 * scaleFactor;
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(p1.x, p1.y);
+        ctx.lineTo(p2.x, p2.y);
+        ctx.strokeStyle = linkColor;
+        ctx.lineWidth = 3.5 * scaleFactor;
+        ctx.stroke();
+
+        if (options.homographyResult && segT > 0.6) {
+          const distM = getCalibratedDistanceMeters(
+            pts[i],
+            pts[i + 1],
+            options.homographyResult.H_inv
+          );
+          const mx = (p1.x + p2Full.x) / 2;
+          const my = (p1.y + p2Full.y) / 2;
+          const dTxt = `${distM.toFixed(1)}m`;
+          ctx.font = `bold ${Math.round(10.5 * scaleFactor)}px monospace`;
+          const tw = ctx.measureText(dTxt).width;
+          ctx.fillStyle = 'rgba(11, 23, 42, 0.9)';
+          ctx.fillRect(
+            mx - tw / 2 - 5 * scaleFactor,
+            my - 9 * scaleFactor,
+            tw + 10 * scaleFactor,
+            18 * scaleFactor
+          );
+          ctx.fillStyle = '#38bdf8';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(dTxt, mx, my);
+        }
+      }
+
+      // 3D perspective floor ellipse ring at each player node
+      for (const pt of pts) {
+        const nx = pt.x * width;
+        const ny = pt.y * height;
+        const erx = 26 * scaleFactor;
+        const ery = 11 * scaleFactor;
+        const grad = ctx.createRadialGradient(nx, ny, ery * 0.2, nx, ny, erx);
+        grad.addColorStop(0, hexToRgba(linkColor, 0.55));
+        grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        ctx.beginPath();
+        ctx.ellipse(nx, ny, erx, ery, 0, 0, Math.PI * 2);
+        ctx.fillStyle = grad;
+        ctx.fill();
+        ctx.strokeStyle = linkColor;
+        ctx.lineWidth = (isSelected ? 3.5 : 2.8) * scaleFactor;
+        ctx.stroke();
+
+        if (animStyle === 'pulse' || el.pulseEffect) {
+          ctx.beginPath();
+          ctx.ellipse(
+            nx,
+            ny,
+            erx + pulsePhase * 16 * scaleFactor,
+            ery + pulsePhase * 7 * scaleFactor,
+            0,
+            0,
+            Math.PI * 2
+          );
+          ctx.strokeStyle = hexToRgba(linkColor, 1 - pulsePhase);
+          ctx.lineWidth = 1.6 * scaleFactor;
+          ctx.stroke();
+        }
       }
       break;
     }
@@ -802,30 +1001,124 @@ function drawSingleElement(
     }
 
     case 'player-ghost': {
-      const cx = centerPt.x * width;
-      const cy = centerPt.y * height;
-      const r = 26 * scaleFactor;
+      const ghostColor = el.color || '#38bdf8';
+      const hasOrigin = pts.length >= 2;
+      const origin = hasOrigin ? pts[0] : null;
+      const ghost = hasOrigin ? pts[1] : pts[0];
+      const gx = ghost.x * width;
+      const gy = ghost.y * height;
+
+      if (origin) {
+        const ox = origin.x * width;
+        const oy = origin.y * height;
+        ctx.beginPath();
+        ctx.ellipse(ox, oy, 20 * scaleFactor, 8 * scaleFactor, 0, 0, Math.PI * 2);
+        ctx.strokeStyle = hexToRgba(ghostColor, 0.65);
+        ctx.lineWidth = 2 * scaleFactor;
+        ctx.setLineDash([4 * scaleFactor, 4 * scaleFactor]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        const dx = gx - ox;
+        const dy = gy - oy;
+        const dist = Math.hypot(dx, dy);
+        if (dist > 18 * scaleFactor) {
+          const stopDist = Math.max(0, dist - 24 * scaleFactor);
+          const tx = ox + (dx / dist) * stopDist;
+          const ty = oy + (dy / dist) * stopDist;
+          ctx.beginPath();
+          ctx.moveTo(ox, oy);
+          ctx.lineTo(tx, ty);
+          ctx.strokeStyle = ghostColor;
+          ctx.lineWidth = 3 * scaleFactor;
+          ctx.setLineDash([8 * scaleFactor, 6 * scaleFactor]);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          drawArrowHead(ctx, ox, oy, tx, ty, 14 * scaleFactor, ghostColor);
+        }
+      }
+
+      // 3D floor base under ghost silhouette (gx, gy is foot anchor)
+      const baseRx = 26 * scaleFactor;
+      const baseRy = 10 * scaleFactor;
       ctx.beginPath();
-      ctx.arc(cx, cy, r, 0, Math.PI * 2);
-      ctx.fillStyle = hexToRgba(el.color || '#38bdf8', 0.35);
+      ctx.ellipse(gx, gy, baseRx, baseRy, 0, 0, Math.PI * 2);
+      ctx.fillStyle = hexToRgba(ghostColor, 0.25);
       ctx.fill();
-      ctx.strokeStyle = el.color || '#38bdf8';
-      ctx.lineWidth = 2.5 * scaleFactor;
+      ctx.strokeStyle = ghostColor;
+      ctx.lineWidth = 2 * scaleFactor;
       ctx.setLineDash([5 * scaleFactor, 4 * scaleFactor]);
       ctx.stroke();
       ctx.setLineDash([]);
-      if (animStyle === 'pulse') {
+
+      // Translucent broadcast player silhouette (feet at gy, head up to gy - 82*s)
+      const figH = 78 * scaleFactor;
+      const torsoTopY = gy - figH * 0.72;
+      const torsoBotY = gy - figH * 0.26;
+      const shoulderW = 16 * scaleFactor;
+      const waistW = 10 * scaleFactor;
+      const headR = 9 * scaleFactor;
+      const headY = torsoTopY - headR - 4 * scaleFactor;
+
+      ctx.save();
+      ctx.fillStyle = hexToRgba(ghostColor, 0.34);
+      ctx.strokeStyle = ghostColor;
+      ctx.lineWidth = 2 * scaleFactor;
+      ctx.setLineDash([4 * scaleFactor, 3 * scaleFactor]);
+
+      // Torso + legs silhouette polygon
+      ctx.beginPath();
+      ctx.moveTo(gx - shoulderW, torsoTopY);
+      ctx.lineTo(gx + shoulderW, torsoTopY);
+      ctx.lineTo(gx + waistW, torsoBotY);
+      ctx.lineTo(gx + waistW * 1.15, gy - 3 * scaleFactor);
+      ctx.lineTo(gx + 3 * scaleFactor, gy - 3 * scaleFactor);
+      ctx.lineTo(gx, torsoBotY + 4 * scaleFactor);
+      ctx.lineTo(gx - 3 * scaleFactor, gy - 3 * scaleFactor);
+      ctx.lineTo(gx - waistW * 1.15, gy - 3 * scaleFactor);
+      ctx.lineTo(gx - waistW, torsoBotY);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      // Head circle
+      ctx.beginPath();
+      ctx.arc(gx, headY, headR, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+
+      if (animStyle === 'pulse' || el.pulseEffect) {
         ctx.beginPath();
-        ctx.arc(cx, cy, r + pulsePhase * 18 * scaleFactor, 0, Math.PI * 2);
-        ctx.strokeStyle = hexToRgba(el.color || '#38bdf8', 1 - pulsePhase);
-        ctx.lineWidth = 1.5 * scaleFactor;
+        ctx.ellipse(
+          gx,
+          gy,
+          baseRx + pulsePhase * 18 * scaleFactor,
+          baseRy + pulsePhase * 7 * scaleFactor,
+          0,
+          0,
+          Math.PI * 2
+        );
+        ctx.strokeStyle = hexToRgba(ghostColor, 1 - pulsePhase);
+        ctx.lineWidth = 1.6 * scaleFactor;
         ctx.stroke();
       }
-      ctx.font = `bold ${Math.round(12 * scaleFactor)}px system-ui`;
+
+      const ghostLabel = el.label || 'Posisi Ideal';
+      const badgeY = headY - headR - 14 * scaleFactor;
+      ctx.font = `bold ${Math.round(11 * scaleFactor)}px system-ui`;
+      const gTm = ctx.measureText(ghostLabel);
+      const pw = gTm.width + 16 * scaleFactor;
+      const ph = 20 * scaleFactor;
+      ctx.fillStyle = 'rgba(11, 23, 42, 0.9)';
+      ctx.fillRect(gx - pw / 2, badgeY - ph / 2, pw, ph);
+      ctx.strokeStyle = ghostColor;
+      ctx.lineWidth = 1.4 * scaleFactor;
+      ctx.strokeRect(gx - pw / 2, badgeY - ph / 2, pw, ph);
       ctx.fillStyle = '#ffffff';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(el.label || 'Ghost', cx, cy);
+      ctx.fillText(ghostLabel, gx, badgeY);
       break;
     }
 

@@ -145,7 +145,7 @@
       draftCourtCoord = tag.courtCoord ? { ...tag.courtCoord } : undefined;
       draftRating = tag.rating || "⭐⭐⭐ Bagus";
       draftNotes = tag.notes || "";
-      draftPauseDuration = tag.pauseDuration || 3.0;
+      draftPauseDuration = tag.pauseDuration ?? 3.0;
     }
   });
 
@@ -612,14 +612,17 @@
             >
             <input
               type="range"
-              min="1"
+              min="0"
               max="8"
               step="0.5"
               bind:value={draftPauseDuration}
               class="blue-slider"
             />
-            <span class="freeze-val">{draftPauseDuration.toFixed(1)} Detik</span
-            >
+            <span class="freeze-val">
+              {draftPauseDuration < 0.2
+                ? "Tanpa Freeze"
+                : `${draftPauseDuration.toFixed(1)} Detik`}
+            </span>
           </div>
         </section>
 

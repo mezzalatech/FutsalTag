@@ -162,6 +162,7 @@
 
         if (
           autoFreezeEnabled &&
+          (tag.pauseDuration ?? 3.0) >= 0.2 &&
           !freezeTriggeredForSlide &&
           !isFreezing &&
           tag.drawings &&
@@ -315,7 +316,7 @@
     isPlaying = false;
     isFreezing = true;
     freezeTriggeredForSlide = true;
-    freezeRemaining = tag.pauseDuration || 3.0;
+    freezeRemaining = tag.pauseDuration ?? 3.0;
     playSlideVoiceover(tag);
 
     if (freezeTimer) clearInterval(freezeTimer);

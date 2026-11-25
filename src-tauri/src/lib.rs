@@ -176,6 +176,8 @@ pub fn run() {
             ai_tracker::detect_players_in_frame_onnx,
             ai_tracker::detect_player_boxes_range_onnx,
             ai_tracker::run_multi_player_tracking_onnx,
+            ai_tracker::track_single_player_onnx,
+            ai_tracker::track_guided_anchors_onnx,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

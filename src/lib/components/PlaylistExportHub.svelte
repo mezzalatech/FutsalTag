@@ -156,7 +156,7 @@
               startSec: tag.startTime,
               durationSec: tag.endTime - tag.startTime,
               freezeSec,
-              pauseDuration: tag.pauseDuration || item.pauseDuration || 3.0,
+              pauseDuration: tag.pauseDuration ?? item.pauseDuration ?? 3.0,
               overlayBase64,
               voiceoverBase64: tag.voiceoverAudioBase64 || null,
               targetHeight,
@@ -277,7 +277,7 @@
         t.playerLabel || '-',
         t.outcomeLabel || '-',
         t.rating || '-',
-        (t.pauseDuration || 3.0).toFixed(1),
+        (t.pauseDuration ?? 3.0).toFixed(1),
       ]),
     ];
 

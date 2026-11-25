@@ -20,6 +20,8 @@
     checkAiModelStatus,
     detectPlayersInFrameOnnx,
     bindElementPointsToTracks,
+    trackSinglePlayerOnnx,
+    trackGuidedAnchorsOnnx,
   } from "$lib/tracking/multiPlayerTracker";
   import {
     runPlayerAutoTracking,
@@ -101,6 +103,43 @@
   let activeCurveControl = $state<string | null>(null);
   let isDraggingSelected = $state(false);
   let dragStartPos = $state<Point2D | null>(null);
+  let dragAnchorStart = $state<Point2D | null>(null);
+
+  const SINGLE_PLAYER_TOOLS: DrawingToolType[] = [
+    "spotlight-3d",
+    "player-circle",
+    "player-cross",
+    "magnifier",
+    "vision-cone",
+  ];
+
+  function getAnchorMode(type: DrawingToolType): "foot" | "center" {
+    return type === "magnifier" || type === "player-cross" ? "center" : "foot";
+  }
+
+  // Interactive AI Player Picker & Right Drawer State
+  let rightPanelTab = $state<"tags" | "elements">("tags");
+  let loadedClipId = $state<string | null>(null);
+  let isPlayerPickMode = $state(false);
+  let isScanningPlayers = $state(false);
+  let detectedFrameBoxes = $state<DetectedPlayerBox[]>([]);
+  let detectedFrameTime = $state<number>(-1);
+  let hoveredPlayerBoxIdx = $state<number | null>(null);
+  let trackDirection = $state<"both" | "forward">("both");
+  let lastTrackDiagnostics = $state<string | null>(null);
+
+  // Once Sport Hybrid Live-Keyframe Mode (Step-Track + 0.5x Slow-Mo Follow-Drag)
+  let isLiveStepTrack = $state(false);
+  let liveStepInterval = $state<number>(0.5);
+  let isLiveFollowDrag = $state(false);
+  let isHoldingLiveFollow = $state(false);
+  let lastLiveFollowSampleT = 0;
+
+  let isPickerStale = $derived(
+    isPlayerPickMode &&
+      detectedFrameBoxes.length > 0 &&
+      Math.abs(currentTime - detectedFrameTime) >= 0.25,
+  );
 
   // Pilar 2: AI Homography 3D Court Calibration State
   let isPitchCalibrated = $state(false);
@@ -198,6 +237,24 @@
       desc: "Highlight pemain dengan nomor punggung",
     },
     {
+      id: "player-link",
+      label: "Garis Formasi (Player Link)",
+      icon: Users,
+      desc: "Klik beberapa pemain lalu klik 2x / Enter untuk rantai formasi bergerak (Once Sport)",
+    },
+    {
+      id: "player-ghost",
+      label: "Bayangan Pemain (Ghost)",
+      icon: Eye,
+      desc: "Seret dari posisi pemain ke posisi taktis ideal (Once Sport Ghost)",
+    },
+    {
+      id: "pressing-zone",
+      label: "Zona Taktik (Arsir Dinamis)",
+      icon: Layers,
+      desc: "Klik 3+ sudut area lalu klik titik awal / Enter untuk zona arsir bergerak",
+    },
+    {
       id: "vision-cone",
       label: "Radar Visi (FOV)",
       icon: Eye,
@@ -252,16 +309,50 @@
     "#38bdf8", // Sky Blue
   ];
 
+  function loadClipState(clip: VideoTagEvent, seekVideo: boolean = true) {
+    loadedClipId = clip.id;
+    drawings = clip.drawings ? JSON.parse(JSON.stringify(clip.drawings)) : [];
+    pauseDuration = clip.pauseDuration ?? 3.0;
+    voiceoverAudio = clip.voiceoverAudioBase64 || null;
+    currentTime = clip.startTime;
+    freezeTime = clip.freezeTimestamp ?? (clip.startTime + clip.endTime) / 2;
+    selectedElementId = null;
+    inProgressDrawing = null;
+    isPlayerPickMode = false;
+    detectedFrameBoxes = [];
+    hoveredPlayerBoxIdx = null;
+    isLiveStepTrack = false;
+    isLiveFollowDrag = false;
+    isHoldingLiveFollow = false;
+    isPreviewing = false;
+    isFreezeActive = false;
+    if (seekVideo && videoEl) {
+      videoEl.pause();
+      videoEl.playbackRate = 1.0;
+      isPlaying = false;
+      videoEl.currentTime = clip.startTime;
+    }
+    syncCanvasSize();
+  }
+
+  function selectClipInTelestrator(clip: VideoTagEvent) {
+    if (activeClip && activeClip.id !== clip.id) {
+      handleSave(true);
+    }
+    projectStore.activeClipForDrawing = clip;
+    loadClipState(clip, true);
+  }
+
+  $effect(() => {
+    const clip = activeClip;
+    if (clip && clip.id !== loadedClipId) {
+      loadClipState(clip, true);
+    }
+  });
+
   onMount(() => {
     if (activeClip) {
-      drawings = activeClip.drawings
-        ? JSON.parse(JSON.stringify(activeClip.drawings))
-        : [];
-      pauseDuration = activeClip.pauseDuration || 3.0;
-      currentTime = activeClip.startTime;
-      freezeTime =
-        activeClip.freezeTimestamp ??
-        (activeClip.startTime + activeClip.endTime) / 2;
+      loadClipState(activeClip, false);
     }
 
     checkAiModelStatus()
@@ -274,10 +365,36 @@
     rafId = requestAnimationFrame(renderLoop);
     window.addEventListener("resize", syncCanvasSize);
 
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Enter" && inProgressDrawing) {
+        e.preventDefault();
+        finishInProgressMultiPoint();
+      } else if (e.key === "Escape") {
+        inProgressDrawing = null;
+        isLiveFollowDrag = false;
+        isHoldingLiveFollow = false;
+        if (videoEl) {
+          videoEl.playbackRate = 1.0;
+        }
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+
+    let resizeObserver: ResizeObserver | null = null;
+    if (videoContainer && typeof ResizeObserver !== "undefined") {
+      resizeObserver = new ResizeObserver(() => {
+        syncCanvasSize();
+      });
+      resizeObserver.observe(videoContainer);
+    }
+
     return () => {
       window.removeEventListener("resize", syncCanvasSize);
+      window.removeEventListener("keydown", onKeyDown);
+      resizeObserver?.disconnect();
       if (freezeInterval) clearInterval(freezeInterval);
       if (rafId !== null) cancelAnimationFrame(rafId);
+      if (videoEl) videoEl.playbackRate = 1.0;
       trackAbortController?.abort();
     };
   });
@@ -285,36 +402,68 @@
   onDestroy(() => {
     if (freezeInterval) clearInterval(freezeInterval);
     if (rafId !== null) cancelAnimationFrame(rafId);
+    if (videoEl) videoEl.playbackRate = 1.0;
     trackAbortController?.abort();
   });
 
   function syncCanvasSize() {
     if (!videoContainer || !canvasEl) return;
-    const rect = videoContainer.getBoundingClientRect();
+    const cw = videoContainer.clientWidth;
+    const ch = videoContainer.clientHeight;
+    if (cw <= 0 || ch <= 0) return;
+
+    let offsetX = 0;
+    let offsetY = 0;
+    let renderW = cw;
+    let renderH = ch;
+
+    if (videoEl && videoEl.videoWidth > 0 && videoEl.videoHeight > 0) {
+      const containerAspect = cw / ch;
+      const videoAspect = videoEl.videoWidth / videoEl.videoHeight;
+      if (videoAspect > containerAspect) {
+        renderW = cw;
+        renderH = cw / videoAspect;
+        offsetY = (ch - renderH) / 2;
+      } else {
+        renderH = ch;
+        renderW = ch * videoAspect;
+        offsetX = (cw - renderW) / 2;
+      }
+    }
+
     const dpr = window.devicePixelRatio || 1;
-    canvasEl.width = rect.width * dpr;
-    canvasEl.height = rect.height * dpr;
-    canvasEl.style.width = `${rect.width}px`;
-    canvasEl.style.height = `${rect.height}px`;
+    canvasEl.width = Math.max(1, Math.round(renderW * dpr));
+    canvasEl.height = Math.max(1, Math.round(renderH * dpr));
+    canvasEl.style.left = `${offsetX}px`;
+    canvasEl.style.top = `${offsetY}px`;
+    canvasEl.style.width = `${renderW}px`;
+    canvasEl.style.height = `${renderH}px`;
   }
 
   function renderLoop() {
     if (videoEl && !videoEl.paused) {
       currentTime = videoEl.currentTime;
 
-      // In Preview Mode: check for freeze midpoint trigger
-      if (isPreviewing && !isFreezeActive) {
+      // In Preview Mode: check for freeze midpoint trigger (only if freeze >= 0.2s)
+      if (isPreviewing && !isFreezeActive && pauseDuration >= 0.2) {
         if (currentTime >= freezeTime && currentTime < freezeTime + 0.3) {
           triggerFreezeCountdown();
         }
       }
 
-      // Restrict playback to active clip during preview
+      // Restrict playback to active clip during preview or live follow-drag
       if (activeClip && currentTime >= activeClip.endTime) {
         videoEl.pause();
+        videoEl.playbackRate = 1.0;
         isPlaying = false;
         isPreviewing = false;
         isFreezeActive = false;
+        if (isHoldingLiveFollow) {
+          isHoldingLiveFollow = false;
+          isLiveFollowDrag = false;
+          exportNotice = `Live Follow selesai (${selectedElement?.keyframes?.length ?? 0} keyframe halus Catmull-Rom)!`;
+          setTimeout(() => (exportNotice = null), 4000);
+        }
         videoEl.currentTime = activeClip.startTime;
         currentTime = activeClip.startTime;
       }
@@ -399,7 +548,141 @@
       drawCalibratedCourtOverlay(ctx, calibrationPoints, w, h);
     }
 
+    // Render Interactive AI Player Picker boxes on fresh frame scan
+    if (
+      isPlayerPickMode &&
+      !isPickerStale &&
+      detectedFrameBoxes.length > 0 &&
+      !isFreezeActive
+    ) {
+      drawPlayerPickerOverlay(ctx, w, h);
+    }
+
     ctx.restore();
+  }
+
+  function getBoxAnchor(
+    box: DetectedPlayerBox,
+    mode: "foot" | "center",
+  ): Point2D {
+    if (mode === "center") {
+      return {
+        x: Math.max(0, Math.min(1, box.x + box.w * 0.5)),
+        y: Math.max(0, Math.min(1, box.y + box.h * 0.45)),
+      };
+    }
+    return {
+      x: Math.max(0, Math.min(1, box.foot_x)),
+      y: Math.max(0, Math.min(1, box.foot_y)),
+    };
+  }
+
+  function findPickerBoxAtPoint(
+    pt: Point2D,
+  ): { idx: number; box: DetectedPlayerBox } | null {
+    const mode = getAnchorMode(activeTool);
+    let best: { idx: number; box: DetectedPlayerBox; dist: number } | null = null;
+    for (let i = 0; i < detectedFrameBoxes.length; i++) {
+      const box = detectedFrameBoxes[i];
+      const pad = 0.015;
+      const anchor = getBoxAnchor(box, mode);
+      const dist = Math.hypot(pt.x - anchor.x, pt.y - anchor.y);
+      const inside =
+        pt.x >= box.x - pad &&
+        pt.x <= box.x + box.w + pad &&
+        pt.y >= box.y - pad &&
+        pt.y <= box.y + box.h + pad;
+      if (inside || dist < 0.045) {
+        if (!best || dist < best.dist) {
+          best = { idx: i, box, dist };
+        }
+      }
+    }
+    return best ? { idx: best.idx, box: best.box } : null;
+  }
+
+  function drawPlayerPickerOverlay(
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+  ) {
+    const mode = getAnchorMode(activeTool);
+    const scaleFactor = w / 1280;
+    const canAttachTool = SINGLE_PLAYER_TOOLS.includes(activeTool);
+
+    for (let i = 0; i < detectedFrameBoxes.length; i++) {
+      const b = detectedFrameBoxes[i];
+      const isHover = hoveredPlayerBoxIdx === i;
+      const bx = b.x * w;
+      const by = b.y * h;
+      const bw = b.w * w;
+      const bh = b.h * h;
+      const accent = isHover ? "#10b981" : "#38bdf8";
+
+      ctx.save();
+      ctx.fillStyle = isHover
+        ? "rgba(16, 185, 129, 0.20)"
+        : "rgba(56, 189, 248, 0.08)";
+      ctx.fillRect(bx, by, bw, bh);
+
+      // Corner brackets
+      const arm = Math.min(14 * scaleFactor, bw * 0.35, bh * 0.35);
+      ctx.strokeStyle = accent;
+      ctx.lineWidth = (isHover ? 3 : 2) * scaleFactor;
+      ctx.beginPath();
+      // Top-left
+      ctx.moveTo(bx, by + arm);
+      ctx.lineTo(bx, by);
+      ctx.lineTo(bx + arm, by);
+      // Top-right
+      ctx.moveTo(bx + bw - arm, by);
+      ctx.lineTo(bx + bw, by);
+      ctx.lineTo(bx + bw, by + arm);
+      // Bottom-right
+      ctx.moveTo(bx + bw, by + bh - arm);
+      ctx.lineTo(bx + bw, by + bh);
+      ctx.lineTo(bx + bw - arm, by + bh);
+      // Bottom-left
+      ctx.moveTo(bx + arm, by + bh);
+      ctx.lineTo(bx, by + bh);
+      ctx.lineTo(bx, by + bh - arm);
+      ctx.stroke();
+
+      // Anchor target dot
+      const anc = getBoxAnchor(b, mode);
+      const ax = anc.x * w;
+      const ay = anc.y * h;
+      ctx.beginPath();
+      ctx.arc(ax, ay, (isHover ? 6 : 4.5) * scaleFactor, 0, Math.PI * 2);
+      ctx.fillStyle = accent;
+      ctx.fill();
+      ctx.strokeStyle = "#060b14";
+      ctx.lineWidth = 1.5 * scaleFactor;
+      ctx.stroke();
+
+      // Player pill badge
+      const badge = isHover && canAttachTool ? `#P${i + 1} · Klik Tempel` : `#P${i + 1}`;
+      ctx.font = `bold ${Math.max(10, Math.round(11 * scaleFactor))}px system-ui, sans-serif`;
+      const tw = ctx.measureText(badge).width;
+      const pw = tw + 12 * scaleFactor;
+      const ph = 18 * scaleFactor;
+      const pillX = Math.max(4, Math.min(w - pw - 4, bx));
+      const pillY = Math.max(4, by - ph - 3 * scaleFactor);
+
+      ctx.fillStyle = isHover ? "rgba(6, 78, 59, 0.94)" : "rgba(11, 23, 42, 0.92)";
+      ctx.beginPath();
+      ctx.roundRect(pillX, pillY, pw, ph, 4 * scaleFactor);
+      ctx.fill();
+      ctx.strokeStyle = accent;
+      ctx.lineWidth = 1.2 * scaleFactor;
+      ctx.stroke();
+
+      ctx.fillStyle = "#ffffff";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.fillText(badge, pillX + 6 * scaleFactor, pillY + ph / 2);
+      ctx.restore();
+    }
   }
 
   // --- INTERACTIVE POINTER EVENTS ---
@@ -412,9 +695,111 @@
     };
   }
 
+  function finishInProgressMultiPoint() {
+    if (!inProgressDrawing) return;
+    const minPts = inProgressDrawing.type === "player-link" ? 2 : 3;
+    if (inProgressDrawing.points.length >= minPts) {
+      const created = { ...inProgressDrawing };
+      drawings = [...drawings, created];
+      selectedElementId = created.id;
+      rightPanelTab = "elements";
+      inProgressDrawing = null;
+    } else {
+      exportNotice = `Tambahkan minimal ${minPts} titik terlebih dahulu.`;
+      setTimeout(() => (exportNotice = null), 2500);
+    }
+  }
+
+  function toggleLiveStepTrack() {
+    if (!selectedElement) {
+      if (drawings.length > 0) {
+        selectedElementId = drawings[drawings.length - 1].id;
+      } else {
+        exportNotice = "Pilih atau buat shape terlebih dahulu untuk Step-Track.";
+        setTimeout(() => (exportNotice = null), 3000);
+        return;
+      }
+    }
+    isLiveFollowDrag = false;
+    isHoldingLiveFollow = false;
+    isLiveStepTrack = !isLiveStepTrack;
+    if (isLiveStepTrack) {
+      if (videoEl && !videoEl.paused) {
+        videoEl.pause();
+        isPlaying = false;
+      }
+      isPlayerPickMode = false;
+      rightPanelTab = "elements";
+      exportNotice = `Step-Track aktif: klik posisi pemain sekarang, video otomatis maju +${liveStepInterval}s!`;
+      setTimeout(() => (exportNotice = null), 4500);
+    }
+  }
+
+  function toggleLiveFollowDrag() {
+    if (!selectedElement) {
+      if (drawings.length > 0) {
+        selectedElementId = drawings[drawings.length - 1].id;
+      } else {
+        exportNotice = "Pilih atau buat shape terlebih dahulu untuk Ikuti 0.5x.";
+        setTimeout(() => (exportNotice = null), 3000);
+        return;
+      }
+    }
+    isLiveStepTrack = false;
+    isLiveFollowDrag = !isLiveFollowDrag;
+    if (isLiveFollowDrag) {
+      if (videoEl && !videoEl.paused) {
+        videoEl.pause();
+        isPlaying = false;
+      }
+      isPlayerPickMode = false;
+      rightPanelTab = "elements";
+      exportNotice =
+        "Mode Ikuti 0.5x siap: tekan & tahan mouse di atas pemain sambil menyeret mengikuti geraknya!";
+      setTimeout(() => (exportNotice = null), 5000);
+    } else {
+      isHoldingLiveFollow = false;
+      if (videoEl) videoEl.playbackRate = 1.0;
+    }
+  }
+
   function handlePointerDown(e: PointerEvent) {
     if (!canvasEl) return;
     const pt = getCanvasCoords(e);
+
+    // -2. Live 0.5x Slow-Mo Follow-Drag recording
+    if (isLiveFollowDrag && selectedElement && videoEl) {
+      isHoldingLiveFollow = true;
+      lastLiveFollowSampleT = currentTime;
+      addOrUpdateKeyframe(selectedElement, currentTime, pt);
+      upsertManualPin(selectedElement, currentTime, pt);
+      drawings = [...drawings];
+      videoEl.playbackRate = 0.5;
+      videoEl.play().catch(() => {});
+      isPlaying = true;
+      return;
+    }
+
+    // -1.5. Live Step-Track (click position -> record keyframe & advance +liveStepInterval)
+    if (isLiveStepTrack && selectedElement) {
+      addOrUpdateKeyframe(selectedElement, currentTime, pt);
+      upsertManualPin(selectedElement, currentTime, pt);
+      drawings = [...drawings];
+      const maxT = activeClip ? activeClip.endTime : duration;
+      if (currentTime >= maxT - 0.02) {
+        isLiveStepTrack = false;
+        exportNotice =
+          "Step-Track selesai sampai akhir klip! Tekan Play untuk melihat kurva halus.";
+        setTimeout(() => (exportNotice = null), 4000);
+      } else {
+        const nextT = Math.min(maxT, currentTime + liveStepInterval);
+        currentTime = nextT;
+        if (videoEl) {
+          videoEl.currentTime = nextT;
+        }
+      }
+      return;
+    }
 
     // -1. Court floor chroma-key eyedropper sampler
     if (isSamplingFloor) {
@@ -446,8 +831,71 @@
       }
     }
 
-    // If Select Tool is active:
-    if (activeTool === "select") {
+      // 0. If AI Player Picker is active & fresh and a single-player highlight tool is active, click player to attach & track!
+      if (
+        isPlayerPickMode &&
+        !isPickerStale &&
+        detectedFrameBoxes.length > 0 &&
+        SINGLE_PLAYER_TOOLS.includes(activeTool)
+      ) {
+        const hit = findPickerBoxAtPoint(pt);
+        if (hit) {
+          const anchor = getBoxAnchor(hit.box, getAnchorMode(activeTool));
+          const pts: Point2D[] = [anchor];
+          if (activeTool === "vision-cone") {
+            pts.push({
+              x: Math.min(0.95, anchor.x + 0.1),
+              y: Math.max(0.05, anchor.y - 0.06),
+            });
+          }
+          const pinTime = parseFloat(currentTime.toFixed(3));
+          const newEl: DrawingElement = {
+            id: `el-ai-${Date.now()}`,
+            type: activeTool,
+            color: activeColor,
+            points: pts,
+            keyframes: [
+              {
+                time: pinTime,
+                x: anchor.x,
+                y: anchor.y,
+              },
+            ],
+            manualPins: [
+              {
+                time: pinTime,
+                x: anchor.x,
+                y: anchor.y,
+              },
+            ],
+            isTracking: true,
+            timeStart: activeClip ? activeClip.startTime : currentTime,
+            timeEnd: activeClip ? activeClip.endTime : currentTime + 5,
+            isChromaFloor: isFloorBlend || isFloorElType(activeTool),
+            animationStyle: "none",
+            label:
+              activeTool === "player-circle"
+                ? `#P${hit.idx + 1}`
+                : activeTool === "spotlight-3d"
+                  ? `#P${hit.idx + 1} Fokus`
+                  : activeTool === "magnifier"
+                    ? "1.8x Zoom"
+                    : activeTool === "player-cross"
+                      ? "Evaluasi"
+                      : undefined,
+            zoomScale: activeTool === "magnifier" ? 1.8 : undefined,
+          };
+          drawings = [...drawings, newEl];
+          selectedElementId = newEl.id;
+          rightPanelTab = "elements";
+          hoveredPlayerBoxIdx = null;
+          trackElementBidirectional(newEl, currentTime, hit.box);
+          return;
+        }
+      }
+
+      // If Select Tool is active:
+      if (activeTool === "select") {
       // 1. Check if clicking on curve control point of a curved arrow
       if (selectedElement && selectedElement.type === "curved-arrow") {
         const p0 = selectedElement.points[0];
@@ -485,34 +933,51 @@
 
       if (found) {
         selectedElementId = found.id;
+        rightPanelTab = "elements";
         isDraggingSelected = true;
         dragStartPos = pt;
+        const currPts = getElementPointsAtTime(found, currentTime);
+        dragAnchorStart = currPts[0] ? { ...currPts[0] } : { ...found.points[0] };
       } else {
         selectedElementId = null;
+        dragAnchorStart = null;
       }
       return;
     }
 
-    // Creating new element
-    if (activeTool === "compactness-hull") {
-      if (!inProgressDrawing) {
+    // Creating new multi-point element (Hull, Textured Pressing Zone, or Player Link)
+    if (
+      activeTool === "compactness-hull" ||
+      activeTool === "pressing-zone" ||
+      activeTool === "player-link"
+    ) {
+      if (!inProgressDrawing || inProgressDrawing.type !== activeTool) {
         inProgressDrawing = {
-          id: `hull-${Date.now()}`,
-          type: "compactness-hull",
+          id: `${activeTool}-${Date.now()}`,
+          type: activeTool,
           color: activeColor,
           points: [pt],
           timeStart: activeClip ? activeClip.startTime : currentTime,
           timeEnd: activeClip ? activeClip.endTime : currentTime + 5,
+          isChromaFloor: isFloorBlend || isFloorElType(activeTool),
+          label:
+            activeTool === "pressing-zone"
+              ? "Zona Pressing"
+              : activeTool === "player-link"
+                ? "Link Formasi"
+                : undefined,
         };
       } else {
-        // If clicking near first point, finish the hull
         const p0 = inProgressDrawing.points[0];
         if (
+          activeTool !== "player-link" &&
           inProgressDrawing.points.length >= 3 &&
           Math.hypot(pt.x - p0.x, pt.y - p0.y) < 0.05
         ) {
-          drawings.push({ ...inProgressDrawing });
-          selectedElementId = inProgressDrawing.id;
+          const created = { ...inProgressDrawing };
+          drawings = [...drawings, created];
+          selectedElementId = created.id;
+          rightPanelTab = "elements";
           inProgressDrawing = null;
         } else {
           inProgressDrawing.points.push(pt);
@@ -539,15 +1004,32 @@
               ? "1.8x Zoom"
               : activeTool === "player-cross"
                 ? "Salah Posisi"
-                : undefined,
+                : activeTool === "player-ghost"
+                  ? "Posisi Ideal"
+                  : undefined,
       curveOffset: activeTool === "curved-arrow" ? -0.28 : undefined,
       zoomScale: activeTool === "magnifier" ? 1.8 : undefined,
+      spotlightRadius: activeTool === "spotlight-3d" ? 1.0 : undefined,
+      spotlightHeight: activeTool === "spotlight-3d" ? 1.0 : undefined,
     };
   }
 
   function handlePointerMove(e: PointerEvent) {
     if (!canvasEl) return;
     const pt = getCanvasCoords(e);
+
+    // Live 0.5x Slow-Mo Follow-Drag tracking
+    if (isHoldingLiveFollow && selectedElement && videoEl) {
+      const vt = videoEl.currentTime;
+      currentTime = vt;
+      addOrUpdateKeyframe(selectedElement, vt, pt);
+      if (Math.abs(vt - lastLiveFollowSampleT) >= 0.2) {
+        upsertManualPin(selectedElement, vt, pt);
+        lastLiveFollowSampleT = vt;
+      }
+      drawings = [...drawings];
+      return;
+    }
 
     // 0. If dragging 3D court calibration corner pin:
     if (activeCornerDrag) {
@@ -565,10 +1047,25 @@
 
     // If dragging selected element in select mode:
     if (isDraggingSelected && selectedElement && dragStartPos) {
+      if (
+        (selectedElement.keyframes && selectedElement.keyframes.length > 0) ||
+        isKeyframeMode
+      ) {
+        const baseAnchor = dragAnchorStart ?? selectedElement.points[0];
+        const nextAnchor = {
+          x: Math.max(0, Math.min(1, baseAnchor.x + (pt.x - dragStartPos.x))),
+          y: Math.max(0, Math.min(1, baseAnchor.y + (pt.y - dragStartPos.y))),
+        };
+        addOrUpdateKeyframe(selectedElement, currentTime, nextAnchor);
+        upsertManualPin(selectedElement, currentTime, nextAnchor);
+        drawings = [...drawings];
+        return;
+      }
+
       const dx = pt.x - dragStartPos.x;
       const dy = pt.y - dragStartPos.y;
 
-      // Move points
+      // Move points for static element
       for (const p of selectedElement.points) {
         p.x += dx;
         p.y += dy;
@@ -578,18 +1075,24 @@
         selectedElement.controlPoint.y += dy;
       }
 
-      // If Keyframe Tracking mode is active, record keyframe at currentTime!
-      if (isKeyframeMode) {
-        addOrUpdateKeyframe(
-          selectedElement,
-          currentTime,
-          selectedElement.points[0],
-        );
-      }
-
       dragStartPos = pt;
       drawings = [...drawings];
       return;
+    }
+
+    // Hover feedback for AI Player Picker
+    if (
+      isPlayerPickMode &&
+      !isPickerStale &&
+      detectedFrameBoxes.length > 0 &&
+      SINGLE_PLAYER_TOOLS.includes(activeTool) &&
+      !activeCornerDrag &&
+      !activeCurveControl &&
+      !inProgressDrawing
+    ) {
+      hoveredPlayerBoxIdx = findPickerBoxAtPoint(pt)?.idx ?? null;
+    } else if (hoveredPlayerBoxIdx !== null) {
+      hoveredPlayerBoxIdx = null;
     }
 
     // In-progress drawing updates
@@ -605,12 +1108,30 @@
   }
 
   function handlePointerUp() {
+    if (isHoldingLiveFollow) {
+      isHoldingLiveFollow = false;
+      isLiveFollowDrag = false;
+      if (videoEl) {
+        videoEl.pause();
+        videoEl.playbackRate = 1.0;
+        isPlaying = false;
+      }
+      exportNotice = `Live Follow selesai (${selectedElement?.keyframes?.length ?? 0} keyframe halus Catmull-Rom)!`;
+      setTimeout(() => (exportNotice = null), 4000);
+    }
+
     activeCornerDrag = null;
     activeCurveControl = null;
     isDraggingSelected = false;
     dragStartPos = null;
+    dragAnchorStart = null;
 
-    if (!inProgressDrawing || inProgressDrawing.type === "compactness-hull")
+    if (
+      !inProgressDrawing ||
+      inProgressDrawing.type === "compactness-hull" ||
+      inProgressDrawing.type === "pressing-zone" ||
+      inProgressDrawing.type === "player-link"
+    )
       return;
 
     // Finish curved arrow with initial control point
@@ -636,6 +1157,7 @@
 
     drawings.push({ ...inProgressDrawing });
     selectedElementId = inProgressDrawing.id;
+    rightPanelTab = "elements";
     inProgressDrawing = null;
   }
 
@@ -661,13 +1183,33 @@
     element.isTracking = true;
   }
 
+  function upsertManualPin(
+    element: DrawingElement,
+    time: number,
+    pt: Point2D,
+  ) {
+    if (!element.manualPins) {
+      element.manualPins = [];
+    }
+    const tRound = parseFloat(time.toFixed(3));
+    const idx = element.manualPins.findIndex(
+      (p) => Math.abs(p.time - tRound) < 0.12,
+    );
+    if (idx !== -1) {
+      element.manualPins[idx] = { time: tRound, x: pt.x, y: pt.y };
+    } else {
+      element.manualPins.push({ time: tRound, x: pt.x, y: pt.y });
+      element.manualPins.sort((a, b) => a.time - b.time);
+    }
+  }
+
   function handleAddCurrentKeyframe() {
     if (!selectedElement) return;
-    addOrUpdateKeyframe(
-      selectedElement,
-      currentTime,
-      selectedElement.points[0],
-    );
+    const currPt =
+      getElementPointsAtTime(selectedElement, currentTime)[0] ??
+      selectedElement.points[0];
+    addOrUpdateKeyframe(selectedElement, currentTime, currPt);
+    upsertManualPin(selectedElement, currentTime, currPt);
     drawings = [...drawings];
   }
 
@@ -676,6 +1218,11 @@
     selectedElement.keyframes = selectedElement.keyframes.filter(
       (k) => Math.abs(k.time - currentTime) >= 0.15,
     );
+    if (selectedElement.manualPins) {
+      selectedElement.manualPins = selectedElement.manualPins.filter(
+        (p) => Math.abs(p.time - currentTime) >= 0.15,
+      );
+    }
     if (selectedElement.keyframes.length === 0) {
       selectedElement.isTracking = false;
     }
@@ -823,10 +1370,190 @@
     }
   }
 
-  // Trigger Visual Single-Player Auto-Tracking on currently selected element
-  async function triggerSingleElementTracking() {
-    if (!selectedElement || !videoEl || selectedElement.points.length === 0) {
-      exportNotice = "Pilih elemen dan pastikan video termuat untuk melacak.";
+  // Scan current video frame with YOLOX-Nano for AI Player Picker
+  async function scanPlayersInCurrentFrame() {
+    if (isScanningPlayers) return;
+    if (videoEl && !videoEl.paused) {
+      videoEl.pause();
+      isPlaying = false;
+    }
+
+    if (
+      !isTauriDesktop() ||
+      !projectStore.videoFilePath ||
+      (!projectStore.videoFilePath.startsWith("/") &&
+        !/^[A-Za-z]:[\\/]/.test(projectStore.videoFilePath))
+    ) {
+      exportNotice =
+        "Deteksi AI frame membutuhkan aplikasi desktop Tauri dan file video lokal.";
+      setTimeout(() => (exportNotice = null), 4000);
+      return;
+    }
+
+    isScanningPlayers = true;
+    exportNotice = `Memindai pemain pada ${currentTime.toFixed(2)}s (YOLOX-Nano)...`;
+    try {
+      const allBoxes = await detectPlayersInFrameOnnx(
+        projectStore.videoFilePath,
+        currentTime,
+      );
+      const players = allBoxes.filter((b) => b.class_id === 0);
+      liveDetectedBoxes = allBoxes;
+      detectedFrameBoxes = players;
+      detectedFrameTime = currentTime;
+      isPlayerPickMode = true;
+      hoveredPlayerBoxIdx = null;
+
+      if (!SINGLE_PLAYER_TOOLS.includes(activeTool)) {
+        activeTool = "spotlight-3d";
+      }
+
+      if (players.length > 0) {
+        exportNotice = `${players.length} pemain terdeteksi — klik kotak pemain untuk tempel & lacak otomatis.`;
+      } else {
+        exportNotice =
+          "Tidak ada pemain terdeteksi di frame ini. Geser video atau gambar manual.";
+      }
+      setTimeout(() => (exportNotice = null), 4500);
+    } catch (err: any) {
+      exportNotice = `Gagal memindai pemain: ${err?.message || err}`;
+      setTimeout(() => (exportNotice = null), 4500);
+    } finally {
+      isScanningPlayers = false;
+    }
+  }
+
+  function closePlayerPicker() {
+    isPlayerPickMode = false;
+    hoveredPlayerBoxIdx = null;
+  }
+
+  // Bidirectional Single-Player Tracking from clicked anchor frame (ONNX YOLOX-Nano + NCC/Histogram fallback)
+  async function trackElementBidirectional(
+    el: DrawingElement,
+    anchorSec: number,
+    matchedBox?: DetectedPlayerBox,
+  ) {
+    if (isSingleTracking) {
+      trackAbortController?.abort();
+      isSingleTracking = false;
+    }
+
+    const start = activeClip ? activeClip.startTime : Math.max(0, anchorSec - 2.5);
+    const end = activeClip
+      ? activeClip.endTime
+      : Math.min(duration, anchorSec + 3.5);
+    const clampedAnchor = Math.max(start, Math.min(end, anchorSec));
+    const currentAnchor =
+      getElementPointsAtTime(el, clampedAnchor)[0] ?? el.points[0];
+    if (!currentAnchor) return;
+
+    const anchorMode = getAnchorMode(el.type);
+    const dirLabel = trackDirection === "forward" ? "Maju" : "2-Arah";
+    isSingleTracking = true;
+    singleTrackProgress = 0;
+    trackAbortController = new AbortController();
+    exportNotice = `Melacak gerak pemain (AI ROI ${dirLabel} dari ${clampedAnchor.toFixed(2)}s)...`;
+
+    let trackedKfs: TrackingKeyframe[] = [];
+    let onnxErr: string | null = null;
+    let diagSummary: string | null = null;
+
+    try {
+      const hasLocalPath =
+        isTauriDesktop() &&
+        Boolean(projectStore.videoFilePath) &&
+        (projectStore.videoFilePath!.startsWith("/") ||
+          /^[A-Za-z]:[\\/]/.test(projectStore.videoFilePath!));
+
+      if (hasLocalPath) {
+        try {
+          const res = await trackSinglePlayerOnnx({
+            inputPath: projectStore.videoFilePath,
+            startTime: start,
+            endTime: end,
+            anchorTime: clampedAnchor,
+            anchorX: currentAnchor.x,
+            anchorY: currentAnchor.y,
+            anchorW: matchedBox?.w,
+            anchorH: matchedBox?.h,
+            anchorMode,
+            direction: trackDirection,
+            fps: 15,
+          });
+          trackedKfs = res.keyframes;
+          const panPart = res.camera_pan_frames
+            ? ` · CamPan ${res.camera_pan_frames}f`
+            : "";
+          diagSummary = `${trackedKfs.length} KF (AI ROI: ${res.matched_ai_frames}, Spatial NCC: ${res.fallback_frames}${panPart})`;
+        } catch (err: any) {
+          onnxErr = err?.message || String(err);
+          trackedKfs = [];
+        }
+      }
+
+      // Browser / non-ONNX fallback using bidirectional template + histogram tracking
+      if (trackedKfs.length <= 1 && videoEl) {
+        const boxW = matchedBox?.w ?? 0.055;
+        const boxH = matchedBox?.h ?? 0.11;
+        const boxX = Math.max(0, currentAnchor.x - boxW * 0.5);
+        const boxY =
+          anchorMode === "center"
+            ? Math.max(0, currentAnchor.y - boxH * 0.45)
+            : Math.max(0, currentAnchor.y - boxH * 0.85);
+
+        trackedKfs = await runPlayerAutoTracking(
+          videoEl,
+          { x: boxX, y: boxY, width: boxW, height: boxH },
+          start,
+          end,
+          {
+            anchorTime: clampedAnchor,
+            stepSeconds: 0.07,
+            signal: trackAbortController.signal,
+            onProgress: (p) => {
+              singleTrackProgress = Math.round(p * 100);
+            },
+          },
+        );
+        if (trackedKfs.length > 0 && !diagSummary) {
+          diagSummary = onnxErr
+            ? `Fallback JS (${trackedKfs.length} KF · ONNX: ${onnxErr.slice(0, 48)})`
+            : `Fallback JS (${trackedKfs.length} KF)`;
+        }
+      }
+
+      if (trackedKfs.length > 0) {
+        const target = drawings.find((d) => d.id === el.id) ?? el;
+        target.keyframes = trackedKfs;
+        target.isTracking = true;
+        upsertManualPin(target, clampedAnchor, currentAnchor);
+        drawings = [...drawings];
+        lastTrackDiagnostics = diagSummary;
+        exportNotice = onnxErr
+          ? `Peringatan ONNX (${onnxErr}) — memakai ${diagSummary}`
+          : `Terkunci! ${diagSummary} — tekan Play untuk lihat.`;
+        setTimeout(() => (exportNotice = null), 5000);
+      } else {
+        exportNotice = onnxErr
+          ? `AI ONNX gagal: ${onnxErr}`
+          : "Tidak cukup frame untuk melacak pergerakan di klip ini.";
+        setTimeout(() => (exportNotice = null), 4500);
+      }
+    } catch (err: any) {
+      exportNotice = `Tracking gagal: ${err?.message || err}`;
+      setTimeout(() => (exportNotice = null), 4500);
+    } finally {
+      isSingleTracking = false;
+      trackAbortController = null;
+    }
+  }
+
+  // Multi-Anchor Guided Re-Tracking across all user correction pins
+  async function triggerGuidedReTrack(el?: DrawingElement) {
+    const target = el ?? selectedElement;
+    if (!target || target.points.length === 0) {
+      exportNotice = "Pilih elemen terlebih dahulu untuk Guided Re-Track.";
       setTimeout(() => (exportNotice = null), 3500);
       return;
     }
@@ -837,47 +1564,99 @@
       return;
     }
 
-    const start = activeClip ? activeClip.startTime : currentTime;
+    const currPt =
+      getElementPointsAtTime(target, currentTime)[0] ?? target.points[0];
+    let pins = target.manualPins ? [...target.manualPins] : [];
+    if (pins.length === 0) {
+      if (target.keyframes && target.keyframes.length > 0) {
+        pins = [{ ...target.keyframes[0] }];
+      } else {
+        pins = [
+          {
+            time: parseFloat(currentTime.toFixed(3)),
+            x: currPt.x,
+            y: currPt.y,
+          },
+        ];
+      }
+      target.manualPins = pins;
+    }
+
+    if (pins.length === 1) {
+      await trackElementBidirectional(target, pins[0].time);
+      return;
+    }
+
+    const start = activeClip
+      ? activeClip.startTime
+      : Math.max(0, pins[0].time - 1.5);
     const end = activeClip
       ? activeClip.endTime
-      : Math.min(duration, currentTime + 5);
-    const anchor = selectedElement.points[0];
-    const box = {
-      x: Math.max(0, anchor.x - 0.025),
-      y: Math.max(0, anchor.y - 0.06),
-      width: 0.05,
-      height: 0.09,
-    };
+      : Math.min(duration, pins[pins.length - 1].time + 1.5);
+    const anchorMode = getAnchorMode(target.type);
+
+    const hasLocalPath =
+      isTauriDesktop() &&
+      Boolean(projectStore.videoFilePath) &&
+      (projectStore.videoFilePath!.startsWith("/") ||
+        /^[A-Za-z]:[\\/]/.test(projectStore.videoFilePath!));
+
+    if (!hasLocalPath) {
+      await trackElementBidirectional(target, currentTime);
+      return;
+    }
 
     isSingleTracking = true;
     singleTrackProgress = 0;
-    trackAbortController = new AbortController();
+    exportNotice = `Guided Re-Track (${pins.length} pin terkunci) via ROI YOLOX...`;
 
     try {
-      const kfs = await runPlayerAutoTracking(videoEl, box, start, end, {
-        stepSeconds: 0.08,
-        signal: trackAbortController.signal,
-        onProgress: (p) => {
-          singleTrackProgress = Math.round(p * 100);
-        },
+      const res = await trackGuidedAnchorsOnnx({
+        inputPath: projectStore.videoFilePath,
+        startTime: start,
+        endTime: end,
+        anchors: pins,
+        anchorMode,
+        fps: 15,
       });
-      if (kfs.length > 0 && selectedElement) {
-        selectedElement.keyframes = kfs;
-        selectedElement.isTracking = true;
-        drawings = [...drawings];
-        exportNotice = `Berhasil melacak ${kfs.length} keyframe untuk "${selectedElement.label || selectedElement.type}".`;
-        setTimeout(() => (exportNotice = null), 4000);
-      }
+
+      const found = drawings.find((d) => d.id === target.id) ?? target;
+      found.keyframes = res.keyframes;
+      found.isTracking = true;
+      drawings = [...drawings];
+
+      const panPart = res.camera_pan_frames
+        ? ` · CamPan ${res.camera_pan_frames}f`
+        : "";
+      lastTrackDiagnostics = `Guided ${pins.length} Pin · ${res.keyframes.length} KF (AI ROI: ${res.matched_ai_frames}, NCC: ${res.fallback_frames}${panPart})`;
+      exportNotice = `Guided Re-Track selesai (${pins.length} pin terkunci, ${res.keyframes.length} keyframe)!`;
+      setTimeout(() => (exportNotice = null), 5000);
     } catch (err: any) {
-      exportNotice = `Tracking visual gagal: ${err?.message || err}`;
-      setTimeout(() => (exportNotice = null), 4000);
+      exportNotice = `Guided Re-Track gagal: ${err?.message || err}`;
+      setTimeout(() => (exportNotice = null), 5000);
     } finally {
       isSingleTracking = false;
-      trackAbortController = null;
     }
   }
 
-  function handleSave() {
+  // Trigger Bidirectional Auto-Tracking on currently selected element from currentTime
+  async function triggerSingleElementTracking() {
+    if (!selectedElement || selectedElement.points.length === 0) {
+      exportNotice = "Pilih elemen terlebih dahulu untuk melacak.";
+      setTimeout(() => (exportNotice = null), 3500);
+      return;
+    }
+
+    if (isSingleTracking) {
+      trackAbortController?.abort();
+      isSingleTracking = false;
+      return;
+    }
+
+    await trackElementBidirectional(selectedElement, currentTime);
+  }
+
+  function handleSave(silent: boolean = false) {
     if (!activeClip) return;
     projectStore.saveTelestration(
       activeClip.id,
@@ -886,8 +1665,10 @@
       voiceoverAudio || undefined,
       freezeTime,
     );
-    exportNotice = "Telestrasi & posisi freeze-frame disimpan!";
-    setTimeout(() => (exportNotice = null), 2500);
+    if (!silent) {
+      exportNotice = "Telestrasi & posisi freeze-frame disimpan!";
+      setTimeout(() => (exportNotice = null), 2500);
+    }
   }
 
   function handleSaveAndNext() {
@@ -900,20 +1681,7 @@
       freezeTime,
     );
     if (projectStore.activeClipForDrawing) {
-      drawings = projectStore.activeClipForDrawing.drawings
-        ? JSON.parse(JSON.stringify(projectStore.activeClipForDrawing.drawings))
-        : [];
-      pauseDuration = projectStore.activeClipForDrawing.pauseDuration || 3.0;
-      voiceoverAudio =
-        projectStore.activeClipForDrawing.voiceoverAudioBase64 || null;
-      freezeTime =
-        projectStore.activeClipForDrawing.freezeTimestamp ??
-        (projectStore.activeClipForDrawing.startTime +
-          projectStore.activeClipForDrawing.endTime) /
-          2;
-      if (videoEl) {
-        videoEl.currentTime = projectStore.activeClipForDrawing.startTime;
-      }
+      loadClipState(projectStore.activeClipForDrawing, true);
     }
   }
 
@@ -1130,7 +1898,9 @@
       const cameraZoomTuple = zoomObj
         ? [zoomObj.x, zoomObj.y, zoomObj.scale]
         : null;
-      const needsAnimatedExport = hasAnimatedTelestration(drawings);
+      const needsAnimatedExport =
+        hasAnimatedTelestration(drawings) ||
+        (drawings.length > 0 && pauseDuration < 0.2);
 
       if (needsAnimatedExport) {
         const tmpRoot = await invoke<string>("get_temp_dir");
@@ -1138,11 +1908,11 @@
         const seqDir = `${tmpRoot.replace(/[\\/]+$/, "")}${sep}futsaltag_seq_${Date.now()}`;
         seqDirToClean = seqDir;
 
-        const overlayFps = 15;
         const clipDur = Math.max(
           0.4,
           activeClip.endTime - activeClip.startTime,
         );
+        const overlayFps = clipDur <= 15 ? 20 : 15;
         const totalFrames = Math.max(2, Math.ceil(clipDur * overlayFps));
 
         let rangeBoxes: { time: number; boxes: DetectedPlayerBox[] }[] = [];
@@ -1232,7 +2002,7 @@
           overlayFramesDir: seqDir,
           overlayFps,
           freezeSec,
-          pauseDuration: pauseDuration || 3.0,
+          pauseDuration: pauseDuration ?? 0,
           freezeOverlayBase64,
           cameraZoom: cameraZoomTuple,
           voiceoverBase64: voiceoverAudio || null,
@@ -1261,7 +2031,7 @@
           startSec: activeClip.startTime,
           durationSec: activeClip.endTime - activeClip.startTime,
           freezeSec,
-          pauseDuration: pauseDuration || 3.0,
+          pauseDuration: pauseDuration ?? 0,
           overlayBase64,
           voiceoverBase64: voiceoverAudio || null,
           targetHeight: 1080,
@@ -1337,7 +2107,7 @@
       </button>
       <button
         class="btn-save"
-        onclick={handleSave}
+        onclick={() => handleSave()}
         title="Simpan coretan telestrasi"
       >
         <Check size={14} />
@@ -1523,6 +2293,24 @@
       <div class="palette-group-title">AI VISION ({aiEngineLabel})</div>
       <button
         class="tool-btn btn-ai"
+        class:active={isPlayerPickMode}
+        class:loading={isScanningPlayers}
+        disabled={isScanningPlayers || isSingleTracking}
+        onclick={scanPlayersInCurrentFrame}
+        title="Deteksi semua pemain di frame ini lalu klik pemain untuk langsung menempel & melacak"
+      >
+        <Crosshair size={16} />
+        <span class="tool-label"
+          >{isScanningPlayers
+            ? "Memindai Pemain..."
+            : isPlayerPickMode
+              ? "Scan Ulang Pemain (AI)"
+              : "Deteksi & Pilih Pemain (AI)"}</span
+        >
+      </button>
+
+      <button
+        class="tool-btn btn-ai"
         class:loading={isMultiTracking}
         disabled={isMultiTracking}
         onclick={triggerAIMultiTracking}
@@ -1560,6 +2348,140 @@
 
     <!-- CANVAS & VIDEO VIEWER -->
     <div class="canvas-viewer-container" bind:this={videoContainer}>
+      {#if !isFreezeActive}
+        <div class="player-picker-bar">
+          {#if isSingleTracking}
+            <span class="picker-status-badge tracking">
+              <Activity size={13} />
+              <span>
+                Melacak gerak pemain (AI ROI {trackDirection === "forward"
+                  ? "Maju"
+                  : "2-Arah"})...
+              </span>
+            </span>
+          {:else if isPlayerPickMode}
+            <span class="picker-status-badge" class:stale={isPickerStale}>
+              <Crosshair size={13} />
+              <span>
+                {#if isPickerStale}
+                  Frame berubah — klik "Scan Ulang" untuk memilih pemain di detik ini
+                {:else}
+                  {detectedFrameBoxes.length} Pemain Terdeteksi — Klik kotak pemain untuk tempel & lacak
+                {/if}
+              </span>
+            </span>
+            <button
+              type="button"
+              class="picker-action-btn"
+              disabled={isScanningPlayers}
+              onclick={scanPlayersInCurrentFrame}
+            >
+              {isScanningPlayers ? "Memindai..." : "Scan Ulang Frame"}
+            </button>
+            <button
+              type="button"
+              class="picker-close-btn"
+              onclick={closePlayerPicker}
+              title="Tutup AI Player Picker"
+            >
+              Tutup Picker
+            </button>
+          {:else}
+            <button
+              type="button"
+              class="picker-launch-btn"
+              disabled={isScanningPlayers}
+              onclick={scanPlayersInCurrentFrame}
+              title="Pindai pemain pada frame ini lalu klik pemain untuk melacak otomatis"
+            >
+              <Crosshair size={13} />
+              <span>
+                {isScanningPlayers
+                  ? "Memindai Pemain (AI)..."
+                  : "Deteksi & Pilih Pemain (AI)"}
+              </span>
+            </button>
+          {/if}
+
+          {#if !isSingleTracking}
+            <div
+              class="picker-dir-group"
+              role="group"
+              aria-label="Arah pelacakan AI"
+            >
+              <button
+                type="button"
+                class="picker-dir-btn"
+                class:active={trackDirection === "both"}
+                onclick={() => (trackDirection = "both")}
+                title="Lacak ke belakang (awal klip) dan ke depan (akhir klip)"
+              >
+                2-Arah
+              </button>
+              <button
+                type="button"
+                class="picker-dir-btn"
+                class:active={trackDirection === "forward"}
+                onclick={() => (trackDirection = "forward")}
+                title="Lacak hanya maju mulai dari detik sekarang"
+              >
+                Maju Saja
+              </button>
+            </div>
+
+            {#if inProgressDrawing && (inProgressDrawing.type === "player-link" || inProgressDrawing.type === "pressing-zone" || inProgressDrawing.type === "compactness-hull")}
+              <button
+                type="button"
+                class="picker-retrack-btn"
+                onclick={finishInProgressMultiPoint}
+                title="Selesaikan gambar multi-titik (bisa juga klik 2x atau tekan Enter)"
+              >
+                <Check size={12} />
+                <span>Selesai Gambar ({inProgressDrawing.points.length} titik)</span>
+              </button>
+            {/if}
+
+            {#if selectedElement}
+              <button
+                type="button"
+                class="picker-hybrid-btn"
+                class:active={isLiveStepTrack}
+                onclick={toggleLiveStepTrack}
+                title="Klik posisi pemain di video, otomatis maju +{liveStepInterval}s (Once Sport Hybrid)"
+              >
+                <Clock size={12} />
+                <span>{isLiveStepTrack ? "Stop Step-Track" : `Step-Track (${liveStepInterval}s)`}</span>
+              </button>
+
+              <button
+                type="button"
+                class="picker-hybrid-btn"
+                class:active={isLiveFollowDrag}
+                onclick={toggleLiveFollowDrag}
+                title="Tahan & seret mouse mengikuti pemain saat video diputar 0.5x"
+              >
+                <Activity size={12} />
+                <span>{isLiveFollowDrag ? "Batal Ikuti 0.5x" : "Ikuti 0.5x"}</span>
+              </button>
+            {/if}
+
+            {#if selectedElement && (selectedElement.manualPins?.length ?? 0) >= 2}
+              <button
+                type="button"
+                class="picker-retrack-btn"
+                onclick={() => triggerGuidedReTrack()}
+                title="Lacak ulang secara akurat dengan mengunci semua pin koreksi"
+              >
+                <Activity size={12} />
+                <span
+                  >Re-Track Antar Pin ({selectedElement.manualPins?.length} Pin)</span
+                >
+              </button>
+            {/if}
+          {/if}
+        </div>
+      {/if}
+
       <div
         class="zoom-stage"
         style={activeCameraZoom
@@ -1578,6 +2500,7 @@
                 videoEl.currentTime = activeClip.startTime;
                 duration = videoEl.duration || 120;
               }
+              syncCanvasSize();
             }}
           ></video>
         {:else}
@@ -1597,9 +2520,12 @@
           bind:this={canvasEl}
           class="telestrator-canvas"
           class:sampling={isSamplingFloor}
+          class:picker-hover={hoveredPlayerBoxIdx !== null}
+          class:live-record={isLiveStepTrack || isLiveFollowDrag}
           onpointerdown={handlePointerDown}
           onpointermove={handlePointerMove}
           onpointerup={handlePointerUp}
+          ondblclick={finishInProgressMultiPoint}
         ></canvas>
       </div>
 
@@ -1637,7 +2563,9 @@
                 fill="none"
                 stroke-dasharray="188.5"
                 stroke-dashoffset={188.5 *
-                  (1 - Math.max(0, freezeRemaining) / (pauseDuration || 3.0))}
+                  (1 -
+                    Math.max(0, freezeRemaining) /
+                      (pauseDuration > 0 ? pauseDuration : 3.0))}
                 transform="rotate(-90 34 34)"
                 stroke-linecap="round"
               />
@@ -1667,20 +2595,113 @@
       {/if}
     </div>
 
-    <!-- RIGHT: ELEMENTS & KEYFRAME INSPECTOR DRAWER -->
+    <!-- RIGHT: ONCE SPORT TAGGED CLIPS & ELEMENTS INSPECTOR DRAWER -->
     <div class="elements-sidebar">
-      <div class="inspector-header">
-        <span class="inspector-title">ELEMEN KLIP ({drawings.length})</span>
-        {#if selectedElement}
-          <button
-            class="btn-delete-element"
-            onclick={deleteSelectedElement}
-            title="Hapus elemen terpilih"
-          >
-            <Trash2 size={13} />
-          </button>
-        {/if}
+      <div class="right-drawer-tabs" role="tablist" aria-label="Panel kanan telestrator">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={rightPanelTab === "tags"}
+          class="drawer-tab-btn"
+          class:active={rightPanelTab === "tags"}
+          onclick={() => (rightPanelTab = "tags")}
+        >
+          Tag Klip ({projectStore.tags.length})
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={rightPanelTab === "elements"}
+          class="drawer-tab-btn"
+          class:active={rightPanelTab === "elements"}
+          onclick={() => (rightPanelTab = "elements")}
+        >
+          Elemen ({drawings.length})
+        </button>
       </div>
+
+      {#if rightPanelTab === "tags"}
+        <div class="inspector-header">
+          <span class="inspector-title">DAFTAR TAG VIDEO</span>
+          <span class="kf-count-pill">{projectStore.tags.length} Klip</span>
+        </div>
+
+        <div class="tags-drawer-list">
+          {#each projectStore.tags as tag (tag.id)}
+            {@const isCurr = activeClip?.id === tag.id}
+            {@const gfxCount = isCurr
+              ? drawings.length
+              : (tag.drawings?.length ?? 0)}
+            <button
+              type="button"
+              class="tag-clip-card"
+              class:active={isCurr}
+              onclick={() => selectClipInTelestrator(tag)}
+              title="Buka klip {tag.title} di Telestration Studio"
+            >
+              <span
+                class="tag-clip-accent"
+                style="background-color: {tag.color}"
+              ></span>
+              <div class="tag-clip-body">
+                <div class="tag-clip-top">
+                  <span
+                    class="tag-cat-pill"
+                    style="background-color: {tag.color}"
+                  >
+                    {tag.category}
+                  </span>
+                  <span
+                    class="tag-gfx-badge"
+                    class:has-gfx={gfxCount > 0}
+                  >
+                    {gfxCount > 0 ? `${gfxCount} grafis` : "Kosong"}
+                  </span>
+                </div>
+                <div class="tag-clip-title">{tag.title}</div>
+                <div class="tag-clip-meta">
+                  <span class="tag-clip-time"
+                    >{tag.startTime.toFixed(1)}s–{tag.endTime.toFixed(1)}s</span
+                  >
+                  {#if tag.playerLabel}
+                    <span class="tag-clip-player">{tag.playerLabel}</span>
+                  {/if}
+                </div>
+              </div>
+            </button>
+          {/each}
+
+          {#if projectStore.tags.length === 0}
+            <div class="empty-drawings">
+              <p style="margin: 0 0 10px 0;">
+                Belum ada Tag Video yang dibuat di proyek ini.
+              </p>
+              <button
+                type="button"
+                class="btn-kf-add"
+                style="width: 100%; justify-content: center;"
+                onclick={handleBackToTagging}
+              >
+                <ArrowLeft size={13} />
+                <span>Kembali ke Tagging untuk Membuat Klip</span>
+              </button>
+            </div>
+          {/if}
+        </div>
+      {:else}
+        <div class="inspector-header">
+          <span class="inspector-title">ELEMEN KLIP ({drawings.length})</span>
+          {#if selectedElement}
+            <button
+              type="button"
+              class="btn-delete-element"
+              onclick={deleteSelectedElement}
+              title="Hapus elemen terpilih"
+            >
+              <Trash2 size={13} />
+            </button>
+          {/if}
+        </div>
 
       <!-- COACH VOICEOVER RECORDER -->
       <div class="voiceover-drawer-card">
@@ -1854,6 +2875,73 @@
             </div>
           {/if}
 
+          {#if selectedElement.type === "spotlight-3d"}
+            <div class="multipoint-box">
+              <div class="preset-title">Ukuran 3D Spotlight (Once Sport)</div>
+              <div class="chroma-slider-row">
+                <span
+                  >Radius Lantai: {(selectedElement.spotlightRadius ?? 1.0).toFixed(
+                    2,
+                  )}x</span
+                >
+                <input
+                  type="range"
+                  min="0.5"
+                  max="2.0"
+                  step="0.05"
+                  value={selectedElement.spotlightRadius ?? 1.0}
+                  oninput={(e) => {
+                    if (!selectedElement) return;
+                    selectedElement.spotlightRadius = parseFloat(
+                      (e.currentTarget as HTMLInputElement).value,
+                    );
+                    drawings = [...drawings];
+                  }}
+                  class="pause-slider"
+                  style="width: 100%;"
+                />
+              </div>
+              <div class="chroma-slider-row">
+                <span
+                  >Tinggi Sorotan: {(
+                    selectedElement.spotlightHeight ?? 1.0
+                  ).toFixed(2)}x</span
+                >
+                <input
+                  type="range"
+                  min="0.4"
+                  max="2.0"
+                  step="0.05"
+                  disabled={Boolean(selectedElement.spotlightFullHeight)}
+                  value={selectedElement.spotlightHeight ?? 1.0}
+                  oninput={(e) => {
+                    if (!selectedElement) return;
+                    selectedElement.spotlightHeight = parseFloat(
+                      (e.currentTarget as HTMLInputElement).value,
+                    );
+                    drawings = [...drawings];
+                  }}
+                  class="pause-slider"
+                  style="width: 100%;"
+                />
+              </div>
+              <label class="prop-check-row">
+                <input
+                  type="checkbox"
+                  checked={Boolean(selectedElement.spotlightFullHeight)}
+                  onchange={(e) => {
+                    if (!selectedElement) return;
+                    selectedElement.spotlightFullHeight = (
+                      e.currentTarget as HTMLInputElement
+                    ).checked;
+                    drawings = [...drawings];
+                  }}
+                />
+                <span>Tinggi Penuh (Full Height)</span>
+              </label>
+            </div>
+          {/if}
+
           {#if selectedElement.type === "magnifier"}
             <div class="prop-row">
               <span class="prop-label"
@@ -1871,6 +2959,49 @@
               />
             </div>
           {/if}
+
+          <!-- ONCE SPORT HYBRID LIVE KEYFRAME TRACKING -->
+          <div class="multipoint-box">
+            <div class="preset-title">
+              Hybrid Live Keyframe (Anti-Lari · Kurva Halus)
+            </div>
+            <div class="hybrid-step-row">
+              <button
+                type="button"
+                class="btn-hybrid-mode"
+                class:active={isLiveStepTrack}
+                onclick={toggleLiveStepTrack}
+                title="Klik posisi pemain tiap langkah lalu video otomatis maju"
+              >
+                <Clock size={12} />
+                <span>{isLiveStepTrack ? "Stop Step-Track" : "Step-Track"}</span>
+              </button>
+              <select
+                class="preset-select"
+                aria-label="Interval Step-Track"
+                bind:value={liveStepInterval}
+              >
+                <option value={0.25}>+0.25s</option>
+                <option value={0.5}>+0.50s</option>
+                <option value={1.0}>+1.00s</option>
+              </select>
+            </div>
+
+            <button
+              type="button"
+              class="btn-hybrid-mode"
+              class:active={isLiveFollowDrag}
+              onclick={toggleLiveFollowDrag}
+              title="Tahan & seret mouse mengikuti pemain sambil video berputar 0.5x"
+            >
+              <Activity size={12} />
+              <span>
+                {isLiveFollowDrag
+                  ? "Berhenti Ikuti 0.5x"
+                  : "Ikuti Sambil Putar (0.5x)"}
+              </span>
+            </button>
+          </div>
 
           <!-- KEYFRAME TOOLS -->
           <div class="keyframe-actions-wrap">
@@ -1893,10 +3024,11 @@
           </div>
 
           <button
+            type="button"
             class="btn-kf-add"
             style="width: 100%; justify-content: center; margin-top: 4px;"
             onclick={triggerSingleElementTracking}
-            title="Lacak posisi elemen ini otomatis sepanjang klip (NCC + Histogram)"
+            title="Lacak posisi elemen ini otomatis sepanjang klip (ROI YOLOX + Spatial NCC)"
           >
             <Activity size={13} />
             <span
@@ -1905,6 +3037,31 @@
                 : "Auto-Track Elemen Ini"}</span
             >
           </button>
+
+          <button
+            type="button"
+            class="btn-guided-retrack"
+            class:ready={(selectedElement.manualPins?.length ?? 0) >= 2}
+            disabled={isSingleTracking}
+            onclick={() => triggerGuidedReTrack()}
+            title="Lacak ulang segmen antar pin koreksi agar shape tidak meleset saat bentrok"
+          >
+            <Crosshair size={13} />
+            <span>
+              Re-Track Antar Pin ({selectedElement.manualPins?.length ?? 0} Pin)
+            </span>
+          </button>
+
+          <p class="guided-tip-note">
+            Jika shape meleset saat pemain bentrok: geser shape ke pemain di frame
+            itu, lalu klik Re-Track Antar Pin.
+          </p>
+
+          {#if lastTrackDiagnostics}
+            <div class="track-diag-pill" title={lastTrackDiagnostics}>
+              {lastTrackDiagnostics}
+            </div>
+          {/if}
         </div>
       {/if}
 
@@ -1943,6 +3100,7 @@
           </div>
         {/if}
       </div>
+      {/if}
     </div>
   </div>
 
@@ -2031,6 +3189,28 @@
               ⬥
             </button>
           {/each}
+          {#if selectedElement.manualPins}
+            {#each selectedElement.manualPins as pin}
+              {@const clipStart = activeClip.startTime}
+              {@const clipDur = activeClip.endTime - activeClip.startTime || 1}
+              {@const pinPct = Math.max(
+                0,
+                Math.min(100, ((pin.time - clipStart) / clipDur) * 100),
+              )}
+              <button
+                type="button"
+                class="kf-pin-pip"
+                style="left: {pinPct}%"
+                onclick={() => {
+                  currentTime = pin.time;
+                  if (videoEl) videoEl.currentTime = pin.time;
+                }}
+                title="Pin Koreksi Terkunci di {pin.time.toFixed(2)}s"
+              >
+                ◆
+              </button>
+            {/each}
+          {/if}
         </div>
       {/if}
     </div>
@@ -2041,7 +3221,11 @@
     <div class="footer-left">
       <button class="btn-preview" onclick={triggerPreview}>
         <Play size={16} />
-        <span>Preview Siaran Broadcast (Jeda {pauseDuration}s)</span>
+        <span>
+          {pauseDuration < 0.2
+            ? "Preview Tracking Penuh (Tanpa Freeze)"
+            : `Preview Siaran Broadcast (Jeda ${pauseDuration.toFixed(1)}s)`}
+        </span>
       </button>
     </div>
 
@@ -2051,13 +3235,17 @@
         <span class="slider-label">Durasi Jeda Freeze-Frame:</span>
         <input
           type="range"
-          min="1"
+          min="0"
           max="8"
           step="0.5"
           bind:value={pauseDuration}
           class="pause-slider"
         />
-        <span class="slider-val">{pauseDuration.toFixed(1)} Detik</span>
+        <span class="slider-val">
+          {pauseDuration < 0.2
+            ? "Tanpa Freeze (Full Gerak)"
+            : `${pauseDuration.toFixed(1)} Detik`}
+        </span>
       </div>
     </div>
 
@@ -3071,6 +4259,428 @@
 
   .telestrator-canvas.sampling {
     cursor: cell;
+  }
+
+  .telestrator-canvas.picker-hover {
+    cursor: pointer;
+  }
+
+  .telestrator-canvas.live-record {
+    cursor: crosshair;
+    outline: 2px dashed rgba(16, 185, 129, 0.75);
+    outline-offset: -2px;
+  }
+
+  .picker-hybrid-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: #0f2444;
+    border: 1px solid #2563eb;
+    color: #93c5fd;
+    font-size: 10.5px;
+    font-weight: 700;
+    padding: 4px 10px;
+    border-radius: 999px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.15s;
+  }
+
+  .picker-hybrid-btn:hover {
+    border-color: #38bdf8;
+    color: #ffffff;
+  }
+
+  .picker-hybrid-btn.active {
+    background: linear-gradient(135deg, #059669, #10b981);
+    border-color: #34d399;
+    color: #ffffff;
+    box-shadow: 0 0 10px rgba(16, 185, 129, 0.45);
+  }
+
+  .right-drawer-tabs {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px;
+    background: #07101e;
+    border: 1px solid #1a355d;
+    border-radius: 7px;
+    padding: 3px;
+    flex-shrink: 0;
+  }
+
+  .drawer-tab-btn {
+    background: transparent;
+    border: none;
+    color: #94a3b8;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 5px 6px;
+    border-radius: 5px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.15s;
+  }
+
+  .drawer-tab-btn:hover {
+    color: #ffffff;
+  }
+
+  .drawer-tab-btn.active {
+    background: linear-gradient(135deg, #0284c7, #1d4ed8);
+    color: #ffffff;
+    box-shadow: 0 0 8px rgba(56, 189, 248, 0.25);
+  }
+
+  .tags-drawer-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    overflow-y: auto;
+    flex: 1;
+    min-height: 0;
+  }
+
+  .tag-clip-card {
+    display: flex;
+    align-items: stretch;
+    width: 100%;
+    text-align: left;
+    background: #0c1a33;
+    border: 1px solid #1b365f;
+    border-radius: 7px;
+    overflow: hidden;
+    cursor: pointer;
+    padding: 0;
+    transition: all 0.15s;
+    flex-shrink: 0;
+  }
+
+  .tag-clip-card:hover {
+    border-color: #38bdf8;
+    background: #122442;
+  }
+
+  .tag-clip-card.active {
+    border-color: #38bdf8;
+    background: rgba(56, 189, 248, 0.16);
+    box-shadow: 0 0 10px rgba(56, 189, 248, 0.22);
+  }
+
+  .tag-clip-accent {
+    width: 4px;
+    flex-shrink: 0;
+  }
+
+  .tag-clip-body {
+    flex: 1;
+    min-width: 0;
+    padding: 7px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .tag-clip-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+  }
+
+  .tag-cat-pill {
+    font-size: 8.5px;
+    font-weight: 800;
+    color: #ffffff;
+    padding: 1px 6px;
+    border-radius: 3px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 110px;
+  }
+
+  .tag-gfx-badge {
+    font-size: 9px;
+    font-weight: 700;
+    color: #64748b;
+    white-space: nowrap;
+  }
+
+  .tag-gfx-badge.has-gfx {
+    color: #38bdf8;
+  }
+
+  .tag-clip-title {
+    font-size: 11px;
+    font-weight: 700;
+    color: #f1f5f9;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .tag-clip-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    font-size: 9.5px;
+  }
+
+  .tag-clip-time {
+    font-family: monospace;
+    color: #38bdf8;
+    font-weight: 700;
+  }
+
+  .tag-clip-player {
+    color: #cbd5e1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .hybrid-step-row {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .hybrid-step-row .btn-hybrid-mode {
+    flex: 1;
+  }
+
+  .btn-hybrid-mode {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    padding: 5px 8px;
+    border-radius: 5px;
+    font-size: 10px;
+    font-weight: 700;
+    background: #0f2444;
+    border: 1px solid #2563eb;
+    color: #93c5fd;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .btn-hybrid-mode:hover {
+    border-color: #38bdf8;
+    color: #ffffff;
+  }
+
+  .btn-hybrid-mode.active {
+    background: linear-gradient(135deg, #059669, #10b981);
+    border-color: #34d399;
+    color: #ffffff;
+    box-shadow: 0 0 10px rgba(16, 185, 129, 0.35);
+  }
+
+  .player-picker-bar {
+    position: absolute;
+    top: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 25;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: center;
+    max-width: calc(100% - 24px);
+    padding: 5px 10px;
+    border-radius: 999px;
+    background: rgba(8, 18, 36, 0.88);
+    border: 1px solid rgba(56, 189, 248, 0.45);
+    backdrop-filter: blur(8px);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  }
+
+  .picker-launch-btn,
+  .picker-action-btn,
+  .picker-close-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 4px 10px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.15s;
+  }
+
+  .picker-launch-btn {
+    background: linear-gradient(135deg, rgba(16, 185, 129, 0.25), rgba(2, 132, 199, 0.35));
+    border: 1px solid #10b981;
+    color: #ecfdf5;
+  }
+
+  .picker-launch-btn:hover:not(:disabled) {
+    background: linear-gradient(135deg, rgba(16, 185, 129, 0.4), rgba(2, 132, 199, 0.5));
+  }
+
+  .picker-action-btn {
+    background: #0284c7;
+    border: 1px solid #38bdf8;
+    color: #ffffff;
+  }
+
+  .picker-action-btn:hover:not(:disabled) {
+    background: #0369a1;
+  }
+
+  .picker-close-btn {
+    background: rgba(15, 23, 42, 0.8);
+    border: 1px solid #334155;
+    color: #cbd5e1;
+  }
+
+  .picker-close-btn:hover {
+    border-color: #ef4444;
+    color: #fca5a5;
+  }
+
+  .picker-status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    font-weight: 700;
+    color: #38bdf8;
+    padding: 0 4px;
+  }
+
+  .picker-status-badge.stale {
+    color: #f59e0b;
+  }
+
+  .picker-status-badge.tracking {
+    color: #10b981;
+  }
+
+  .picker-dir-group {
+    display: inline-flex;
+    align-items: center;
+    background: #07101e;
+    border: 1px solid #1e3b68;
+    border-radius: 999px;
+    padding: 2px;
+    gap: 2px;
+  }
+
+  .picker-dir-btn {
+    background: transparent;
+    border: none;
+    color: #94a3b8;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 3px 8px;
+    border-radius: 999px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.15s;
+  }
+
+  .picker-dir-btn:hover {
+    color: #ffffff;
+  }
+
+  .picker-dir-btn.active {
+    background: #0284c7;
+    color: #ffffff;
+  }
+
+  .picker-retrack-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: linear-gradient(135deg, #059669, #10b981);
+    border: 1px solid #34d399;
+    color: #ffffff;
+    font-size: 10.5px;
+    font-weight: 800;
+    padding: 4px 10px;
+    border-radius: 999px;
+    cursor: pointer;
+    white-space: nowrap;
+    box-shadow: 0 0 12px rgba(16, 185, 129, 0.35);
+  }
+
+  .picker-retrack-btn:hover {
+    filter: brightness(1.08);
+  }
+
+  .btn-guided-retrack {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    margin-top: 4px;
+    padding: 5px 8px;
+    border-radius: 5px;
+    font-size: 10px;
+    font-weight: 700;
+    background: #0f2444;
+    border: 1px solid #1e4d7e;
+    color: #93c5fd;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .btn-guided-retrack.ready {
+    background: linear-gradient(135deg, rgba(5, 150, 105, 0.35), rgba(16, 185, 129, 0.45));
+    border-color: #10b981;
+    color: #ecfdf5;
+    box-shadow: 0 0 10px rgba(16, 185, 129, 0.25);
+  }
+
+  .btn-guided-retrack:hover:not(:disabled) {
+    border-color: #34d399;
+    color: #ffffff;
+  }
+
+  .guided-tip-note {
+    margin: 4px 0 0 0;
+    font-size: 9.5px;
+    line-height: 1.35;
+    color: #94a3b8;
+  }
+
+  .track-diag-pill {
+    margin-top: 4px;
+    padding: 4px 6px;
+    border-radius: 4px;
+    background: rgba(2, 132, 199, 0.14);
+    border: 1px solid rgba(56, 189, 248, 0.3);
+    color: #7dd3fc;
+    font-size: 9.5px;
+    font-family: monospace;
+    line-height: 1.3;
+    word-break: break-word;
+  }
+
+  .kf-pin-pip {
+    position: absolute;
+    top: 22%;
+    transform: translate(-50%, -50%);
+    pointer-events: auto;
+    background: transparent;
+    border: none;
+    color: #10b981;
+    font-size: 14px;
+    font-weight: 900;
+    cursor: pointer;
+    padding: 0;
+    line-height: 1;
+    filter: drop-shadow(0 0 5px #10b981);
+    z-index: 2;
   }
 
   .chroma-controls-box {

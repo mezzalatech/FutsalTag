@@ -151,6 +151,90 @@ export async function detectPlayersInFrameOnnx(
   }
 }
 
+export interface SinglePlayerTrackResult {
+  keyframes: TrackingKeyframe[];
+  frames_processed: number;
+  matched_ai_frames: number;
+  fallback_frames: number;
+  camera_pan_frames?: number;
+  engine_info?: string;
+  anchor_box: DetectedPlayerBox | null;
+}
+
+export async function trackSinglePlayerOnnx(params: {
+  inputPath: string | null;
+  startTime: number;
+  endTime: number;
+  anchorTime: number;
+  anchorX: number;
+  anchorY: number;
+  anchorW?: number;
+  anchorH?: number;
+  anchorMode?: 'foot' | 'center';
+  direction?: 'both' | 'forward';
+  fps?: number;
+}): Promise<SinglePlayerTrackResult> {
+  if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) {
+    throw new Error('Tracking AI ONNX memerlukan mode aplikasi desktop Tauri.');
+  }
+  if (
+    !params.inputPath ||
+    (!params.inputPath.startsWith('/') && !/^[A-Za-z]:[\\/]/.test(params.inputPath))
+  ) {
+    throw new Error(
+      'Path file video absolut tidak ditemukan. Buka video melalui Hub Proyek.'
+    );
+  }
+
+  return invoke<SinglePlayerTrackResult>('track_single_player_onnx', {
+    inputPath: params.inputPath,
+    startSec: Math.max(0, params.startTime),
+    endSec: Math.max(params.startTime + 0.3, params.endTime),
+    anchorSec: Math.max(params.startTime, Math.min(params.endTime, params.anchorTime)),
+    anchorX: params.anchorX,
+    anchorY: params.anchorY,
+    anchorW: params.anchorW ?? null,
+    anchorH: params.anchorH ?? null,
+    anchorMode: params.anchorMode ?? 'foot',
+    direction: params.direction ?? 'both',
+    fps: params.fps ?? 15,
+  });
+}
+
+export async function trackGuidedAnchorsOnnx(params: {
+  inputPath: string | null;
+  startTime: number;
+  endTime: number;
+  anchors: TrackingKeyframe[];
+  anchorMode?: 'foot' | 'center';
+  fps?: number;
+}): Promise<SinglePlayerTrackResult> {
+  if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) {
+    throw new Error('Guided Tracking AI ONNX memerlukan mode aplikasi desktop Tauri.');
+  }
+  if (
+    !params.inputPath ||
+    (!params.inputPath.startsWith('/') && !/^[A-Za-z]:[\\/]/.test(params.inputPath))
+  ) {
+    throw new Error(
+      'Path file video absolut tidak ditemukan. Buka video melalui Hub Proyek.'
+    );
+  }
+
+  return invoke<SinglePlayerTrackResult>('track_guided_anchors_onnx', {
+    inputPath: params.inputPath,
+    startSec: Math.max(0, params.startTime),
+    endSec: Math.max(params.startTime + 0.3, params.endTime),
+    anchors: params.anchors.map((a) => ({
+      time: a.time,
+      x: a.x,
+      y: a.y,
+    })),
+    anchorMode: params.anchorMode ?? 'foot',
+    fps: params.fps ?? 15,
+  });
+}
+
 export function findNearestTrackAtTime(
   tracks: MultiPlayerTrack[],
   pt: Point2D,

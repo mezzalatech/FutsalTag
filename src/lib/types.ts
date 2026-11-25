@@ -46,6 +46,7 @@ export type DrawingToolType =
   | 'text-note'        // Floating tactical text banner
   | 'note-text'        // Floating tactical text banner (alias)
   | 'compactness-hull' // Multi-player team compactness polygon
+  | 'player-link'      // Formation chain linking moving players (Once Sport PlayerFormationWithPlayerCircle2)
   | 'magnifier'        // Zoom lens detail for ball/feet inspection (Once Sport Magnifier)
   | 'player-cross'     // Red/amber X marker for tactical mistake/out-of-position (Once Sport PlayerCross)
   | 'freehand';        // Freehand tactical marker
@@ -99,12 +100,16 @@ export interface DrawingElement {
   targetPlayerId?: string;
   isTracking?: boolean;
   keyframes?: TrackingKeyframe[];
+  manualPins?: TrackingKeyframe[]; // Ground-truth user correction pins for guided re-tracking
   multiTracks?: MultiPlayerTrack[];
   controlPoint?: Point2D; // For curved arrows (Once Sport style)
   curveOffset?: number;   // Arc height offset
   isChromaFloor?: boolean; // Floor blending mode
   pulseEffect?: boolean;   // Radar / beacon pulse
   zoomScale?: number;     // For magnifier lens (e.g. 1.8x)
+  spotlightRadius?: number; // Multiplier 0.5..2.0 (default 1.0)
+  spotlightHeight?: number; // Multiplier 0.4..2.0 (default 1.0)
+  spotlightFullHeight?: boolean; // Extend beam to top edge
   animationStyle?: BroadcastAnimationStyle;
   cameraZoomTarget?: CameraZoomTarget;
   pointTracks?: Record<number, TrackingKeyframe[]>; // Multi-point binding (index -> keyframes)

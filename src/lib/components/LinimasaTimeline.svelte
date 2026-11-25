@@ -7,6 +7,7 @@
     TaggingBoard,
     TaggingButton,
     VideoTagEvent,
+    WhistleMarker,
   } from '$lib/types';
 
   interface Props {
@@ -23,6 +24,8 @@
     periodKickoffs?: PeriodKickoff[];
     useMatchClock?: boolean;
     formatMatchClock?: (sec: number) => string;
+    whistleMarkers?: WhistleMarker[];
+    onQuickTagWhistle?: (marker: WhistleMarker) => void;
     onSeek: (time: number) => void;
     onSelectClip: (tag: VideoTagEvent) => void;
     onEditClip: (tag: VideoTagEvent) => void;
@@ -52,6 +55,8 @@
     periodKickoffs = [],
     useMatchClock = false,
     formatMatchClock,
+    whistleMarkers = [],
+    onQuickTagWhistle,
     onSeek,
     onSelectClip,
     onEditClip,
@@ -232,6 +237,15 @@
         return { ...k, leftPct, shortLabel, color };
       })
       .filter((k) => k.leftPct >= 0 && k.leftPct <= 100);
+  });
+
+  const visibleWhistleMarkers = $derived.by(() => {
+    return (whistleMarkers || [])
+      .map((w) => ({
+        ...w,
+        leftPct: ((w.peakTime - viewStart) / windowDur) * 100,
+      }))
+      .filter((w) => w.leftPct >= 0 && w.leftPct <= 100);
   });
 
   const playheadPct = $derived(((currentTime - viewStart) / windowDur) * 100);
@@ -519,6 +533,25 @@
           </div>
         {/each}
 
+        {#each visibleWhistleMarkers as w (w.id)}
+          <button
+            type="button"
+            class="whistle-badge"
+            style="left: {w.leftPct}%;"
+            onclick={(e) => {
+              e.stopPropagation();
+              onSeek(w.peakTime);
+            }}
+            ondblclick={(e) => {
+              e.stopPropagation();
+              onQuickTagWhistle?.(w);
+            }}
+            title="{w.label} ({formatTime(w.peakTime)} · {Math.round(w.peakFreqHz)} Hz) — Klik: lompat | Klik 2x: buat Tag"
+          >
+            ♪
+          </button>
+        {/each}
+
         {#if playheadVisible}
           <div class="ruler-playhead-badge" style="left: {playheadPct}%;">
             {useMatchClock && periodKickoffs.length > 0 && formatMatchClock
@@ -537,6 +570,12 @@
             <div
               class="kickoff-needle"
               style="left: {ko.leftPct}%; border-left-color: {ko.color};"
+            ></div>
+          {/each}
+          {#each visibleWhistleMarkers as w (w.id)}
+            <div
+              class="whistle-needle"
+              style="left: {w.leftPct}%;"
             ></div>
           {/each}
           {#if playheadVisible}
@@ -987,6 +1026,36 @@
     width: 0;
     border-left: 1.5px dashed #10b981;
     opacity: 0.78;
+  }
+
+  .whistle-badge {
+    position: absolute;
+    top: 3px;
+    transform: translateX(-50%);
+    background: #f59e0b;
+    color: #04101d;
+    border: 1px solid #fef3c7;
+    font-size: 8px;
+    font-weight: 900;
+    line-height: 1;
+    padding: 1px 4px;
+    border-radius: 3px;
+    cursor: pointer;
+    z-index: 10;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
+  }
+
+  .whistle-badge:hover {
+    background: #fbbf24;
+    transform: translateX(-50%) scale(1.1);
+  }
+
+  .whistle-needle {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 0;
+    border-left: 1px dashed rgba(245, 158, 11, 0.6);
   }
 
   .linimasa-lane-row {

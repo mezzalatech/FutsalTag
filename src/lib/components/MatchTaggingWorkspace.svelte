@@ -13,6 +13,7 @@
     TaggingButton,
     TagDescriptor,
     ActiveContinuousTag,
+    WhistleMarker,
   } from "$lib/types";
   import StatsMatrixModal from "$lib/components/StatsMatrixModal.svelte";
   import TagLabelEditorModal from "$lib/components/TagLabelEditorModal.svelte";
@@ -57,6 +58,7 @@
     ThumbsUp,
     ThumbsDown,
     Timer,
+    Volume2,
   } from "lucide-svelte";
 
   // --- REFS & STATE ---
@@ -71,6 +73,9 @@
     "tagging" | "coding_board" | "minutes" | "lineup"
   >("tagging");
   let showKickoffMenu = $state<boolean>(false);
+  let whistleMarkers = $state<WhistleMarker[]>([]);
+  let isDetectingWhistles = $state<boolean>(false);
+  let showWhistleMenu = $state<boolean>(false);
   let microFilter = $state<"all" | "home" | "away" | "fav" | "good" | "eval">(
     "all",
   );
@@ -806,6 +811,93 @@
     activeContinuousTags = next;
     notifyUser(
       `Klip Kontinu Disimpan: ${active.name} (${(endTime - active.startTime).toFixed(1)}s)`,
+    );
+  }
+
+  async function runAutoWhistleDetect() {
+    if (isDetectingWhistles) return;
+    if (
+      !isTauriDesktop() ||
+      !projectStore.videoFilePath ||
+      (!projectStore.videoFilePath.startsWith("/") &&
+        !/^[A-Za-z]:[\\/]/.test(projectStore.videoFilePath))
+    ) {
+      notifyUser(
+        "Deteksi peluit otomatis membutuhkan mode Desktop Tauri & video lokal.",
+      );
+      return;
+    }
+
+    isDetectingWhistles = true;
+    notifyUser("Memindai audio pertandingan untuk mencari suara peluit wasit...");
+    try {
+      const raw = await invoke<
+        Array<{
+          start_time: number;
+          end_time: number;
+          peak_time: number;
+          duration: number;
+          peak_freq_hz: number;
+          confidence: number;
+          label: string;
+        }>
+      >("detect_match_whistles_ffmpeg", {
+        inputPath: projectStore.videoFilePath,
+        sensitivity: 0.65,
+      });
+
+      whistleMarkers = raw.map((w, idx) => ({
+        id: `whistle-${idx}-${Math.round(w.peak_time * 100)}`,
+        startTime: w.start_time,
+        endTime: w.end_time,
+        peakTime: w.peak_time,
+        duration: w.duration,
+        peakFreqHz: w.peak_freq_hz,
+        confidence: w.confidence,
+        label: w.label,
+      }));
+      showWhistleMenu = true;
+      notifyUser(
+        whistleMarkers.length > 0
+          ? `Terdeteksi ${whistleMarkers.length} suara peluit wasit di linimasa`
+          : "Tidak ditemukan sinyal peluit dominan pada audio video ini.",
+      );
+    } catch (err: any) {
+      notifyUser(`Gagal pindai audio peluit: ${err?.message || err}`);
+    } finally {
+      isDetectingWhistles = false;
+    }
+  }
+
+  function createTagFromWhistle(
+    marker: WhistleMarker,
+    category: string = "Foul",
+  ) {
+    const start = Math.max(0, marker.peakTime - leadTimeSeconds);
+    const end = Math.min(
+      Math.max(duration, marker.peakTime + 1),
+      marker.peakTime + lagTimeSeconds,
+    );
+    const color = category === "Kick-in Set Piece" ? "#ec4899" : "#f97316";
+    const newTag: VideoTagEvent = {
+      id: `tag-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      title: `${category} (${marker.label})`,
+      category: category as TagCategory,
+      startTime: Number(start.toFixed(2)),
+      endTime: Number(end.toFixed(2)),
+      color,
+      playerLabel: activeSelectedPlayer,
+      playersInvolved: [activeSelectedPlayer],
+      teamSide: activeTeamSide,
+      notes: `Auto-peluit ${Math.round(marker.peakFreqHz)} Hz (${marker.duration.toFixed(2)}s)`,
+      pauseDuration: 3.0,
+      drawings: [],
+    };
+    projectStore.addTag(newTag);
+    selectedClipId = newTag.id;
+    seekTo(marker.peakTime);
+    notifyUser(
+      `Tag ${category} dibuat dari peluit (${formatTime(marker.peakTime)})`,
     );
   }
 
@@ -1824,6 +1916,109 @@
                     </div>
                   {/if}
                 </div>
+
+                <div class="kickoff-anchor">
+                  <button
+                    type="button"
+                    class="btn-whistle-ai"
+                    class:configured={whistleMarkers.length > 0}
+                    disabled={isDetectingWhistles}
+                    onclick={() => {
+                      if (whistleMarkers.length === 0) {
+                        runAutoWhistleDetect();
+                      } else {
+                        showWhistleMenu = !showWhistleMenu;
+                      }
+                    }}
+                    title="Deteksi suara peluit wasit otomatis dari audio pertandingan"
+                  >
+                    <Volume2 size={10} />
+                    <span>
+                      {isDetectingWhistles
+                        ? "Pindai Peluit..."
+                        : whistleMarkers.length > 0
+                          ? `Peluit (${whistleMarkers.length})`
+                          : "Peluit AI"}
+                    </span>
+                  </button>
+
+                  {#if showWhistleMenu}
+                    <div class="whistle-popover" role="menu">
+                      <div class="ko-pop-hdr">
+                        <span>Deteksi Peluit Wasit ({whistleMarkers.length})</span>
+                        <button
+                          type="button"
+                          class="ko-close"
+                          onclick={() => (showWhistleMenu = false)}
+                        >
+                          <X size={11} />
+                        </button>
+                      </div>
+
+                      <div class="whistle-pop-actions">
+                        <button
+                          type="button"
+                          class="ko-action-btn"
+                          style="flex: 1;"
+                          disabled={isDetectingWhistles}
+                          onclick={runAutoWhistleDetect}
+                        >
+                          <Volume2 size={11} class="text-amber-400" />
+                          <span>{isDetectingWhistles ? "Memindai Audio..." : "Pindai Ulang Audio"}</span>
+                        </button>
+                        {#if whistleMarkers.length > 0}
+                          <button
+                            type="button"
+                            class="ko-del-btn"
+                            onclick={() => (whistleMarkers = [])}
+                            title="Bersihkan semua penanda peluit"
+                          >
+                            <Trash2 size={11} />
+                          </button>
+                        {/if}
+                      </div>
+
+                      {#if whistleMarkers.length > 0}
+                        <div class="whistle-list-scroll">
+                          {#each whistleMarkers as w (w.id)}
+                            <div class="whistle-row">
+                              <button
+                                type="button"
+                                class="whistle-seek-btn"
+                                onclick={() => seekTo(w.peakTime)}
+                                title="{w.label} · {Math.round(w.peakFreqHz)} Hz ({Math.round(w.confidence * 100)}%)"
+                              >
+                                <span class="whistle-time">{formatTime(w.peakTime)}</span>
+                                <span class="whistle-freq">{Math.round(w.peakFreqHz)}Hz</span>
+                              </button>
+                              <div class="whistle-tag-btns">
+                                <button
+                                  type="button"
+                                  class="whistle-tag-btn foul"
+                                  onclick={() => createTagFromWhistle(w, "Foul")}
+                                  title="Buat tag Foul di momen peluit ini"
+                                >
+                                  +Foul
+                                </button>
+                                <button
+                                  type="button"
+                                  class="whistle-tag-btn ko"
+                                  onclick={() => createTagFromWhistle(w, "Kick-in Set Piece")}
+                                  title="Buat tag Kick-in di momen peluit ini"
+                                >
+                                  +Set
+                                </button>
+                              </div>
+                            </div>
+                          {/each}
+                        </div>
+                      {:else}
+                        <span class="whistle-empty">Klik Pindai Audio untuk menandai peluit di linimasa.</span>
+                      {/if}
+                    </div>
+                  {/if}
+                </div>
+
                 <span class="play-status-pill" class:running={isPlaying}>
                   ● {isPlaying ? "jalan" : "jeda"}
                 </span>
@@ -2471,6 +2666,8 @@
             periodKickoffs={projectStore.periodKickoffs}
             useMatchClock={projectStore.useMatchClock}
             formatMatchClock={(t) => projectStore.formatMatchClock(t)}
+            {whistleMarkers}
+            onQuickTagWhistle={(w) => createTagFromWhistle(w, "Foul")}
             onSeek={seekTo}
             onSelectClip={(tag) => {
               selectedClipId = tag.id;
@@ -4662,6 +4859,126 @@
     border-color: #10b981;
     color: #34d399;
     background: rgba(16, 185, 129, 0.14);
+  }
+
+  .btn-whistle-ai {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    background: #0b172a;
+    border: 1px solid #1e3a5f;
+    color: #fcd34d;
+    font-size: 9px;
+    font-weight: 800;
+    padding: 3px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .btn-whistle-ai:hover:not(:disabled),
+  .btn-whistle-ai.configured {
+    border-color: #f59e0b;
+    color: #fef3c7;
+    background: rgba(245, 158, 11, 0.16);
+  }
+
+  .btn-whistle-ai:disabled {
+    opacity: 0.6;
+    cursor: wait;
+  }
+
+  .whistle-popover {
+    position: fixed;
+    bottom: 245px;
+    left: 260px;
+    width: 258px;
+    background: #0a1628;
+    border: 1px solid #f59e0b;
+    border-radius: 8px;
+    padding: 8px;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.78);
+    z-index: 82;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .whistle-pop-actions {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .whistle-list-scroll {
+    max-height: 170px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .whistle-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    background: #060c17;
+    border: 1px solid #1a355d;
+    border-radius: 5px;
+    padding: 3px 6px;
+  }
+
+  .whistle-seek-btn {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+  }
+
+  .whistle-time {
+    font-family: "Fira Code", monospace;
+    font-size: 9.5px;
+    font-weight: 800;
+    color: #fbbf24;
+  }
+
+  .whistle-freq {
+    font-size: 8.5px;
+    color: #94a3b8;
+  }
+
+  .whistle-tag-btns {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+  }
+
+  .whistle-tag-btn {
+    border: none;
+    border-radius: 3px;
+    font-size: 8.5px;
+    font-weight: 800;
+    padding: 2px 5px;
+    cursor: pointer;
+  }
+
+  .whistle-tag-btn.foul {
+    background: rgba(249, 115, 22, 0.22);
+    color: #fdba74;
+  }
+
+  .whistle-tag-btn.ko {
+    background: rgba(236, 72, 153, 0.22);
+    color: #f9a8d4;
+  }
+
+  .whistle-empty {
+    font-size: 9.5px;
+    color: #94a3b8;
   }
 
   .kickoff-popover {

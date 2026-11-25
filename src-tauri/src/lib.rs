@@ -1,6 +1,8 @@
 mod ai_tracker;
+mod court_calibration;
 mod ffmpeg;
 mod player_segmentation;
+mod whistle_detector;
 
 use base64::prelude::*;
 use std::fs;
@@ -182,6 +184,9 @@ pub fn run() {
             player_segmentation::check_seg_model_status,
             player_segmentation::segment_players_in_frame_onnx,
             player_segmentation::segment_players_range_onnx,
+            court_calibration::auto_calibrate_court_frame,
+            court_calibration::track_court_calibration_range,
+            whistle_detector::detect_match_whistles_ffmpeg,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

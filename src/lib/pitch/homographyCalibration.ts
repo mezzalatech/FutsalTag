@@ -1,6 +1,6 @@
 // 3D Pitch Homography Calibration & Perspective Geometry (Once Sport Clean-Room Equivalent)
 // Calibrates 2D broadcast camera perspective to FIFA Futsal Pitch (40m x 20m)
-import type { Point2D } from '$lib/types';
+import type { Point2D, TemporalCalibrationFrame } from '$lib/types';
 import {
   computeHomography,
   applyHomography,
@@ -173,4 +173,43 @@ export function drawCalibratedCourtOverlay(
   }
 
   ctx.restore();
+}
+
+export function interpolateCalibrationAtTime(
+  frames: TemporalCalibrationFrame[],
+  time: number,
+  fallback: PitchCalibrationPoints
+): PitchCalibrationPoints {
+  if (!frames || frames.length === 0) return fallback;
+  if (frames.length === 1 || time <= frames[0].time) {
+    const f = frames[0];
+    return { tl: f.tl, tr: f.tr, br: f.br, bl: f.bl };
+  }
+  const last = frames[frames.length - 1];
+  if (time >= last.time) {
+    return { tl: last.tl, tr: last.tr, br: last.br, bl: last.bl };
+  }
+
+  for (let i = 0; i < frames.length - 1; i++) {
+    const a = frames[i];
+    const b = frames[i + 1];
+    if (time >= a.time && time <= b.time) {
+      const span = b.time - a.time;
+      if (span <= 1e-6) {
+        return { tl: a.tl, tr: a.tr, br: a.br, bl: a.bl };
+      }
+      const t = (time - a.time) / span;
+      const lerpPt = (p: Point2D, q: Point2D): Point2D => ({
+        x: p.x + (q.x - p.x) * t,
+        y: p.y + (q.y - p.y) * t,
+      });
+      return {
+        tl: lerpPt(a.tl, b.tl),
+        tr: lerpPt(a.tr, b.tr),
+        br: lerpPt(a.br, b.br),
+        bl: lerpPt(a.bl, b.bl),
+      };
+    }
+  }
+  return fallback;
 }

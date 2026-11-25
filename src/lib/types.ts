@@ -318,6 +318,26 @@ export interface PlayerSilhouetteMask {
   boxes: DetectedPlayerBox[];
 }
 
+export interface TemporalCalibrationFrame {
+  time: number;
+  tl: Point2D;
+  tr: Point2D;
+  br: Point2D;
+  bl: Point2D;
+  confidence: number;
+}
+
+export interface WhistleMarker {
+  id: string;
+  startTime: number;
+  endTime: number;
+  peakTime: number;
+  duration: number;
+  peakFreqHz: number;
+  confidence: number;
+  label: string;
+}
+
 export type WorkflowStage = 'hub' | 'tagging' | 'telestrator' | 'playlist_export' | 'coachboard' | 'chalkboard';
 
 export interface ActionPlaylistItem {

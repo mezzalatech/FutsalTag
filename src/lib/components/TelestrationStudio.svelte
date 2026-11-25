@@ -15,6 +15,7 @@
     PlayerSilhouetteMask,
     MultiPlayerTrack,
     BroadcastAnimationStyle,
+    TemporalCalibrationFrame,
   } from "$lib/types";
   import {
     runMultiPlayerAutoTracking,
@@ -39,6 +40,7 @@
     CALIBRATION_PRESETS,
     calculatePitchCalibration,
     drawCalibratedCourtOverlay,
+    interpolateCalibrationAtTime,
     type PitchCalibrationPoints,
   } from "$lib/pitch/homographyCalibration";
   import {
@@ -154,7 +156,21 @@
     ...CALIBRATION_PRESETS["main-sideline"].points,
   });
   let activeCornerDrag = $state<"tl" | "tr" | "br" | "bl" | null>(null);
-  let homographyResult = $derived(calculatePitchCalibration(calibrationPoints));
+  let temporalCalibrationFrames = $state<TemporalCalibrationFrame[]>([]);
+  let isAutoCalibratingCourt = $state(false);
+  let isTrackingPanningCourt = $state(false);
+  let activeCalibrationPoints = $derived(
+    temporalCalibrationFrames.length > 0
+      ? interpolateCalibrationAtTime(
+          temporalCalibrationFrames,
+          currentTime,
+          calibrationPoints,
+        )
+      : calibrationPoints,
+  );
+  let homographyResult = $derived(
+    calculatePitchCalibration(activeCalibrationPoints),
+  );
 
   // Pilar 1: Direct Video Export State
   let isExportingClip = $state(false);
@@ -332,6 +348,7 @@
     detectedFrameBoxes = [];
     hoveredPlayerBoxIdx = null;
     liveSilhouetteMask = null;
+    temporalCalibrationFrames = [];
     isLiveStepTrack = false;
     isLiveFollowDrag = false;
     isHoldingLiveFollow = false;
@@ -643,7 +660,7 @@
 
     // Render 3D court homography calibration grid if active
     if (isPitchCalibrated) {
-      drawCalibratedCourtOverlay(ctx, calibrationPoints, w, h);
+      drawCalibratedCourtOverlay(ctx, activeCalibrationPoints, w, h);
     }
 
     // Render Interactive AI Player Picker boxes on fresh frame scan
@@ -921,8 +938,12 @@
     if (isPitchCalibrated) {
       const corners: ("tl" | "tr" | "br" | "bl")[] = ["tl", "tr", "br", "bl"];
       for (const c of corners) {
-        const pin = calibrationPoints[c];
+        const pin = activeCalibrationPoints[c];
         if (Math.hypot(pt.x - pin.x, pt.y - pin.y) < 0.05) {
+          if (temporalCalibrationFrames.length > 0) {
+            calibrationPoints = { ...activeCalibrationPoints };
+            temporalCalibrationFrames = [];
+          }
           activeCornerDrag = c;
           return;
         }
@@ -1878,6 +1899,98 @@
     }
   }
 
+  async function triggerAutoCourtCalibration() {
+    if (isAutoCalibratingCourt) return;
+    if (
+      !isTauriDesktop() ||
+      !projectStore.videoFilePath ||
+      (!projectStore.videoFilePath.startsWith("/") &&
+        !/^[A-Za-z]:[\\/]/.test(projectStore.videoFilePath))
+    ) {
+      exportNotice =
+        "Auto-Kalibrasi 3D membutuhkan mode Desktop Tauri dan file video lokal.";
+      setTimeout(() => (exportNotice = null), 3500);
+      return;
+    }
+
+    isAutoCalibratingCourt = true;
+    exportNotice = "Mendeteksi 4 garis tepi lapangan otomatis (RANSAC)...";
+    try {
+      const res = await invoke<{
+        tl: Point2D;
+        tr: Point2D;
+        br: Point2D;
+        bl: Point2D;
+        confidence: number;
+        lines_detected: number;
+        method: string;
+      }>("auto_calibrate_court_frame", {
+        inputPath: projectStore.videoFilePath,
+        timeSec: currentTime,
+      });
+      calibrationPoints = {
+        tl: res.tl,
+        tr: res.tr,
+        br: res.br,
+        bl: res.bl,
+      };
+      temporalCalibrationFrames = [];
+      isPitchCalibrated = true;
+      exportNotice = `${res.method} · Akurasi ${Math.round(res.confidence * 100)}% (geser pin jika perlu)`;
+      setTimeout(() => (exportNotice = null), 4500);
+    } catch (err: any) {
+      exportNotice = `Auto-kalibrasi gagal: ${err?.message || err}`;
+      setTimeout(() => (exportNotice = null), 4500);
+    } finally {
+      isAutoCalibratingCourt = false;
+    }
+  }
+
+  async function triggerPanningCalibrationTrack() {
+    if (isTrackingPanningCourt || !activeClip) return;
+    if (
+      !isTauriDesktop() ||
+      !projectStore.videoFilePath ||
+      (!projectStore.videoFilePath.startsWith("/") &&
+        !/^[A-Za-z]:[\\/]/.test(projectStore.videoFilePath))
+    ) {
+      exportNotice =
+        "Pelacakan kamera panning membutuhkan mode Desktop Tauri dan file video lokal.";
+      setTimeout(() => (exportNotice = null), 3500);
+      return;
+    }
+
+    isTrackingPanningCourt = true;
+    exportNotice =
+      "Melacak pergeseran garis lapangan untuk kamera panning...";
+    try {
+      const basePts = activeCalibrationPoints;
+      const frames = await invoke<TemporalCalibrationFrame[]>(
+        "track_court_calibration_range",
+        {
+          inputPath: projectStore.videoFilePath,
+          startSec: activeClip.startTime,
+          endSec: activeClip.endTime,
+          anchorSec: currentTime,
+          tl: basePts.tl,
+          tr: basePts.tr,
+          br: basePts.br,
+          bl: basePts.bl,
+          fps: 10,
+        },
+      );
+      temporalCalibrationFrames = frames;
+      isPitchCalibrated = true;
+      exportNotice = `Kamera panning aktif (${frames.length} frame homography tersinkron)`;
+      setTimeout(() => (exportNotice = null), 4500);
+    } catch (err: any) {
+      exportNotice = `Pelacakan panning gagal: ${err?.message || err}`;
+      setTimeout(() => (exportNotice = null), 4500);
+    } finally {
+      isTrackingPanningCourt = false;
+    }
+  }
+
   function bindTrackToPoint(
     el: DrawingElement,
     pointIdx: number,
@@ -2134,10 +2247,21 @@
           if (needsVideoPixels && videoEl) {
             await seekVideoElementSafe(videoEl, t);
           }
+          const frameHomography = isPitchCalibrated
+            ? temporalCalibrationFrames.length > 0
+              ? calculatePitchCalibration(
+                  interpolateCalibrationAtTime(
+                    temporalCalibrationFrames,
+                    t,
+                    calibrationPoints,
+                  ),
+                )
+              : homographyResult
+            : null;
           exportNotice = `Merender frame telestrasi bergerak (${i + 1}/${totalFrames})...`;
           const pngBase64 = renderDrawingsToDataUrl(drawings, 1280, 720, t, {
             videoEl,
-            homographyResult: isPitchCalibrated ? homographyResult : null,
+            homographyResult: frameHomography,
             chromaConfig: projectStore.chromaFloorConfig,
             detectedBoxes: findClosestBoxes(t),
             silhouetteMask: findClosestMask(t),
@@ -2154,6 +2278,17 @@
         if (needsVideoPixels && videoEl) {
           await seekVideoElementSafe(videoEl, freezeSec);
         }
+        const freezeHomography = isPitchCalibrated
+          ? temporalCalibrationFrames.length > 0
+            ? calculatePitchCalibration(
+                interpolateCalibrationAtTime(
+                  temporalCalibrationFrames,
+                  freezeSec,
+                  calibrationPoints,
+                ),
+              )
+            : homographyResult
+          : null;
         const freezeOverlayBase64 = renderDrawingsToDataUrl(
           drawings,
           1280,
@@ -2161,7 +2296,7 @@
           freezeSec,
           {
             videoEl,
-            homographyResult: isPitchCalibrated ? homographyResult : null,
+            homographyResult: freezeHomography,
             chromaConfig: projectStore.chromaFloorConfig,
             detectedBoxes: findClosestBoxes(freezeSec),
             silhouetteMask: findClosestMask(freezeSec),
@@ -2525,6 +2660,7 @@
                 calibrationPoints = {
                   ...CALIBRATION_PRESETS[activePresetKey].points,
                 };
+                temporalCalibrationFrames = [];
               }
             }}
           >
@@ -2532,9 +2668,53 @@
               <option value={key}>{val.label}</option>
             {/each}
           </select>
+
+          <button
+            type="button"
+            class="btn-chroma-cutout"
+            disabled={isAutoCalibratingCourt || isTrackingPanningCourt}
+            onclick={triggerAutoCourtCalibration}
+            title="Deteksi otomatis 4 sudut garis lapangan dari frame video saat ini"
+          >
+            <Crosshair size={12} />
+            <span
+              >{isAutoCalibratingCourt
+                ? "Mendeteksi Garis..."
+                : "Auto-Kalibrasi Lapangan"}</span
+            >
+          </button>
+
+          <button
+            type="button"
+            class="btn-chroma-sample"
+            class:active={temporalCalibrationFrames.length > 0}
+            disabled={isTrackingPanningCourt || isAutoCalibratingCourt}
+            onclick={triggerPanningCalibrationTrack}
+            title="Sinkronkan grid homography 3D mengikuti pergeseran kamera panning sepanjang klip"
+          >
+            <Activity size={12} />
+            <span
+              >{isTrackingPanningCourt
+                ? "Melacak Panning..."
+                : temporalCalibrationFrames.length > 0
+                  ? `Panning Aktif (${temporalCalibrationFrames.length}F)`
+                  : "Lacak Kamera Panning"}</span
+            >
+          </button>
+
+          {#if temporalCalibrationFrames.length > 0}
+            <button
+              type="button"
+              class="btn-reset-pan"
+              onclick={() => (temporalCalibrationFrames = [])}
+              title="Kembalikan kalibrasi 3D ke posisi statis"
+            >
+              Reset Panning (Statis)
+            </button>
+          {/if}
+
           <span class="preset-tip"
-            >Tarik 4 pin biru (TL, TR, BR, BL) di layar untuk menyamakan garis
-            lapangan</span
+            >Tarik 4 pin biru (TL, TR, BR, BL) di layar atau gunakan Auto-Kalibrasi</span
           >
         </div>
       {/if}
@@ -3895,6 +4075,22 @@
     font-size: 9px;
     color: #64748b;
     line-height: 1.3;
+  }
+
+  .btn-reset-pan {
+    background: #0b192e;
+    border: 1px solid #334155;
+    color: #94a3b8;
+    font-size: 9.5px;
+    font-weight: 700;
+    padding: 4px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+
+  .btn-reset-pan:hover {
+    border-color: #f59e0b;
+    color: #fde68a;
   }
 
   .export-notice-toast {

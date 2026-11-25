@@ -7,7 +7,11 @@ import type {
   DrawingToolType,
   Point2D,
 } from '$lib/types';
-import { getElementPointsAtTime } from '$lib/tracking/playerTracker';
+import {
+  getElementPointsAtTime,
+  isElementVisibleAtTime,
+  getElementLifespanOpacity,
+} from '$lib/tracking/playerTracker';
 import {
   canvasToCourtMeters,
   getCalibratedDistanceMeters,
@@ -20,6 +24,7 @@ export interface RenderExportOptions {
   chromaConfig?: ChromaFloorConfig | null;
   detectedBoxes?: DetectedPlayerBox[];
   clipStartTime?: number;
+  clipEndTime?: number;
   animElapsedSec?: number;
   selectedElementId?: string | null;
   activeTool?: DrawingToolType;
@@ -230,13 +235,16 @@ export function renderDrawingsToCanvas(
   currentTime: number = 0,
   options: RenderExportOptions = {}
 ) {
+  const visibleDrawings = drawings.filter((el) => isElementVisibleAtTime(el, currentTime));
+  if (visibleDrawings.length === 0) return;
+
   const chromaActive = Boolean(
     options.chromaConfig?.enabled && options.videoEl && options.videoEl.videoWidth > 0
   );
 
   if (chromaActive && typeof document !== 'undefined' && options.videoEl && options.chromaConfig) {
-    const floorEls = drawings.filter((el) => el.isChromaFloor ?? isFloorElType(el.type));
-    const fgEls = drawings.filter((el) => !(el.isChromaFloor ?? isFloorElType(el.type)));
+    const floorEls = visibleDrawings.filter((el) => el.isChromaFloor ?? isFloorElType(el.type));
+    const fgEls = visibleDrawings.filter((el) => !(el.isChromaFloor ?? isFloorElType(el.type)));
 
     if (floorEls.length > 0) {
       if (!floorLayerCanvas) floorLayerCanvas = document.createElement('canvas');
@@ -270,7 +278,7 @@ export function renderDrawingsToCanvas(
     return;
   }
 
-  for (const el of drawings) {
+  for (const el of visibleDrawings) {
     drawSingleElement(ctx, el, width, height, currentTime, options, false);
   }
 }
@@ -317,6 +325,20 @@ function drawSingleElement(
   const isSelected = Boolean(options.selectedElementId && options.selectedElementId === el.id);
 
   ctx.save();
+  const lifeAlpha =
+    options.animElapsedSec !== undefined && options.animElapsedSec >= 1
+      ? 1
+      : getElementLifespanOpacity(
+          el,
+          currentTime,
+          options.clipStartTime,
+          options.clipEndTime
+        );
+  if (lifeAlpha <= 0.005) {
+    ctx.restore();
+    return;
+  }
+  ctx.globalAlpha *= lifeAlpha;
   if (!skipScreenBlend && el.isChromaFloor) {
     ctx.globalCompositeOperation = 'screen';
   }

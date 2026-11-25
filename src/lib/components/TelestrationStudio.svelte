@@ -28,6 +28,7 @@
     getInterpolatedPosition,
     getElementPointsAtTime,
     hasAnimatedTelestration,
+    isElementVisibleAtTime,
     seekVideoElementSafe,
   } from "$lib/tracking/playerTracker";
   import {
@@ -43,6 +44,7 @@
     isFloorElType,
   } from "$lib/export/telestrationRenderer";
   import VoiceoverRecorder from "$lib/components/VoiceoverRecorder.svelte";
+  import TelestrationElementTimeline from "$lib/components/TelestrationElementTimeline.svelte";
   import {
     Sparkles,
     MoveRight,
@@ -366,6 +368,14 @@
     window.addEventListener("resize", syncCanvasSize);
 
     const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const isTyping =
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable);
+
       if (e.key === "Enter" && inProgressDrawing) {
         e.preventDefault();
         finishInProgressMultiPoint();
@@ -375,6 +385,20 @@
         isHoldingLiveFollow = false;
         if (videoEl) {
           videoEl.playbackRate = 1.0;
+        }
+      } else if (
+        !isTyping &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        selectedElement
+      ) {
+        if (e.key === "i" || e.key === "I") {
+          e.preventDefault();
+          setSelectedElementInAtPlayhead();
+        } else if (e.key === "o" || e.key === "O") {
+          e.preventDefault();
+          setSelectedElementOutAtPlayhead();
         }
       }
     };
@@ -508,6 +532,58 @@
     }
   }
 
+  function getEffectiveClipRange(): { start: number; end: number } {
+    const start = activeClip ? activeClip.startTime : 0;
+    const end = activeClip ? activeClip.endTime : Math.max(duration, start + 1);
+    return { start, end: Math.max(start + 0.2, end) };
+  }
+
+  function updateElementLifespan(
+    id: string,
+    timeStart: number,
+    timeEnd: number,
+  ) {
+    const idx = drawings.findIndex((d) => d.id === id);
+    if (idx === -1) return;
+    const { start, end } = getEffectiveClipRange();
+    const minSpan = 0.15;
+    const clampedStart = Math.max(start, Math.min(end - minSpan, timeStart));
+    const clampedEnd = Math.min(
+      end,
+      Math.max(clampedStart + minSpan, timeEnd),
+    );
+    drawings[idx].timeStart = Number(clampedStart.toFixed(3));
+    drawings[idx].timeEnd = Number(clampedEnd.toFixed(3));
+    drawings = [...drawings];
+  }
+
+  function resetElementLifespan(id: string) {
+    const { start, end } = getEffectiveClipRange();
+    updateElementLifespan(id, start, end);
+  }
+
+  function setSelectedElementInAtPlayhead() {
+    if (!selectedElement) return;
+    const { start, end } = getEffectiveClipRange();
+    const curEnd =
+      typeof selectedElement.timeEnd === "number"
+        ? Math.min(end, selectedElement.timeEnd)
+        : end;
+    const nextStart = Math.max(start, Math.min(curEnd - 0.15, currentTime));
+    updateElementLifespan(selectedElement.id, nextStart, curEnd);
+  }
+
+  function setSelectedElementOutAtPlayhead() {
+    if (!selectedElement) return;
+    const { start, end } = getEffectiveClipRange();
+    const curStart =
+      typeof selectedElement.timeStart === "number"
+        ? Math.max(start, selectedElement.timeStart)
+        : start;
+    const nextEnd = Math.min(end, Math.max(curStart + 0.15, currentTime));
+    updateElementLifespan(selectedElement.id, curStart, nextEnd);
+  }
+
   // --- DRAWING CANVAS RENDER ENGINE ---
   function drawCanvas() {
     if (!canvasEl) return;
@@ -538,6 +614,7 @@
       chromaConfig: projectStore.chromaFloorConfig,
       detectedBoxes: liveDetectedBoxes,
       clipStartTime: activeClip ? activeClip.startTime : 0,
+      clipEndTime: activeClip ? activeClip.endTime : duration,
       animElapsedSec: isFreezeActive ? 1.0 : undefined,
       selectedElementId,
       activeTool,
@@ -930,6 +1007,7 @@
       // 2. Check if clicking near any existing element to select it
       let found: DrawingElement | null = null;
       for (const d of drawings) {
+        if (!isElementVisibleAtTime(d, currentTime)) continue;
         const effPts = getElementPointsAtTime(d, currentTime);
         if (effPts.length > 0) {
           const dist = Math.hypot(pt.x - effPts[0].x, pt.y - effPts[0].y);
@@ -1906,7 +1984,11 @@
         ? [zoomObj.x, zoomObj.y, zoomObj.scale]
         : null;
       const needsAnimatedExport =
-        hasAnimatedTelestration(drawings) ||
+        hasAnimatedTelestration(
+          drawings,
+          activeClip.startTime,
+          activeClip.endTime,
+        ) ||
         (drawings.length > 0 && pauseDuration < 0.2);
 
       if (needsAnimatedExport) {
@@ -1973,6 +2055,7 @@
             chromaConfig: projectStore.chromaFloorConfig,
             detectedBoxes: findClosestBoxes(t),
             clipStartTime: activeClip.startTime,
+            clipEndTime: activeClip.endTime,
           });
           await invoke<string>("save_overlay_frame_png", {
             dirPath: seqDir,
@@ -1995,6 +2078,7 @@
             chromaConfig: projectStore.chromaFloorConfig,
             detectedBoxes: findClosestBoxes(freezeSec),
             clipStartTime: activeClip.startTime,
+            clipEndTime: activeClip.endTime,
             animElapsedSec: 1.0,
           },
         );
@@ -2028,6 +2112,7 @@
             chromaConfig: projectStore.chromaFloorConfig,
             detectedBoxes: liveDetectedBoxes,
             clipStartTime: activeClip.startTime,
+            clipEndTime: activeClip.endTime,
             animElapsedSec: 1.0,
           },
         );
@@ -3075,9 +3160,18 @@
       <!-- DRAWINGS LIST -->
       <div class="drawings-list">
         {#each drawings as d}
+          {@const visibleNow = isElementVisibleAtTime(d, currentTime)}
+          {@const clipBase = activeClip ? activeClip.startTime : 0}
+          {@const clipMax = activeClip ? activeClip.endTime : duration}
+          {@const hasTrim =
+            (typeof d.timeStart === "number" && d.timeStart > clipBase + 0.05) ||
+            (typeof d.timeEnd === "number" && d.timeEnd < clipMax - 0.05)}
+          {@const relS = Math.max(0, (d.timeStart ?? clipBase) - clipBase)}
+          {@const relE = Math.max(relS + 0.1, (d.timeEnd ?? clipMax) - clipBase)}
           <div
             class="drawing-item"
             class:selected={d.id === selectedElementId}
+            class:out-of-range={!visibleNow}
             onclick={() => (selectedElementId = d.id)}
             role="button"
             tabindex="0"
@@ -3091,6 +3185,11 @@
               <span class="item-type-name">{d.label || (d.type === "player-circle" ? "Lingkaran Pemain" : d.type)}</span>
             </div>
             <div class="drawing-item-right">
+              {#if hasTrim}
+                <span class="lifespan-pill" title="Rentang waktu tampil elemen ini"
+                  >{relS.toFixed(1)}–{relE.toFixed(1)}s</span
+                >
+              {/if}
               {#if d.keyframes && d.keyframes.length > 0}
                 <span class="kf-badge">⬥ {d.keyframes.length}</span>
               {/if}
@@ -3222,6 +3321,26 @@
       {/if}
     </div>
   </div>
+
+  {#if drawings.length > 0 && activeClip}
+    <TelestrationElementTimeline
+      {drawings}
+      {selectedElementId}
+      clipStart={activeClip.startTime}
+      clipEnd={activeClip.endTime}
+      {currentTime}
+      onSelect={(id) => {
+        selectedElementId = id;
+        rightPanelTab = "elements";
+      }}
+      onChangeLifespan={updateElementLifespan}
+      onResetLifespan={resetElementLifespan}
+      onSeek={(t) => {
+        currentTime = t;
+        if (videoEl) videoEl.currentTime = t;
+      }}
+    />
+  {/if}
 
   <!-- BOTTOM FREEZE DURATION & PREVIEW BAR -->
   <footer class="studio-footer">
@@ -4030,10 +4149,20 @@
     background: rgba(56, 189, 248, 0.15);
   }
 
+  .drawing-item.out-of-range:not(.selected) {
+    opacity: 0.55;
+  }
+
   .drawing-item-left {
     display: flex;
     align-items: center;
     gap: 6px;
+  }
+
+  .drawing-item-right {
+    display: flex;
+    align-items: center;
+    gap: 4px;
   }
 
   .item-color-pill {
@@ -4046,6 +4175,16 @@
     font-size: 11px;
     color: #cbd5e1;
     font-weight: 600;
+  }
+
+  .lifespan-pill {
+    font-family: monospace;
+    font-size: 9px;
+    font-weight: 700;
+    color: #7dd3fc;
+    background: rgba(56, 189, 248, 0.12);
+    padding: 1px 4px;
+    border-radius: 3px;
   }
 
   .kf-badge {

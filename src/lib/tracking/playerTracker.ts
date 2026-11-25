@@ -414,11 +414,64 @@ export function getElementPointsAtTime(el: DrawingElement, time: number): Point2
   return el.points;
 }
 
-export function hasAnimatedTelestration(drawings: DrawingElement[]): boolean {
+export function isElementVisibleAtTime(
+  el: DrawingElement,
+  time: number,
+  eps: number = 0.015
+): boolean {
+  if (typeof el.timeStart === 'number' && time < el.timeStart - eps) return false;
+  if (typeof el.timeEnd === 'number' && time > el.timeEnd + eps) return false;
+  return true;
+}
+
+export function getElementLifespanOpacity(
+  el: DrawingElement,
+  time: number,
+  clipStart?: number,
+  clipEnd?: number,
+  fadeSec: number = 0.2
+): number {
+  if (!isElementVisibleAtTime(el, time)) return 0;
+
+  const start = typeof el.timeStart === 'number' ? el.timeStart : (clipStart ?? 0);
+  const end = typeof el.timeEnd === 'number' ? el.timeEnd : (clipEnd ?? Infinity);
+  const span = Number.isFinite(end) ? Math.max(0.05, end - start) : 10;
+  const effFade = Math.min(fadeSec, span * 0.35);
+
+  let alpha = 1;
+  if (
+    effFade > 0.005 &&
+    typeof el.timeStart === 'number' &&
+    (clipStart === undefined || el.timeStart > clipStart + 0.05) &&
+    time - start < effFade
+  ) {
+    alpha = Math.min(alpha, Math.max(0, (time - start) / effFade));
+  }
+  if (
+    effFade > 0.005 &&
+    typeof el.timeEnd === 'number' &&
+    (clipEnd === undefined || el.timeEnd < clipEnd - 0.05) &&
+    end - time < effFade
+  ) {
+    alpha = Math.min(alpha, Math.max(0, (end - time) / effFade));
+  }
+
+  return Math.max(0, Math.min(1, alpha));
+}
+
+export function hasAnimatedTelestration(
+  drawings: DrawingElement[],
+  clipStart?: number,
+  clipEnd?: number
+): boolean {
   return drawings.some((d) => {
     if ((d.keyframes?.length ?? 0) > 1) return true;
     if (d.pointTracks && Object.values(d.pointTracks).some((kfs) => kfs.length > 1)) return true;
     if (d.animationStyle && d.animationStyle !== 'none') return true;
+    if (clipStart !== undefined && clipEnd !== undefined) {
+      if (typeof d.timeStart === 'number' && d.timeStart > clipStart + 0.05) return true;
+      if (typeof d.timeEnd === 'number' && d.timeEnd < clipEnd - 0.05) return true;
+    }
     return false;
   });
 }

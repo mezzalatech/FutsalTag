@@ -5,6 +5,7 @@ import type {
   DetectedPlayerBox,
   DrawingElement,
   DrawingToolType,
+  PlayerSilhouetteMask,
   Point2D,
 } from '$lib/types';
 import {
@@ -23,6 +24,7 @@ export interface RenderExportOptions {
   homographyResult?: CalibrationResult | null;
   chromaConfig?: ChromaFloorConfig | null;
   detectedBoxes?: DetectedPlayerBox[];
+  silhouetteMask?: PlayerSilhouetteMask | null;
   clipStartTime?: number;
   clipEndTime?: number;
   animElapsedSec?: number;
@@ -34,6 +36,7 @@ let maskSampleCanvas: HTMLCanvasElement | null = null;
 let maskAlphaCanvas: HTMLCanvasElement | null = null;
 let floorLayerCanvas: HTMLCanvasElement | null = null;
 let samplePixelCanvas: HTMLCanvasElement | null = null;
+let silhouetteMaskCanvas: HTMLCanvasElement | null = null;
 
 export function isFloorElType(type: DrawingToolType): boolean {
   return (
@@ -209,6 +212,49 @@ export function applyFloorChromaMask(
   }
 }
 
+export function applyPlayerSilhouetteCutout(
+  floorCtx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  mask: PlayerSilhouetteMask
+) {
+  if (
+    typeof document === 'undefined' ||
+    mask.width <= 0 ||
+    mask.height <= 0 ||
+    mask.alphaBytes.length < mask.width * mask.height
+  ) {
+    return;
+  }
+
+  if (!silhouetteMaskCanvas) {
+    silhouetteMaskCanvas = document.createElement('canvas');
+  }
+  if (silhouetteMaskCanvas.width !== mask.width || silhouetteMaskCanvas.height !== mask.height) {
+    silhouetteMaskCanvas.width = mask.width;
+    silhouetteMaskCanvas.height = mask.height;
+  }
+  const mCtx = silhouetteMaskCanvas.getContext('2d');
+  if (!mCtx) return;
+
+  const img = mCtx.createImageData(mask.width, mask.height);
+  const dst = img.data;
+  const total = mask.width * mask.height;
+  for (let i = 0; i < total; i++) {
+    const off = i * 4;
+    dst[off] = 255;
+    dst[off + 1] = 255;
+    dst[off + 2] = 255;
+    dst[off + 3] = mask.alphaBytes[i];
+  }
+
+  mCtx.putImageData(img, 0, 0);
+  floorCtx.save();
+  floorCtx.globalCompositeOperation = 'destination-out';
+  floorCtx.drawImage(silhouetteMaskCanvas, 0, 0, width, height);
+  floorCtx.restore();
+}
+
 function hexToRgba(hex: string, alpha: number): string {
   if (!hex || !hex.startsWith('#')) return `rgba(56, 189, 248, ${alpha})`;
   const clean = hex.replace('#', '');
@@ -238,11 +284,26 @@ export function renderDrawingsToCanvas(
   const visibleDrawings = drawings.filter((el) => isElementVisibleAtTime(el, currentTime));
   if (visibleDrawings.length === 0) return;
 
+  const floorMode = options.chromaConfig?.mode ?? 'ai-silhouette';
+  const aiSilhouetteActive = Boolean(
+    options.chromaConfig?.enabled &&
+      floorMode === 'ai-silhouette' &&
+      options.silhouetteMask &&
+      options.silhouetteMask.alphaBytes.length > 0
+  );
   const chromaActive = Boolean(
-    options.chromaConfig?.enabled && options.videoEl && options.videoEl.videoWidth > 0
+    options.chromaConfig?.enabled &&
+      floorMode === 'chroma-key' &&
+      options.videoEl &&
+      options.videoEl.videoWidth > 0 &&
+      !aiSilhouetteActive
   );
 
-  if (chromaActive && typeof document !== 'undefined' && options.videoEl && options.chromaConfig) {
+  if (
+    (aiSilhouetteActive || chromaActive) &&
+    typeof document !== 'undefined' &&
+    options.chromaConfig
+  ) {
     const floorEls = visibleDrawings.filter((el) => el.isChromaFloor ?? isFloorElType(el.type));
     const fgEls = visibleDrawings.filter((el) => !(el.isChromaFloor ?? isFloorElType(el.type)));
 
@@ -258,16 +319,20 @@ export function renderDrawingsToCanvas(
         for (const el of floorEls) {
           drawSingleElement(fCtx, el, width, height, currentTime, options, true);
         }
-        applyFloorChromaMask(
-          fCtx,
-          width,
-          height,
-          options.videoEl,
-          options.chromaConfig,
-          options.detectedBoxes,
-          Math.min(640, width),
-          Math.min(360, height)
-        );
+        if (aiSilhouetteActive && options.silhouetteMask) {
+          applyPlayerSilhouetteCutout(fCtx, width, height, options.silhouetteMask);
+        } else if (chromaActive && options.videoEl) {
+          applyFloorChromaMask(
+            fCtx,
+            width,
+            height,
+            options.videoEl,
+            options.chromaConfig,
+            options.detectedBoxes,
+            Math.min(640, width),
+            Math.min(360, height)
+          );
+        }
         ctx.drawImage(floorLayerCanvas, 0, 0, width, height);
       }
     }

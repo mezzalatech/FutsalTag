@@ -80,6 +80,7 @@ export interface CameraZoomTarget {
 
 export interface ChromaFloorConfig {
   enabled: boolean;
+  mode?: 'ai-silhouette' | 'chroma-key';
   targetRgb: [number, number, number]; // sampled court floor RGB
   tolerance: number;                   // 10..80 (HSV/RGB distance threshold)
   feather: number;                     // 2..30 (soft edge transition)
@@ -306,6 +307,15 @@ export interface DetectedPlayerBox {
   confidence: number;
   class_id: number;
   label: string;
+}
+
+export interface PlayerSilhouetteMask {
+  time: number;
+  width: number;
+  height: number;
+  alphaBytes: Uint8Array;
+  playerCount: number;
+  boxes: DetectedPlayerBox[];
 }
 
 export type WorkflowStage = 'hub' | 'tagging' | 'telestrator' | 'playlist_export' | 'coachboard' | 'chalkboard';

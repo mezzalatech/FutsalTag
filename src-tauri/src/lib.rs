@@ -1,5 +1,6 @@
 mod ai_tracker;
 mod ffmpeg;
+mod player_segmentation;
 
 use base64::prelude::*;
 use std::fs;
@@ -178,6 +179,9 @@ pub fn run() {
             ai_tracker::run_multi_player_tracking_onnx,
             ai_tracker::track_single_player_onnx,
             ai_tracker::track_guided_anchors_onnx,
+            player_segmentation::check_seg_model_status,
+            player_segmentation::segment_players_in_frame_onnx,
+            player_segmentation::segment_players_range_onnx,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

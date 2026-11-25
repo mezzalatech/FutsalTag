@@ -101,9 +101,10 @@ class ProjectStore {
   lastAutoSaveAt = $state<string | null>(null);
   autoSaveMeta = $state<{ title: string; tagCount: number; savedAt: string } | null>(null);
 
-  // Broadcast Chroma-Key Court Masking Config
+  // Broadcast Chroma-Key & AI Silhouette Court Masking Config
   chromaFloorConfig = $state<ChromaFloorConfig>({
     enabled: false,
+    mode: 'ai-silhouette',
     targetRgb: [34, 98, 152],
     tolerance: 32,
     feather: 10,
@@ -887,6 +888,7 @@ class ProjectStore {
       if (data.chromaFloorConfig) {
         this.chromaFloorConfig = {
           enabled: Boolean(data.chromaFloorConfig.enabled),
+          mode: data.chromaFloorConfig.mode === 'chroma-key' ? 'chroma-key' : 'ai-silhouette',
           targetRgb: Array.isArray(data.chromaFloorConfig.targetRgb)
             ? data.chromaFloorConfig.targetRgb
             : [34, 98, 152],

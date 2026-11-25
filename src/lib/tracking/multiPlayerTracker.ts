@@ -7,6 +7,7 @@ import type {
   DetectedPlayerBox,
   DrawingElement,
   MultiPlayerTrack,
+  PlayerSilhouetteMask,
   Point2D,
   TrackingKeyframe,
 } from '$lib/types';
@@ -284,4 +285,100 @@ export function bindElementPointsToTracks(
   }
 
   return { pointTracks, pointTrackIds, boundCount };
+}
+
+export interface SegModelStatus {
+  available: boolean;
+  model_path: string | null;
+  engine: string;
+}
+
+interface RustPlayerSilhouetteMaskDto {
+  time: number;
+  width: number;
+  height: number;
+  alpha_base64: string;
+  player_count: number;
+  boxes: DetectedPlayerBox[];
+}
+
+function decodeBase64Bytes(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const len = bin.length;
+  const out = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    out[i] = bin.charCodeAt(i);
+  }
+  return out;
+}
+
+export async function checkSegModelStatus(): Promise<SegModelStatus> {
+  if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) {
+    return {
+      available: false,
+      model_path: null,
+      engine: 'Hanya tersedia di aplikasi desktop Tauri',
+    };
+  }
+  return invoke<SegModelStatus>('check_seg_model_status');
+}
+
+export async function segmentPlayersInFrameOnnx(
+  inputPath: string | null,
+  timeSec: number
+): Promise<PlayerSilhouetteMask | null> {
+  if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) {
+    return null;
+  }
+  if (!inputPath || (!inputPath.startsWith('/') && !/^[A-Za-z]:[\\/]/.test(inputPath))) {
+    return null;
+  }
+  try {
+    const dto = await invoke<RustPlayerSilhouetteMaskDto>('segment_players_in_frame_onnx', {
+      inputPath,
+      timeSec: Math.max(0, timeSec),
+    });
+    return {
+      time: dto.time,
+      width: dto.width,
+      height: dto.height,
+      alphaBytes: decodeBase64Bytes(dto.alpha_base64),
+      playerCount: dto.player_count,
+      boxes: dto.boxes,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function segmentPlayersRangeOnnx(
+  inputPath: string | null,
+  startSec: number,
+  endSec: number,
+  fps: number = 8
+): Promise<PlayerSilhouetteMask[]> {
+  if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) {
+    return [];
+  }
+  if (!inputPath || (!inputPath.startsWith('/') && !/^[A-Za-z]:[\\/]/.test(inputPath))) {
+    return [];
+  }
+  try {
+    const list = await invoke<RustPlayerSilhouetteMaskDto[]>('segment_players_range_onnx', {
+      inputPath,
+      startSec: Math.max(0, startSec),
+      endSec: Math.max(startSec + 0.3, endSec),
+      fps,
+    });
+    return list.map((dto) => ({
+      time: dto.time,
+      width: dto.width,
+      height: dto.height,
+      alphaBytes: decodeBase64Bytes(dto.alpha_base64),
+      playerCount: dto.player_count,
+      boxes: dto.boxes,
+    }));
+  } catch {
+    return [];
+  }
 }

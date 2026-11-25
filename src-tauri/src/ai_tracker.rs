@@ -10,7 +10,7 @@ use tauri::Manager;
 static ORT_ENV: OnceLock<Environment> = OnceLock::new();
 static YOLOX_SESSION_CACHE: OnceLock<Mutex<Option<(PathBuf, Session, u32, u32)>>> = OnceLock::new();
 
-fn get_ort_env() -> Result<&'static Environment, String> {
+pub(crate) fn get_ort_env() -> Result<&'static Environment, String> {
     if let Some(env) = ORT_ENV.get() {
         return Ok(env);
     }
@@ -164,7 +164,7 @@ fn load_yolox_session(model_path: &Path) -> Result<(Session, u32, u32), String> 
     Ok((session, in_w, in_h))
 }
 
-fn with_yolox_session<T, F>(model_path: &Path, f: F) -> Result<T, String>
+pub(crate) fn with_yolox_session<T, F>(model_path: &Path, f: F) -> Result<T, String>
 where
     F: FnOnce(&mut Session, u32, u32) -> Result<T, String>,
 {

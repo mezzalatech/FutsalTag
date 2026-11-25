@@ -12,6 +12,7 @@
     Point2D,
     TrackingKeyframe,
     DetectedPlayerBox,
+    PlayerSilhouetteMask,
     MultiPlayerTrack,
     BroadcastAnimationStyle,
   } from "$lib/types";
@@ -22,6 +23,9 @@
     bindElementPointsToTracks,
     trackSinglePlayerOnnx,
     trackGuidedAnchorsOnnx,
+    checkSegModelStatus,
+    segmentPlayersInFrameOnnx,
+    segmentPlayersRangeOnnx,
   } from "$lib/tracking/multiPlayerTracker";
   import {
     runPlayerAutoTracking,
@@ -173,6 +177,10 @@
   let isSamplingFloor = $state(false);
   let isDetectingCutout = $state(false);
   let liveDetectedBoxes = $state<DetectedPlayerBox[]>([]);
+  let segModelAvailable = $state(false);
+  let segEngineLabel = $state<string>("PP-HumanSeg ONNX");
+  let liveSilhouetteMask = $state<PlayerSilhouetteMask | null>(null);
+  let isSegmentingMask = $state(false);
 
   // Selected element derived
   let selectedElement = $derived(
@@ -323,6 +331,7 @@
     isPlayerPickMode = false;
     detectedFrameBoxes = [];
     hoveredPlayerBoxIdx = null;
+    liveSilhouetteMask = null;
     isLiveStepTrack = false;
     isLiveFollowDrag = false;
     isHoldingLiveFollow = false;
@@ -360,6 +369,13 @@
     checkAiModelStatus()
       .then((s) => {
         if (s.available) aiEngineLabel = s.engine;
+      })
+      .catch(() => {});
+
+    checkSegModelStatus()
+      .then((s) => {
+        segModelAvailable = s.available;
+        if (s.available) segEngineLabel = s.engine;
       })
       .catch(() => {});
 
@@ -613,6 +629,11 @@
       homographyResult: isPitchCalibrated ? homographyResult : null,
       chromaConfig: projectStore.chromaFloorConfig,
       detectedBoxes: liveDetectedBoxes,
+      silhouetteMask:
+        liveSilhouetteMask &&
+        (isFreezeActive || Math.abs(liveSilhouetteMask.time - currentTime) <= 0.45)
+          ? liveSilhouetteMask
+          : null,
       clipStartTime: activeClip ? activeClip.startTime : 0,
       clipEndTime: activeClip ? activeClip.endTime : duration,
       animElapsedSec: isFreezeActive ? 1.0 : undefined,
@@ -1827,6 +1848,36 @@
     }
   }
 
+  async function triggerSilhouetteDetect(silent: boolean = false) {
+    if (isSegmentingMask) return;
+    isSegmentingMask = true;
+    if (!silent) {
+      exportNotice = `Memisahkan siluet pemain (${segEngineLabel}) dari lantai...`;
+    }
+    try {
+      const mask = await segmentPlayersInFrameOnnx(
+        projectStore.videoFilePath,
+        currentTime,
+      );
+      if (mask && mask.alphaBytes.length > 0) {
+        liveSilhouetteMask = mask;
+        liveDetectedBoxes = mask.boxes;
+        projectStore.chromaFloorConfig.enabled = true;
+        projectStore.chromaFloorConfig.mode = "ai-silhouette";
+        if (!silent) {
+          exportNotice = `Siluet AI aktif: ${mask.playerCount} pemain dipisahkan dari lantai (${currentTime.toFixed(2)}s)`;
+          setTimeout(() => (exportNotice = null), 3500);
+        }
+      } else if (!silent) {
+        exportNotice =
+          "Siluet AI belum dapat diproses di frame ini (pastikan mode Desktop Tauri).";
+        setTimeout(() => (exportNotice = null), 3500);
+      }
+    } finally {
+      isSegmentingMask = false;
+    }
+  }
+
   function bindTrackToPoint(
     el: DrawingElement,
     pointIdx: number,
@@ -1991,6 +2042,12 @@
         ) ||
         (drawings.length > 0 && pauseDuration < 0.2);
 
+      const useAiSilhouetteExport =
+        projectStore.chromaFloorConfig.enabled &&
+        (projectStore.chromaFloorConfig.mode ?? "ai-silhouette") ===
+          "ai-silhouette" &&
+        segModelAvailable;
+
       if (needsAnimatedExport) {
         const tmpRoot = await invoke<string>("get_temp_dir");
         const sep = tmpRoot.includes("\\") ? "\\" : "/";
@@ -2004,8 +2061,22 @@
         const overlayFps = clipDur <= 15 ? 20 : 15;
         const totalFrames = Math.max(2, Math.ceil(clipDur * overlayFps));
 
+        let rangeMasks: PlayerSilhouetteMask[] = [];
         let rangeBoxes: { time: number; boxes: DetectedPlayerBox[] }[] = [];
-        if (projectStore.chromaFloorConfig.enabled) {
+        if (useAiSilhouetteExport) {
+          exportNotice = "Memproses AI Siluet Pemain (U2NetP ONNX)...";
+          rangeMasks = await segmentPlayersRangeOnnx(
+            projectStore.videoFilePath,
+            activeClip.startTime,
+            activeClip.endTime,
+            8,
+          );
+        }
+
+        if (
+          projectStore.chromaFloorConfig.enabled &&
+          (!useAiSilhouetteExport || rangeMasks.length === 0)
+        ) {
           exportNotice =
             `Mendeteksi pemain (${aiEngineLabel}) untuk Cutout Mask animasi...`;
           try {
@@ -2022,6 +2093,20 @@
           }
         }
 
+        const findClosestMask = (t: number): PlayerSilhouetteMask | null => {
+          if (rangeMasks.length === 0) return liveSilhouetteMask;
+          let best = rangeMasks[0];
+          let minD = Math.abs(best.time - t);
+          for (const rm of rangeMasks) {
+            const d = Math.abs(rm.time - t);
+            if (d < minD) {
+              minD = d;
+              best = rm;
+            }
+          }
+          return best;
+        };
+
         const findClosestBoxes = (t: number): DetectedPlayerBox[] => {
           if (rangeBoxes.length === 0) return liveDetectedBoxes;
           let best = rangeBoxes[0];
@@ -2037,7 +2122,8 @@
         };
 
         const needsVideoPixels =
-          projectStore.chromaFloorConfig.enabled ||
+          (projectStore.chromaFloorConfig.enabled &&
+            (!useAiSilhouetteExport || rangeMasks.length === 0)) ||
           drawings.some((d) => d.type === "magnifier");
 
         for (let i = 0; i < totalFrames; i++) {
@@ -2054,6 +2140,7 @@
             homographyResult: isPitchCalibrated ? homographyResult : null,
             chromaConfig: projectStore.chromaFloorConfig,
             detectedBoxes: findClosestBoxes(t),
+            silhouetteMask: findClosestMask(t),
             clipStartTime: activeClip.startTime,
             clipEndTime: activeClip.endTime,
           });
@@ -2077,6 +2164,7 @@
             homographyResult: isPitchCalibrated ? homographyResult : null,
             chromaConfig: projectStore.chromaFloorConfig,
             detectedBoxes: findClosestBoxes(freezeSec),
+            silhouetteMask: findClosestMask(freezeSec),
             clipStartTime: activeClip.startTime,
             clipEndTime: activeClip.endTime,
             animElapsedSec: 1.0,
@@ -2100,6 +2188,15 @@
           targetHeight: 720,
         });
       } else {
+        let freezeMask: PlayerSilhouetteMask | null = liveSilhouetteMask;
+        if (useAiSilhouetteExport) {
+          exportNotice = "Memproses AI Siluet Pemain (U2NetP ONNX)...";
+          freezeMask =
+            (await segmentPlayersInFrameOnnx(
+              projectStore.videoFilePath,
+              freezeSec,
+            )) ?? liveSilhouetteMask;
+        }
         exportNotice = "Merender klip telestrasi broadcast dengan FFmpeg...";
         const overlayBase64 = renderDrawingsToDataUrl(
           drawings,
@@ -2110,7 +2207,8 @@
             videoEl,
             homographyResult: isPitchCalibrated ? homographyResult : null,
             chromaConfig: projectStore.chromaFloorConfig,
-            detectedBoxes: liveDetectedBoxes,
+            detectedBoxes: freezeMask?.boxes ?? liveDetectedBoxes,
+            silhouetteMask: freezeMask,
             clipStartTime: activeClip.startTime,
             clipEndTime: activeClip.endTime,
             animElapsedSec: 1.0,
@@ -2250,83 +2348,145 @@
       <div class="palette-group-title">FITUR SIARAN (BROADCAST)</div>
       <label
         class="toggle-control-item"
-        title="Chroma-Key lantai agar grafis tertanam di bawah kaki pemain"
+        title="Pisahkan siluet pemain dari lantai agar grafis tertanam di bawah kaki pemain"
       >
         <input
           type="checkbox"
           bind:checked={projectStore.chromaFloorConfig.enabled}
+          onchange={() => {
+            if (
+              projectStore.chromaFloorConfig.enabled &&
+              (projectStore.chromaFloorConfig.mode ?? "ai-silhouette") ===
+                "ai-silhouette" &&
+              segModelAvailable &&
+              !liveSilhouetteMask
+            ) {
+              triggerSilhouetteDetect(true);
+            }
+          }}
         />
-        <span class="toggle-label">Chroma-Key Lantai (Di Bawah Kaki)</span>
+        <span class="toggle-label">Grafis Di Bawah Kaki Pemain</span>
       </label>
 
-      <div class="chroma-controls-box">
-        <div class="chroma-row">
-          <button
-            type="button"
-            class="btn-chroma-sample"
-            class:active={isSamplingFloor}
-            onclick={() => {
-              isSamplingFloor = !isSamplingFloor;
-              if (isSamplingFloor) {
-                exportNotice =
-                  "Klik area lantai lapangan pada video untuk kalibrasi warna.";
-              }
-            }}
-            title="Pipet warna lantai lapangan langsung dari video"
-          >
-            <Crosshair size={12} />
-            <span>{isSamplingFloor ? "Klik Lantai..." : "Pipet Lantai"}</span>
-          </button>
-          <span
-            class="chroma-swatch"
-            style="background-color: rgb({projectStore.chromaFloorConfig
-              .targetRgb[0]}, {projectStore.chromaFloorConfig
-              .targetRgb[1]}, {projectStore.chromaFloorConfig.targetRgb[2]});"
-            title="Warna lantai terkalibrasi"
-          ></span>
-        </div>
-
-        {#if projectStore.chromaFloorConfig.enabled}
-          <div class="chroma-slider-row">
-            <span>Toleransi: {projectStore.chromaFloorConfig.tolerance}</span>
-            <input
-              type="range"
-              min="10"
-              max="80"
-              step="1"
-              bind:value={projectStore.chromaFloorConfig.tolerance}
-              class="pause-slider"
-              style="width: 100%;"
-            />
-          </div>
-          <div class="chroma-slider-row">
-            <span>Feather: {projectStore.chromaFloorConfig.feather}</span>
-            <input
-              type="range"
-              min="2"
-              max="30"
-              step="1"
-              bind:value={projectStore.chromaFloorConfig.feather}
-              class="pause-slider"
-              style="width: 100%;"
-            />
-          </div>
-          <button
-            type="button"
-            class="btn-chroma-cutout"
-            disabled={isDetectingCutout}
-            onclick={triggerCutoutDetect}
-            title="Gunakan deteksi {aiEngineLabel} untuk mempertajam cutout kaki pemain"
-          >
-            <Scissors size={12} />
-            <span
-              >{isDetectingCutout
-                ? "Mendeteksi..."
-                : `Cutout AI (${liveDetectedBoxes.length})`}</span
+      {#if projectStore.chromaFloorConfig.enabled}
+        <div class="chroma-controls-box">
+          <div class="floor-mode-tabs">
+            <button
+              type="button"
+              class="floor-mode-btn"
+              class:active={(projectStore.chromaFloorConfig.mode ??
+                "ai-silhouette") === "ai-silhouette"}
+              onclick={() => {
+                projectStore.chromaFloorConfig.mode = "ai-silhouette";
+                if (segModelAvailable && !liveSilhouetteMask) {
+                  triggerSilhouetteDetect(true);
+                }
+              }}
             >
-          </button>
-        {/if}
-      </div>
+              AI Siluet
+            </button>
+            <button
+              type="button"
+              class="floor-mode-btn"
+              class:active={projectStore.chromaFloorConfig.mode ===
+                "chroma-key"}
+              onclick={() =>
+                (projectStore.chromaFloorConfig.mode = "chroma-key")}
+            >
+              Chroma-Key
+            </button>
+          </div>
+
+          {#if (projectStore.chromaFloorConfig.mode ?? "ai-silhouette") === "ai-silhouette"}
+            <button
+              type="button"
+              class="btn-chroma-cutout"
+              disabled={isSegmentingMask}
+              onclick={() => triggerSilhouetteDetect(false)}
+              title="Pindai siluet pemain di frame ini ({segEngineLabel})"
+            >
+              <Scissors size={12} />
+              <span
+                >{isSegmentingMask
+                  ? "Memproses Siluet..."
+                  : liveSilhouetteMask
+                    ? `Siluet AI (${liveSilhouetteMask.playerCount} Pemain)`
+                    : "Scan Siluet Frame Ini"}</span
+              >
+            </button>
+            <div class="ai-seg-tip">
+              Memisahkan siluet pemain otomatis — kebal pantulan lampu parket
+            </div>
+          {:else}
+            <div class="chroma-row">
+              <button
+                type="button"
+                class="btn-chroma-sample"
+                class:active={isSamplingFloor}
+                onclick={() => {
+                  isSamplingFloor = !isSamplingFloor;
+                  if (isSamplingFloor) {
+                    exportNotice =
+                      "Klik area lantai lapangan pada video untuk kalibrasi warna.";
+                  }
+                }}
+                title="Pipet warna lantai lapangan langsung dari video"
+              >
+                <Crosshair size={12} />
+                <span
+                  >{isSamplingFloor ? "Klik Lantai..." : "Pipet Lantai"}</span
+                >
+              </button>
+              <span
+                class="chroma-swatch"
+                style="background-color: rgb({projectStore.chromaFloorConfig
+                  .targetRgb[0]}, {projectStore.chromaFloorConfig
+                  .targetRgb[1]}, {projectStore.chromaFloorConfig.targetRgb[2]});"
+                title="Warna lantai terkalibrasi"
+              ></span>
+            </div>
+
+            <div class="chroma-slider-row">
+              <span>Toleransi: {projectStore.chromaFloorConfig.tolerance}</span>
+              <input
+                type="range"
+                min="10"
+                max="80"
+                step="1"
+                bind:value={projectStore.chromaFloorConfig.tolerance}
+                class="pause-slider"
+                style="width: 100%;"
+              />
+            </div>
+            <div class="chroma-slider-row">
+              <span>Feather: {projectStore.chromaFloorConfig.feather}</span>
+              <input
+                type="range"
+                min="2"
+                max="30"
+                step="1"
+                bind:value={projectStore.chromaFloorConfig.feather}
+                class="pause-slider"
+                style="width: 100%;"
+              />
+            </div>
+            <button
+              type="button"
+              class="btn-chroma-cutout"
+              disabled={isDetectingCutout}
+              onclick={triggerCutoutDetect}
+              title="Gunakan deteksi {aiEngineLabel} untuk mempertajam cutout kaki pemain"
+            >
+              <Scissors size={12} />
+              <span
+                >{isDetectingCutout
+                  ? "Mendeteksi..."
+                  : `Cutout AI (${liveDetectedBoxes.length})`}</span
+              >
+            </button>
+          {/if}
+        </div>
+      {/if}
 
       <label
         class="toggle-control-item"
@@ -4837,6 +4997,35 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
+  }
+
+  .floor-mode-tabs {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px;
+  }
+
+  .floor-mode-btn {
+    background: #0b192e;
+    border: 1px solid #1a355d;
+    color: #94a3b8;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 4px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+
+  .floor-mode-btn.active {
+    background: #12315a;
+    border-color: #38bdf8;
+    color: #ffffff;
+  }
+
+  .ai-seg-tip {
+    font-size: 9px;
+    line-height: 1.3;
+    color: #7dd3fc;
   }
 
   .chroma-row {

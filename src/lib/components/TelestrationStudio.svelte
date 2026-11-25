@@ -16,6 +16,7 @@
     MultiPlayerTrack,
     BroadcastAnimationStyle,
     TemporalCalibrationFrame,
+    SubtitleCue,
   } from "$lib/types";
   import {
     runMultiPlayerAutoTracking,
@@ -211,8 +212,14 @@
       : null,
   );
 
-  // Feature 2: Coach Voiceover Audio State
+  // Feature 2: Coach Voiceover Audio & Offline Whisper Subtitle State
   let voiceoverAudio = $state<string | null>(null);
+  let voiceoverTranscript = $state<string>("");
+  let subtitleCues = $state<SubtitleCue[]>([]);
+  let burnSubtitle = $state<boolean>(true);
+  let whisperAvailable = $state<boolean>(false);
+  let whisperEngineLabel = $state<string>("Whisper Offline");
+  let isTranscribingVoice = $state<boolean>(false);
 
   $effect(() => {
     if (activeClip) {
@@ -340,6 +347,11 @@
     drawings = clip.drawings ? JSON.parse(JSON.stringify(clip.drawings)) : [];
     pauseDuration = clip.pauseDuration ?? 3.0;
     voiceoverAudio = clip.voiceoverAudioBase64 || null;
+    voiceoverTranscript = clip.voiceoverTranscript || "";
+    subtitleCues = clip.subtitleCues
+      ? JSON.parse(JSON.stringify(clip.subtitleCues))
+      : [];
+    burnSubtitle = clip.burnSubtitle ?? Boolean(clip.voiceoverTranscript);
     currentTime = clip.startTime;
     freezeTime = clip.freezeTimestamp ?? (clip.startTime + clip.endTime) / 2;
     selectedElementId = null;
@@ -395,6 +407,20 @@
         if (s.available) segEngineLabel = s.engine;
       })
       .catch(() => {});
+
+    if (isTauriDesktop()) {
+      invoke<{
+        available: boolean;
+        cli_path: string | null;
+        model_path: string | null;
+        engine: string;
+      }>("check_whisper_status")
+        .then((s) => {
+          whisperAvailable = s.available;
+          if (s.available) whisperEngineLabel = s.engine;
+        })
+        .catch(() => {});
+    }
 
     syncCanvasSize();
     rafId = requestAnimationFrame(renderLoop);
@@ -656,6 +682,9 @@
       animElapsedSec: isFreezeActive ? 1.0 : undefined,
       selectedElementId,
       activeTool,
+      subtitleText: voiceoverTranscript,
+      subtitleCues,
+      burnSubtitle,
     });
 
     // Render 3D court homography calibration grid if active
@@ -1783,6 +1812,53 @@
     await trackElementBidirectional(selectedElement, currentTime);
   }
 
+  async function handleTranscribeVoiceover() {
+    if (isTranscribingVoice || !voiceoverAudio) return;
+    if (!isTauriDesktop()) {
+      exportNotice =
+        "Transkrip Whisper Offline hanya tersedia di aplikasi desktop Tauri.";
+      setTimeout(() => (exportNotice = null), 3500);
+      return;
+    }
+
+    isTranscribingVoice = true;
+    exportNotice = `Mentranskrip suara pelatih (${whisperEngineLabel})...`;
+    try {
+      const res = await invoke<{
+        full_text: string;
+        cues: SubtitleCue[];
+        language: string;
+        duration_ms: number;
+      }>("transcribe_voiceover_base64_whisper", {
+        audioBase64: voiceoverAudio,
+        language: "id",
+      });
+      voiceoverTranscript = res.full_text;
+      subtitleCues = res.cues || [];
+      burnSubtitle = Boolean(res.full_text.trim());
+      if (activeClip) {
+        activeClip.voiceoverTranscript = voiceoverTranscript;
+        activeClip.subtitleCues = subtitleCues;
+        activeClip.burnSubtitle = burnSubtitle;
+        projectStore.updateTag({
+          ...activeClip,
+          voiceoverTranscript,
+          subtitleCues,
+          burnSubtitle,
+        });
+      }
+      exportNotice = res.full_text
+        ? `Transkrip Whisper selesai (${res.duration_ms} ms)`
+        : "Tidak terdengar ucapan jelas di rekaman suara.";
+      setTimeout(() => (exportNotice = null), 4000);
+    } catch (err: any) {
+      exportNotice = `Gagal transkrip Whisper: ${err?.message || err}`;
+      setTimeout(() => (exportNotice = null), 4500);
+    } finally {
+      isTranscribingVoice = false;
+    }
+  }
+
   function handleSave(silent: boolean = false) {
     if (!activeClip) return;
     projectStore.saveTelestration(
@@ -1791,9 +1867,14 @@
       pauseDuration,
       voiceoverAudio || undefined,
       freezeTime,
+      {
+        transcript: voiceoverTranscript,
+        cues: subtitleCues,
+        burnSubtitle,
+      },
     );
     if (!silent) {
-      exportNotice = "Telestrasi & posisi freeze-frame disimpan!";
+      exportNotice = "Telestrasi, subtitle & posisi freeze-frame disimpan!";
       setTimeout(() => (exportNotice = null), 2500);
     }
   }
@@ -1806,6 +1887,11 @@
       pauseDuration,
       voiceoverAudio || undefined,
       freezeTime,
+      {
+        transcript: voiceoverTranscript,
+        cues: subtitleCues,
+        burnSubtitle,
+      },
     );
     if (projectStore.activeClipForDrawing) {
       loadClipState(projectStore.activeClipForDrawing, true);
@@ -2153,6 +2239,7 @@
           activeClip.startTime,
           activeClip.endTime,
         ) ||
+        (burnSubtitle && subtitleCues.length > 1) ||
         (drawings.length > 0 && pauseDuration < 0.2);
 
       const useAiSilhouetteExport =
@@ -2267,6 +2354,9 @@
             silhouetteMask: findClosestMask(t),
             clipStartTime: activeClip.startTime,
             clipEndTime: activeClip.endTime,
+            subtitleText: voiceoverTranscript,
+            subtitleCues,
+            burnSubtitle,
           });
           await invoke<string>("save_overlay_frame_png", {
             dirPath: seqDir,
@@ -2302,6 +2392,9 @@
             silhouetteMask: findClosestMask(freezeSec),
             clipStartTime: activeClip.startTime,
             clipEndTime: activeClip.endTime,
+            subtitleText: voiceoverTranscript,
+            subtitleCues,
+            burnSubtitle,
             animElapsedSec: 1.0,
           },
         );
@@ -2346,6 +2439,9 @@
             silhouetteMask: freezeMask,
             clipStartTime: activeClip.startTime,
             clipEndTime: activeClip.endTime,
+            subtitleText: voiceoverTranscript,
+            subtitleCues,
+            burnSubtitle,
             animElapsedSec: 1.0,
           },
         );
@@ -3139,6 +3235,11 @@
       <div class="voiceover-drawer-card">
         <VoiceoverRecorder
           existingAudioBase64={voiceoverAudio || undefined}
+          transcript={voiceoverTranscript}
+          {burnSubtitle}
+          isTranscribing={isTranscribingVoice}
+          {whisperAvailable}
+          {whisperEngineLabel}
           onSaveVoiceover={(b64) => {
             voiceoverAudio = b64;
             if (activeClip) {
@@ -3151,11 +3252,44 @@
           }}
           onClearVoiceover={() => {
             voiceoverAudio = null;
+            voiceoverTranscript = "";
+            subtitleCues = [];
+            burnSubtitle = false;
             if (activeClip) {
               activeClip.voiceoverAudioBase64 = undefined;
+              activeClip.voiceoverTranscript = undefined;
+              activeClip.subtitleCues = undefined;
+              activeClip.burnSubtitle = false;
               projectStore.updateTag({
                 ...activeClip,
                 voiceoverAudioBase64: undefined,
+                voiceoverTranscript: undefined,
+                subtitleCues: undefined,
+                burnSubtitle: false,
+              });
+            }
+          }}
+          onTranscribeVoiceover={handleTranscribeVoiceover}
+          onUpdateTranscript={(txt) => {
+            voiceoverTranscript = txt;
+            subtitleCues = [];
+            if (activeClip) {
+              activeClip.voiceoverTranscript = txt;
+              activeClip.subtitleCues = [];
+              projectStore.updateTag({
+                ...activeClip,
+                voiceoverTranscript: txt,
+                subtitleCues: [],
+              });
+            }
+          }}
+          onToggleBurnSubtitle={(enabled) => {
+            burnSubtitle = enabled;
+            if (activeClip) {
+              activeClip.burnSubtitle = enabled;
+              projectStore.updateTag({
+                ...activeClip,
+                burnSubtitle: enabled,
               });
             }
           }}

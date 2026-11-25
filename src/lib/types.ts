@@ -217,6 +217,12 @@ export type TagOutcome = 'Gol / Sukses' | 'Terblok / Diselamatkan' | 'Keluar / G
 export type CourtZone = 'Area Penalti Lawan' | 'Flank Kiri' | 'Flank Kanan' | 'Area Tengah' | 'Area Bertahan Sendiri';
 export type TagRating = '⭐⭐⭐ Bagus' | '⚠️ Evaluasi' | '❌ Kesalahan Fatal';
 
+export interface SubtitleCue {
+  start: number;
+  end: number;
+  text: string;
+}
+
 export interface VideoTagEvent {
   id: string;
   title: string;
@@ -240,6 +246,9 @@ export interface VideoTagEvent {
   pauseDuration?: number;     // duration to freeze keyframe during playback / export (default: 3s)
   freezeTimestamp?: number;   // frame timestamp where drawings apply
   voiceoverAudioBase64?: string; // Recorded coach audio instructions (WebM/WAV)
+  voiceoverTranscript?: string;
+  subtitleCues?: SubtitleCue[];
+  burnSubtitle?: boolean;
   courtCoord?: Point2D;       // Tactical pitch location (0..40m, 0..20m) for heatmap
 }
 

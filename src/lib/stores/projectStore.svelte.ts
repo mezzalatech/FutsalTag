@@ -12,6 +12,7 @@ import type {
   SubstitutionEvent,
   ChromaFloorConfig,
   ClubProfile,
+  SubtitleCue,
 } from '$lib/types';
 import {
   BUILTIN_TAGGING_BOARDS,
@@ -741,7 +742,12 @@ class ProjectStore {
     drawings: DrawingElement[],
     pauseDuration: number,
     voiceoverAudioBase64?: string,
-    freezeTimestamp?: number
+    freezeTimestamp?: number,
+    subtitleMeta?: {
+      transcript?: string;
+      cues?: SubtitleCue[];
+      burnSubtitle?: boolean;
+    }
   ) {
     const tag = this.tags.find((t) => t.id === clipId);
     if (tag) {
@@ -754,6 +760,11 @@ class ProjectStore {
       if (voiceoverAudioBase64 !== undefined) {
         updated.voiceoverAudioBase64 = voiceoverAudioBase64;
       }
+      if (subtitleMeta) {
+        updated.voiceoverTranscript = subtitleMeta.transcript;
+        updated.subtitleCues = subtitleMeta.cues ? [...subtitleMeta.cues] : [];
+        updated.burnSubtitle = subtitleMeta.burnSubtitle;
+      }
       this.updateTag(updated);
     }
   }
@@ -763,9 +774,14 @@ class ProjectStore {
     drawings: DrawingElement[],
     pauseDuration: number,
     voiceoverAudioBase64?: string,
-    freezeTimestamp?: number
+    freezeTimestamp?: number,
+    subtitleMeta?: {
+      transcript?: string;
+      cues?: SubtitleCue[];
+      burnSubtitle?: boolean;
+    }
   ) {
-    this.saveTelestration(clipId, drawings, pauseDuration, voiceoverAudioBase64, freezeTimestamp);
+    this.saveTelestration(clipId, drawings, pauseDuration, voiceoverAudioBase64, freezeTimestamp, subtitleMeta);
     const currIdx = this.tags.findIndex((t) => t.id === clipId);
     if (currIdx !== -1 && currIdx + 1 < this.tags.length) {
       this.activeClipForDrawing = this.tags[currIdx + 1];

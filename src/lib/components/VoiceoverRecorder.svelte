@@ -1,13 +1,33 @@
 <script lang="ts">
-  import { Mic, Square, Play, Pause, Trash2, Volume2, Check } from 'lucide-svelte';
+  import { Mic, Square, Play, Pause, Trash2, Check, Sparkles } from 'lucide-svelte';
 
   interface Props {
     existingAudioBase64?: string;
+    transcript?: string;
+    burnSubtitle?: boolean;
+    isTranscribing?: boolean;
+    whisperAvailable?: boolean;
+    whisperEngineLabel?: string;
     onSaveVoiceover: (base64Audio: string) => void;
     onClearVoiceover: () => void;
+    onTranscribeVoiceover?: () => void;
+    onUpdateTranscript?: (text: string) => void;
+    onToggleBurnSubtitle?: (enabled: boolean) => void;
   }
 
-  let { existingAudioBase64, onSaveVoiceover, onClearVoiceover }: Props = $props();
+  let {
+    existingAudioBase64,
+    transcript = '',
+    burnSubtitle = true,
+    isTranscribing = false,
+    whisperAvailable = false,
+    whisperEngineLabel = 'Whisper Offline',
+    onSaveVoiceover,
+    onClearVoiceover,
+    onTranscribeVoiceover,
+    onUpdateTranscript,
+    onToggleBurnSubtitle,
+  }: Props = $props();
 
   let isRecording = $state(false);
   let recordSeconds = $state(0);
@@ -20,10 +40,12 @@
   let isPlayingAudio = $state(false);
 
   $effect(() => {
-    if (existingAudioBase64 && !audioUrl) {
+    if (existingAudioBase64) {
       audioUrl = existingAudioBase64.startsWith('data:')
         ? existingAudioBase64
         : `data:audio/webm;base64,${existingAudioBase64}`;
+    } else if (!isRecording) {
+      audioUrl = null;
     }
   });
 
@@ -57,7 +79,7 @@
       recordTimer = setInterval(() => {
         recordSeconds += 1;
       }, 1000);
-    } catch (err) {
+    } catch {
       alert('Tidak dapat mengakses mikrofon. Pastikan izin mikrofon telah diberikan di sistem.');
     }
   }
@@ -150,8 +172,50 @@
     {/if}
   </div>
 
+  {#if audioUrl && !isRecording && onTranscribeVoiceover}
+    <button
+      type="button"
+      class="btn-whisper-transcribe"
+      disabled={isTranscribing || !whisperAvailable}
+      onclick={onTranscribeVoiceover}
+      title={whisperAvailable ? `Transkrip audio suara otomatis secara offline (${whisperEngineLabel})` : 'Whisper Offline tersedia di aplikasi Desktop Tauri'}
+    >
+      <Sparkles size={12} />
+      <span>
+        {isTranscribing
+          ? 'Mentranskrip Suara (Offline)...'
+          : transcript
+            ? 'Transkrip Ulang (Whisper)'
+            : 'Transkrip Otomatis (Offline)'}
+      </span>
+    </button>
+  {/if}
+
+  {#if transcript || (audioUrl && !isRecording)}
+    <div class="vo-subtitle-box">
+      <textarea
+        class="vo-transcript-input"
+        rows="2"
+        placeholder="Teks subtitle / instruksi taktik (bisa diketik manual atau via Whisper)..."
+        value={transcript}
+        oninput={(e) => onUpdateTranscript?.((e.currentTarget as HTMLTextAreaElement).value)}
+      ></textarea>
+
+      {#if transcript.trim().length > 0 && onToggleBurnSubtitle}
+        <label class="vo-burn-toggle">
+          <input
+            type="checkbox"
+            checked={burnSubtitle}
+            onchange={(e) => onToggleBurnSubtitle?.((e.currentTarget as HTMLInputElement).checked)}
+          />
+          <span>Burn-in Subtitle ke Video MP4</span>
+        </label>
+      {/if}
+    </div>
+  {/if}
+
   <div class="vo-hint">
-    Audio suara pelatih otomatis dimixing ke dalam video saat diekspor ke MP4.
+    Suara pelatih dimixing & subtitle dapat dibakar ke MP4 secara offline.
   </div>
 </div>
 
@@ -303,6 +367,66 @@
 
   .btn-del-audio:hover {
     background: rgba(239, 68, 68, 0.2);
+  }
+
+  .btn-whisper-transcribe {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    background: rgba(16, 185, 129, 0.14);
+    border: 1px solid #10b981;
+    color: #6ee7b7;
+    padding: 5px 8px;
+    border-radius: 6px;
+    font-size: 10px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .btn-whisper-transcribe:hover:not(:disabled) {
+    background: rgba(16, 185, 129, 0.26);
+    color: #ffffff;
+  }
+
+  .btn-whisper-transcribe:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  .vo-subtitle-box {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .vo-transcript-input {
+    width: 100%;
+    box-sizing: border-box;
+    background: #050b16;
+    border: 1px solid #1e3b68;
+    border-radius: 5px;
+    color: #f1f5f9;
+    font-size: 10px;
+    line-height: 1.35;
+    padding: 5px 7px;
+    resize: vertical;
+    font-family: system-ui, sans-serif;
+  }
+
+  .vo-transcript-input:focus {
+    outline: none;
+    border-color: #38bdf8;
+  }
+
+  .vo-burn-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10px;
+    font-weight: 600;
+    color: #93c5fd;
+    cursor: pointer;
   }
 
   .hidden-audio {

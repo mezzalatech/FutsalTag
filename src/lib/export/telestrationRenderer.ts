@@ -7,6 +7,7 @@ import type {
   DrawingToolType,
   PlayerSilhouetteMask,
   Point2D,
+  SubtitleCue,
 } from '$lib/types';
 import {
   getElementPointsAtTime,
@@ -30,6 +31,9 @@ export interface RenderExportOptions {
   animElapsedSec?: number;
   selectedElementId?: string | null;
   activeTool?: DrawingToolType;
+  subtitleText?: string | null;
+  subtitleCues?: SubtitleCue[];
+  burnSubtitle?: boolean;
 }
 
 let maskSampleCanvas: HTMLCanvasElement | null = null;
@@ -273,6 +277,98 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
+function resolveActiveSubtitleText(options: RenderExportOptions, currentTime: number): string | null {
+  if (!options.burnSubtitle) return null;
+  const isStaticFreeze = options.animElapsedSec !== undefined && options.animElapsedSec >= 1;
+  if (!isStaticFreeze && options.subtitleCues && options.subtitleCues.length > 0) {
+    const relT = Math.max(0, currentTime - (options.clipStartTime ?? 0));
+    const cue = options.subtitleCues.find((c) => relT >= c.start - 0.05 && relT <= c.end + 0.15);
+    return cue?.text?.trim() || null;
+  }
+  return options.subtitleText?.trim() || null;
+}
+
+function drawBroadcastSubtitleBanner(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  width: number,
+  height: number
+) {
+  const clean = text.trim();
+  if (!clean) return;
+
+  const scaleFactor = width / 1280;
+  const fontSize = Math.max(12, Math.round(20 * scaleFactor));
+  const lineHeight = fontSize * 1.32;
+  const maxTextW = width * 0.78;
+  const padX = 20 * scaleFactor;
+  const padY = 10 * scaleFactor;
+
+  ctx.save();
+  ctx.font = `bold ${fontSize}px system-ui, -apple-system, sans-serif`;
+
+  const words = clean.split(/\s+/);
+  const lines: string[] = [];
+  let cur = '';
+  for (const w of words) {
+    const test = cur ? `${cur} ${w}` : w;
+    if (ctx.measureText(test).width > maxTextW && cur) {
+      lines.push(cur);
+      cur = w;
+      if (lines.length >= 2) break;
+    } else {
+      cur = test;
+    }
+  }
+  if (cur && lines.length < 2) {
+    lines.push(cur);
+  }
+  if (lines.length === 0) {
+    ctx.restore();
+    return;
+  }
+
+  let widest = 0;
+  for (const ln of lines) {
+    const mw = ctx.measureText(ln).width;
+    if (mw > widest) widest = mw;
+  }
+
+  const boxW = Math.min(width * 0.86, widest + padX * 2);
+  const boxH = lines.length * lineHeight + padY * 1.6;
+  const bx = (width - boxW) / 2;
+  const by = height - 26 * scaleFactor - boxH;
+  const r = 8 * scaleFactor;
+
+  ctx.beginPath();
+  ctx.moveTo(bx + r, by);
+  ctx.lineTo(bx + boxW - r, by);
+  ctx.quadraticCurveTo(bx + boxW, by, bx + boxW, by + r);
+  ctx.lineTo(bx + boxW, by + boxH - r);
+  ctx.quadraticCurveTo(bx + boxW, by + boxH, bx + boxW - r, by + boxH);
+  ctx.lineTo(bx + r, by + boxH);
+  ctx.quadraticCurveTo(bx, by + boxH, bx, by + boxH - r);
+  ctx.lineTo(bx, by + r);
+  ctx.quadraticCurveTo(bx, by, bx + r, by);
+  ctx.closePath();
+
+  ctx.fillStyle = 'rgba(6, 11, 20, 0.86)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(56, 189, 248, 0.78)';
+  ctx.lineWidth = Math.max(1, 1.5 * scaleFactor);
+  ctx.stroke();
+
+  ctx.fillStyle = '#ffffff';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  lines.forEach((ln, idx) => {
+    const ly = by + padY * 0.8 + lineHeight * (idx + 0.5);
+    ctx.fillText(ln, width / 2, ly);
+  });
+
+  ctx.restore();
+}
+
 export function renderDrawingsToCanvas(
   ctx: CanvasRenderingContext2D,
   drawings: DrawingElement[],
@@ -282,7 +378,8 @@ export function renderDrawingsToCanvas(
   options: RenderExportOptions = {}
 ) {
   const visibleDrawings = drawings.filter((el) => isElementVisibleAtTime(el, currentTime));
-  if (visibleDrawings.length === 0) return;
+  const activeSubtitle = resolveActiveSubtitleText(options, currentTime);
+  if (visibleDrawings.length === 0 && !activeSubtitle) return;
 
   const floorMode = options.chromaConfig?.mode ?? 'ai-silhouette';
   const aiSilhouetteActive = Boolean(
@@ -300,6 +397,7 @@ export function renderDrawingsToCanvas(
   );
 
   if (
+    visibleDrawings.length > 0 &&
     (aiSilhouetteActive || chromaActive) &&
     typeof document !== 'undefined' &&
     options.chromaConfig
@@ -340,11 +438,17 @@ export function renderDrawingsToCanvas(
     for (const el of fgEls) {
       drawSingleElement(ctx, el, width, height, currentTime, options, false);
     }
+    if (activeSubtitle) {
+      drawBroadcastSubtitleBanner(ctx, activeSubtitle, width, height);
+    }
     return;
   }
 
   for (const el of visibleDrawings) {
     drawSingleElement(ctx, el, width, height, currentTime, options, false);
+  }
+  if (activeSubtitle) {
+    drawBroadcastSubtitleBanner(ctx, activeSubtitle, width, height);
   }
 }
 

@@ -3,6 +3,7 @@ mod court_calibration;
 mod ffmpeg;
 mod player_segmentation;
 mod whistle_detector;
+mod whisper_asr;
 
 use base64::prelude::*;
 use std::fs;
@@ -187,6 +188,9 @@ pub fn run() {
             court_calibration::auto_calibrate_court_frame,
             court_calibration::track_court_calibration_range,
             whistle_detector::detect_match_whistles_ffmpeg,
+            whisper_asr::check_whisper_status,
+            whisper_asr::transcribe_voiceover_base64_whisper,
+            whisper_asr::transcribe_video_clip_whisper,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

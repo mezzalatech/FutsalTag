@@ -831,67 +831,76 @@
       }
     }
 
-      // 0. If AI Player Picker is active & fresh and a single-player highlight tool is active, click player to attach & track!
+      // 0. If AI Player Picker is active and a single-player highlight tool is active, click player (box or direct) to attach & track!
       if (
         isPlayerPickMode &&
-        !isPickerStale &&
-        detectedFrameBoxes.length > 0 &&
         SINGLE_PLAYER_TOOLS.includes(activeTool)
       ) {
-        const hit = findPickerBoxAtPoint(pt);
-        if (hit) {
-          const anchor = getBoxAnchor(hit.box, getAnchorMode(activeTool));
-          const pts: Point2D[] = [anchor];
-          if (activeTool === "vision-cone") {
-            pts.push({
-              x: Math.min(0.95, anchor.x + 0.1),
-              y: Math.max(0.05, anchor.y - 0.06),
-            });
-          }
-          const pinTime = parseFloat(currentTime.toFixed(3));
-          const newEl: DrawingElement = {
-            id: `el-ai-${Date.now()}`,
-            type: activeTool,
-            color: activeColor,
-            points: pts,
-            keyframes: [
-              {
-                time: pinTime,
-                x: anchor.x,
-                y: anchor.y,
-              },
-            ],
-            manualPins: [
-              {
-                time: pinTime,
-                x: anchor.x,
-                y: anchor.y,
-              },
-            ],
-            isTracking: true,
-            timeStart: activeClip ? activeClip.startTime : currentTime,
-            timeEnd: activeClip ? activeClip.endTime : currentTime + 5,
-            isChromaFloor: isFloorBlend || isFloorElType(activeTool),
-            animationStyle: "none",
-            label:
-              activeTool === "player-circle"
-                ? `#P${hit.idx + 1}`
-                : activeTool === "spotlight-3d"
-                  ? `#P${hit.idx + 1} Fokus`
-                  : activeTool === "magnifier"
-                    ? "1.8x Zoom"
-                    : activeTool === "player-cross"
-                      ? "Evaluasi"
-                      : undefined,
-            zoomScale: activeTool === "magnifier" ? 1.8 : undefined,
-          };
-          drawings = [...drawings, newEl];
-          selectedElementId = newEl.id;
-          rightPanelTab = "elements";
-          hoveredPlayerBoxIdx = null;
-          trackElementBidirectional(newEl, currentTime, hit.box);
-          return;
+        const hit = !isPickerStale && detectedFrameBoxes.length > 0
+          ? findPickerBoxAtPoint(pt)
+          : null;
+        const anchor = hit
+          ? getBoxAnchor(hit.box, getAnchorMode(activeTool))
+          : { x: pt.x, y: pt.y };
+        const pts: Point2D[] = [anchor];
+        if (activeTool === "vision-cone") {
+          pts.push({
+            x: Math.min(0.95, anchor.x + 0.1),
+            y: Math.max(0.05, anchor.y - 0.06),
+          });
         }
+        const pinTime = parseFloat(currentTime.toFixed(3));
+        const newEl: DrawingElement = {
+          id: `el-ai-${Date.now()}`,
+          type: activeTool,
+          color: activeColor,
+          points: pts,
+          keyframes: [
+            {
+              time: pinTime,
+              x: anchor.x,
+              y: anchor.y,
+            },
+          ],
+          manualPins: [
+            {
+              time: pinTime,
+              x: anchor.x,
+              y: anchor.y,
+            },
+          ],
+          isTracking: true,
+          timeStart: activeClip ? activeClip.startTime : currentTime,
+          timeEnd: activeClip ? activeClip.endTime : currentTime + 5,
+          isChromaFloor: isFloorBlend || isFloorElType(activeTool),
+          animationStyle: "none",
+          label: hit
+            ? activeTool === "player-circle"
+              ? undefined
+              : activeTool === "spotlight-3d"
+                ? `#P${hit.idx + 1} Fokus`
+                : activeTool === "magnifier"
+                  ? "1.8x Zoom"
+                  : activeTool === "player-cross"
+                    ? "Evaluasi"
+                    : undefined
+            : activeTool === "player-circle"
+              ? undefined
+              : activeTool === "spotlight-3d"
+                ? "Fokus Pemain"
+                : activeTool === "magnifier"
+                  ? "1.8x Zoom"
+                  : activeTool === "player-cross"
+                    ? "Evaluasi"
+                    : undefined,
+          zoomScale: activeTool === "magnifier" ? 1.8 : undefined,
+        };
+        drawings = [...drawings, newEl];
+        selectedElementId = newEl.id;
+        rightPanelTab = "elements";
+        hoveredPlayerBoxIdx = null;
+        trackElementBidirectional(newEl, currentTime, hit?.box);
+        return;
       }
 
       // If Select Tool is active:
@@ -996,17 +1005,15 @@
       isChromaFloor: isFloorBlend || isFloorElType(activeTool),
       animationStyle: "none",
       label:
-        activeTool === "player-circle"
-          ? "#9"
-          : activeTool === "note-text"
-            ? "Evaluasi Rotasi"
-            : activeTool === "magnifier"
-              ? "1.8x Zoom"
-              : activeTool === "player-cross"
-                ? "Salah Posisi"
-                : activeTool === "player-ghost"
-                  ? "Posisi Ideal"
-                  : undefined,
+        activeTool === "note-text"
+          ? "Evaluasi Rotasi"
+          : activeTool === "magnifier"
+            ? "1.8x Zoom"
+            : activeTool === "player-cross"
+              ? "Salah Posisi"
+              : activeTool === "player-ghost"
+                ? "Posisi Ideal"
+                : undefined,
       curveOffset: activeTool === "curved-arrow" ? -0.28 : undefined,
       zoomScale: activeTool === "magnifier" ? 1.8 : undefined,
       spotlightRadius: activeTool === "spotlight-3d" ? 1.0 : undefined,
@@ -1391,7 +1398,7 @@
     }
 
     isScanningPlayers = true;
-    exportNotice = `Memindai pemain pada ${currentTime.toFixed(2)}s (YOLOX-Nano)...`;
+    exportNotice = `Memindai pemain pada ${currentTime.toFixed(2)}s (${aiEngineLabel})...`;
     try {
       const allBoxes = await detectPlayersInFrameOnnx(
         projectStore.videoFilePath,
@@ -1722,7 +1729,7 @@
   async function triggerCutoutDetect() {
     if (isDetectingCutout) return;
     isDetectingCutout = true;
-    exportNotice = "Mendeteksi siluet pemain (YOLOX-Nano) untuk Cutout Mask...";
+    exportNotice = `Mendeteksi siluet pemain (${aiEngineLabel}) untuk Cutout Mask...`;
     try {
       const boxes = await detectPlayersInFrameOnnx(
         projectStore.videoFilePath,
@@ -1918,7 +1925,7 @@
         let rangeBoxes: { time: number; boxes: DetectedPlayerBox[] }[] = [];
         if (projectStore.chromaFloorConfig.enabled) {
           exportNotice =
-            "Mendeteksi pemain (YOLOX-Nano) untuk Cutout Mask animasi...";
+            `Mendeteksi pemain (${aiEngineLabel}) untuk Cutout Mask animasi...`;
           try {
             rangeBoxes = await invoke<
               { time: number; boxes: DetectedPlayerBox[] }[]
@@ -2224,7 +2231,7 @@
             class="btn-chroma-cutout"
             disabled={isDetectingCutout}
             onclick={triggerCutoutDetect}
-            title="Gunakan deteksi YOLOX-Nano untuk mempertajam cutout kaki pemain"
+            title="Gunakan deteksi {aiEngineLabel} untuk mempertajam cutout kaki pemain"
           >
             <Scissors size={12} />
             <span
@@ -2314,7 +2321,7 @@
         class:loading={isMultiTracking}
         disabled={isMultiTracking}
         onclick={triggerAIMultiTracking}
-        title="Deteksi 10 Pemain & Bola via YOLOX-Nano ONNX di Rust"
+        title="Deteksi 10 Pemain & Bola via {aiEngineLabel} di Rust"
       >
         <Users size={16} />
         <span class="tool-label"
@@ -3081,7 +3088,7 @@
             <div class="drawing-item-left">
               <span class="item-color-pill" style="background-color: {d.color}"
               ></span>
-              <span class="item-type-name">{d.label || d.type}</span>
+              <span class="item-type-name">{d.label || (d.type === "player-circle" ? "Lingkaran Pemain" : d.type)}</span>
             </div>
             <div class="drawing-item-right">
               {#if d.keyframes && d.keyframes.length > 0}
@@ -3251,7 +3258,7 @@
 
     <div class="footer-right">
       <span class="info-note"
-        >ONNX YOLOX-Nano AI Tracking & FFmpeg Broadcast Burn-In (.futsal)</span
+        >{aiEngineLabel} AI Tracking & FFmpeg Broadcast Burn-In (.futsal)</span
       >
     </div>
   </footer>

@@ -4,10 +4,11 @@ use ort::session::Session;
 use ort::value::Tensor;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use tauri::Manager;
 
 static ORT_ENV: OnceLock<Environment> = OnceLock::new();
+static YOLOX_SESSION_CACHE: OnceLock<Mutex<Option<(PathBuf, Session, u32, u32)>>> = OnceLock::new();
 
 fn get_ort_env() -> Result<&'static Environment, String> {
     if let Some(env) = ORT_ENV.get() {
@@ -92,28 +93,51 @@ pub struct SinglePlayerTrackResult {
 }
 
 pub fn resolve_yolox_model_path(app: Option<&tauri::AppHandle>) -> Option<PathBuf> {
+    let model_names = ["yolox_s.onnx", "yolox_nano.onnx"];
+
     if let Some(handle) = app {
         if let Ok(res_dir) = handle.path().resource_dir() {
-            for rel in ["resources/models/yolox_nano.onnx", "models/yolox_nano.onnx", "yolox_nano.onnx"] {
-                let p = res_dir.join(rel);
-                if p.exists() {
-                    return Some(p);
+            for name in model_names {
+                for rel in [
+                    format!("resources/models/{}", name),
+                    format!("models/{}", name),
+                    name.to_string(),
+                ] {
+                    let p = res_dir.join(rel);
+                    if p.exists() {
+                        return Some(p);
+                    }
                 }
             }
         }
     }
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    for p in [
-        manifest_dir.join("resources/models/yolox_nano.onnx"),
-        PathBuf::from("src-tauri/resources/models/yolox_nano.onnx"),
-        PathBuf::from("resources/models/yolox_nano.onnx"),
-    ] {
-        if p.exists() {
-            return Some(p);
+    for name in model_names {
+        for p in [
+            manifest_dir.join(format!("resources/models/{}", name)),
+            PathBuf::from(format!("src-tauri/resources/models/{}", name)),
+            PathBuf::from(format!("resources/models/{}", name)),
+        ] {
+            if p.exists() {
+                return Some(p);
+            }
         }
     }
     None
+}
+
+fn model_variant_label(path: &Path) -> &'static str {
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if name.contains("yolox_s") {
+        "YOLOX-S"
+    } else {
+        "YOLOX-Nano"
+    }
 }
 
 fn load_yolox_session(model_path: &Path) -> Result<(Session, u32, u32), String> {
@@ -140,6 +164,28 @@ fn load_yolox_session(model_path: &Path) -> Result<(Session, u32, u32), String> 
     Ok((session, in_w, in_h))
 }
 
+fn with_yolox_session<T, F>(model_path: &Path, f: F) -> Result<T, String>
+where
+    F: FnOnce(&mut Session, u32, u32) -> Result<T, String>,
+{
+    let cache_lock = YOLOX_SESSION_CACHE.get_or_init(|| Mutex::new(None));
+    let mut guard = cache_lock
+        .lock()
+        .map_err(|_| "Mutex cache ONNX Runtime terkunci".to_string())?;
+    let needs_reload = match guard.as_ref() {
+        Some((cached_path, _, _, _)) => cached_path != model_path,
+        None => true,
+    };
+    if needs_reload {
+        let (sess, in_w, in_h) = load_yolox_session(model_path)?;
+        *guard = Some((model_path.to_path_buf(), sess, in_w, in_h));
+    }
+    let (_, session, in_w, in_h) = guard
+        .as_mut()
+        .ok_or_else(|| "Gagal mengambil session cache ONNX".to_string())?;
+    f(session, *in_w, *in_h)
+}
+
 #[derive(Clone)]
 struct RawDet {
     x1: f32,
@@ -161,15 +207,15 @@ fn iou(a: &RawDet, b: &RawDet) -> f32 {
     let area_a = (a.x2 - a.x1).max(0.0) * (a.y2 - a.y1).max(0.0);
     let area_b = (b.x2 - b.x1).max(0.0) * (b.y2 - b.y1).max(0.0);
     let union = area_a + area_b - inter;
-    if union <= 1e-6 {
-        0.0
-    } else {
-        inter / union
-    }
+    if union <= 1e-6 { 0.0 } else { inter / union }
 }
 
 fn nms(mut dets: Vec<RawDet>, iou_thresh: f32) -> Vec<RawDet> {
-    dets.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    dets.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     let mut keep = Vec::new();
     let mut suppressed = vec![false; dets.len()];
     for i in 0..dets.len() {
@@ -178,7 +224,10 @@ fn nms(mut dets: Vec<RawDet>, iou_thresh: f32) -> Vec<RawDet> {
         }
         keep.push(dets[i].clone());
         for j in (i + 1)..dets.len() {
-            if !suppressed[j] && dets[i].class_id == dets[j].class_id && iou(&dets[i], &dets[j]) > iou_thresh {
+            if !suppressed[j]
+                && dets[i].class_id == dets[j].class_id
+                && iou(&dets[i], &dets[j]) > iou_thresh
+            {
                 suppressed[j] = true;
             }
         }
@@ -186,6 +235,7 @@ fn nms(mut dets: Vec<RawDet>, iou_thresh: f32) -> Vec<RawDet> {
     keep
 }
 
+#[cfg(test)]
 pub fn detect_rgb_frame(
     session: &mut Session,
     rgb: &[u8],
@@ -219,16 +269,46 @@ pub fn detect_rgb_frame_with_thresh(
     let plane_size = (in_w * in_h) as usize;
     let mut bgr_nchw = vec![114.0f32; plane_size * 3];
 
-    // Letterbox bilinear-nearest resize RGB -> BGR NCHW [0..255]
+    // True bilinear letterbox resize RGB -> BGR NCHW [0..255]
+    let fw_max = (frame_w.saturating_sub(1)) as f32;
+    let fh_max = (frame_h.saturating_sub(1)) as f32;
     for y in 0..resized_h {
-        let src_y = (((y as f32) / ratio) as u32).min(frame_h - 1);
+        let src_yf = (((y as f32 + 0.5) / ratio) - 0.5).clamp(0.0, fh_max);
+        let y0 = src_yf.floor() as u32;
+        let y1 = (y0 + 1).min(frame_h - 1);
+        let wy = src_yf - y0 as f32;
+        let wy0 = 1.0 - wy;
         for x in 0..resized_w {
-            let src_x = (((x as f32) / ratio) as u32).min(frame_w - 1);
-            let src_idx = ((src_y * frame_w + src_x) * 3) as usize;
+            let src_xf = (((x as f32 + 0.5) / ratio) - 0.5).clamp(0.0, fw_max);
+            let x0 = src_xf.floor() as u32;
+            let x1 = (x0 + 1).min(frame_w - 1);
+            let wx = src_xf - x0 as f32;
+            let wx0 = 1.0 - wx;
+
+            let i00 = ((y0 * frame_w + x0) * 3) as usize;
+            let i01 = ((y0 * frame_w + x1) * 3) as usize;
+            let i10 = ((y1 * frame_w + x0) * 3) as usize;
+            let i11 = ((y1 * frame_w + x1) * 3) as usize;
+
+            let w00 = wy0 * wx0;
+            let w01 = wy0 * wx;
+            let w10 = wy * wx0;
+            let w11 = wy * wx;
+
+            let r = rgb[i00] as f32 * w00
+                + rgb[i01] as f32 * w01
+                + rgb[i10] as f32 * w10
+                + rgb[i11] as f32 * w11;
+            let g = rgb[i00 + 1] as f32 * w00
+                + rgb[i01 + 1] as f32 * w01
+                + rgb[i10 + 1] as f32 * w10
+                + rgb[i11 + 1] as f32 * w11;
+            let b = rgb[i00 + 2] as f32 * w00
+                + rgb[i01 + 2] as f32 * w01
+                + rgb[i10 + 2] as f32 * w10
+                + rgb[i11 + 2] as f32 * w11;
+
             let dst_idx = (y * in_w + x) as usize;
-            let r = rgb[src_idx] as f32;
-            let g = rgb[src_idx + 1] as f32;
-            let b = rgb[src_idx + 2] as f32;
             bgr_nchw[dst_idx] = b;
             bgr_nchw[plane_size + dst_idx] = g;
             bgr_nchw[plane_size * 2 + dst_idx] = r;
@@ -286,7 +366,7 @@ pub fn detect_rgb_frame_with_thresh(
     for i in 0..num_anchors {
         let base = i * feat_dim;
         let obj_conf = data[base + 4];
-        if obj_conf < 0.15 {
+        if obj_conf < 0.10 {
             continue;
         }
 
@@ -301,13 +381,14 @@ pub fn detect_rgb_frame_with_thresh(
             0.0
         };
 
-        let (chosen_cls, chosen_score) = if person_score >= person_thresh && person_score >= ball_score {
-            (0i32, person_score)
-        } else if ball_score >= ball_thresh {
-            (32i32, ball_score)
-        } else {
-            continue;
-        };
+        let (chosen_cls, chosen_score) =
+            if person_score >= person_thresh && person_score >= ball_score {
+                (0i32, person_score)
+            } else if ball_score >= ball_thresh {
+                (32i32, ball_score)
+            } else {
+                continue;
+            };
 
         let (cx, cy, bw, bh) = if needs_grid_decode {
             let (gx, gy, stride) = grid_meta[i];
@@ -491,10 +572,9 @@ fn downsample_luma_grid(rgb: &[u8], frame_w: u32, frame_h: u32) -> Vec<u8> {
                 .clamp(0.0, (frame_w - 1) as f32) as u32;
             let idx = ((sy * frame_w + sx) * 3) as usize;
             if idx + 2 < rgb.len() {
-                let lum = ((rgb[idx] as u32 * 77
-                    + rgb[idx + 1] as u32 * 150
-                    + rgb[idx + 2] as u32 * 29)
-                    >> 8) as u8;
+                let lum =
+                    ((rgb[idx] as u32 * 77 + rgb[idx + 1] as u32 * 150 + rgb[idx + 2] as u32 * 29)
+                        >> 8) as u8;
                 grid[gy * PAN_GRID_W + gx] = lum;
             }
         }
@@ -637,11 +717,7 @@ fn extract_spatial_template(
     }
 }
 
-fn channel_ncc(
-    cand: &mut [f32; SPATIAL_LEN],
-    tmpl: &[f32; SPATIAL_LEN],
-    tmpl_std: f32,
-) -> f32 {
+fn channel_ncc(cand: &mut [f32; SPATIAL_LEN], tmpl: &[f32; SPATIAL_LEN], tmpl_std: f32) -> f32 {
     if tmpl_std <= 1e-4 {
         return 0.0;
     }
@@ -862,9 +938,8 @@ fn local_spatial_ncc_fallback_search(
         let det_upper = extract_torso_hist64(rgb, frame_w, frame_h, &cand);
         let upper_sim = 0.6 * bhattacharyya_sim(&sig.anchor_upper, &det_upper)
             + 0.4 * bhattacharyya_sim(&sig.running_upper, &det_upper);
-        let dist_norm = (((sx - base_x) as f32 / fw).powi(2)
-            + ((sy - base_y) as f32 / fh).powi(2))
-        .sqrt();
+        let dist_norm =
+            (((sx - base_x) as f32 / fw).powi(2) + ((sy - base_y) as f32 / fh).powi(2)).sqrt();
         let obj = 0.55 * spatial_sim + 0.35 * upper_sim - 1.2 * dist_norm;
         (obj, spatial_sim, upper_sim)
     };
@@ -969,11 +1044,7 @@ fn box_iou_norm(a: &DetectedObject, b: &DetectedObject) -> f32 {
     let iy2 = (a.y + a.h).min(b.y + b.h);
     let inter = (ix2 - ix1).max(0.0) * (iy2 - iy1).max(0.0);
     let union = a.w * a.h + b.w * b.h - inter;
-    if union <= 1e-6 {
-        0.0
-    } else {
-        inter / union
-    }
+    if union <= 1e-6 { 0.0 } else { inter / union }
 }
 
 fn split_teams_2means(colors: &[[f32; 3]]) -> Vec<usize> {
@@ -1032,7 +1103,10 @@ fn split_teams_2means(colors: &[[f32; 3]]) -> Vec<usize> {
     assign
 }
 
-fn smooth_keyframes_zero_phase(kfs: Vec<TrackingKeyframeDto>, alpha: f64) -> Vec<TrackingKeyframeDto> {
+fn smooth_keyframes_zero_phase(
+    kfs: Vec<TrackingKeyframeDto>,
+    alpha: f64,
+) -> Vec<TrackingKeyframeDto> {
     if kfs.len() <= 2 {
         return kfs
             .into_iter()
@@ -1073,28 +1147,174 @@ fn smooth_keyframes_zero_phase(kfs: Vec<TrackingKeyframeDto>, alpha: f64) -> Vec
         .collect()
 }
 
+fn merge_tiled_detections(
+    mut dets: Vec<DetectedObject>,
+    iou_thresh: f32,
+    contain_thresh: f32,
+) -> Vec<DetectedObject> {
+    dets.sort_by(|a, b| {
+        b.confidence
+            .partial_cmp(&a.confidence)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut kept: Vec<DetectedObject> = Vec::new();
+    for cand in dets {
+        let cand_area = (cand.w * cand.h).max(1e-6);
+        let mut suppressed = false;
+        for k in &kept {
+            if k.class_id != cand.class_id {
+                continue;
+            }
+            let ix1 = k.x.max(cand.x);
+            let iy1 = k.y.max(cand.y);
+            let ix2 = (k.x + k.w).min(cand.x + cand.w);
+            let iy2 = (k.y + k.h).min(cand.y + cand.h);
+            let inter = (ix2 - ix1).max(0.0) * (iy2 - iy1).max(0.0);
+            if inter <= 0.0 {
+                continue;
+            }
+            let k_area = (k.w * k.h).max(1e-6);
+            let union = (k_area + cand_area - inter).max(1e-6);
+            let iou_val = inter / union;
+            let contain = inter / k_area.min(cand_area);
+            if iou_val > iou_thresh || contain > contain_thresh {
+                suppressed = true;
+                break;
+            }
+        }
+        if !suppressed {
+            kept.push(cand);
+        }
+    }
+    kept
+}
+
+pub fn detect_rgb_frame_sahi_tiled(
+    session: &mut Session,
+    rgb: &[u8],
+    frame_w: u32,
+    frame_h: u32,
+    in_w: u32,
+    in_h: u32,
+    person_thresh: f32,
+    ball_thresh: f32,
+) -> Result<Vec<DetectedObject>, String> {
+    let mut all = detect_rgb_frame_with_thresh(
+        session,
+        rgb,
+        frame_w,
+        frame_h,
+        in_w,
+        in_h,
+        person_thresh,
+        ball_thresh,
+    )?;
+
+    // 2x3 overlapping SAHI tiles covering 100% of frame so all court + perimeter people stay visible
+    let row_spans: [(f32, f32); 2] = [(0.00, 0.58), (0.42, 1.00)];
+    let col_spans: [(f32, f32); 3] = [(0.00, 0.42), (0.29, 0.71), (0.58, 1.00)];
+
+    for &(ry0, ry1) in &row_spans {
+        for &(rx0, rx1) in &col_spans {
+            let px0 = (rx0 * frame_w as f32).floor().max(0.0) as u32;
+            let py0 = (ry0 * frame_h as f32).floor().max(0.0) as u32;
+            let px1 = (rx1 * frame_w as f32).ceil().min(frame_w as f32) as u32;
+            let py1 = (ry1 * frame_h as f32).ceil().min(frame_h as f32) as u32;
+
+            let crop_w = px1.saturating_sub(px0);
+            let crop_h = py1.saturating_sub(py0);
+            if crop_w < 32 || crop_h < 32 {
+                continue;
+            }
+
+            let mut crop_rgb = vec![0u8; (crop_w * crop_h * 3) as usize];
+            for row in 0..crop_h {
+                let src_start = (((py0 + row) * frame_w + px0) * 3) as usize;
+                let src_end = src_start + (crop_w * 3) as usize;
+                let dst_start = (row * crop_w * 3) as usize;
+                if src_end <= rgb.len() {
+                    crop_rgb[dst_start..dst_start + (crop_w * 3) as usize]
+                        .copy_from_slice(&rgb[src_start..src_end]);
+                }
+            }
+
+            let tile_dets = detect_rgb_frame_with_thresh(
+                session,
+                &crop_rgb,
+                crop_w,
+                crop_h,
+                in_w,
+                in_h,
+                person_thresh,
+                ball_thresh,
+            )?;
+
+            let scale_w = (crop_w as f32) / (frame_w as f32);
+            let scale_h = (crop_h as f32) / (frame_h as f32);
+            let off_x = (px0 as f32) / (frame_w as f32);
+            let off_y = (py0 as f32) / (frame_h as f32);
+
+            for d in tile_dets {
+                let x = (off_x + d.x * scale_w).clamp(0.0, 1.0);
+                let y = (off_y + d.y * scale_h).clamp(0.0, 1.0);
+                let w = (d.w * scale_w).clamp(0.0, 1.0 - x);
+                let h = (d.h * scale_h).clamp(0.0, 1.0 - y);
+                if w < 0.006 || h < 0.015 {
+                    continue;
+                }
+                all.push(DetectedObject {
+                    x,
+                    y,
+                    w,
+                    h,
+                    foot_x: (x + w * 0.5).clamp(0.0, 1.0),
+                    foot_y: (y + h).clamp(0.0, 1.0),
+                    confidence: d.confidence,
+                    class_id: d.class_id,
+                    label: d.label,
+                });
+            }
+        }
+    }
+
+    let mut merged = merge_tiled_detections(all, 0.42, 0.72);
+    merged.sort_by(|a, b| {
+        let a_p = if a.class_id == 0 { 0 } else { 1 };
+        let b_p = if b.class_id == 0 { 0 } else { 1 };
+        a_p.cmp(&b_p).then_with(|| {
+            a.foot_x
+                .partial_cmp(&b.foot_x)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+    });
+    Ok(merged)
+}
+
 #[tauri::command]
 pub fn check_ai_model_status(app: tauri::AppHandle) -> AiModelStatus {
     match resolve_yolox_model_path(Some(&app)) {
-        Some(path) => match load_yolox_session(&path) {
-            Ok((_, in_w, in_h)) => AiModelStatus {
-                available: true,
-                model_path: Some(path.to_string_lossy().to_string()),
-                engine: "ONNX Runtime (YOLOX-Nano)".to_string(),
-                input_size: [in_w, in_h],
-            },
-            Err(err) => AiModelStatus {
-                available: false,
-                model_path: Some(format!("Error: {}", err)),
-                engine: "ONNX Runtime".to_string(),
-                input_size: [416, 416],
-            },
-        },
+        Some(path) => {
+            let variant = model_variant_label(&path);
+            match with_yolox_session(&path, |_, in_w, in_h| Ok((in_w, in_h))) {
+                Ok((in_w, in_h)) => AiModelStatus {
+                    available: true,
+                    model_path: Some(path.to_string_lossy().to_string()),
+                    engine: format!("ONNX Runtime ({} {}px + SAHI)", variant, in_w),
+                    input_size: [in_w, in_h],
+                },
+                Err(err) => AiModelStatus {
+                    available: false,
+                    model_path: Some(format!("Error: {}", err)),
+                    engine: format!("ONNX Runtime ({})", variant),
+                    input_size: [640, 640],
+                },
+            }
+        }
         None => AiModelStatus {
             available: false,
             model_path: None,
             engine: "ONNX Runtime (model belum ditemukan)".to_string(),
-            input_size: [416, 416],
+            input_size: [640, 640],
         },
     }
 }
@@ -1106,23 +1326,23 @@ pub fn detect_players_in_frame_onnx(
     time_sec: f64,
 ) -> Result<Vec<DetectedObject>, String> {
     let model_path = resolve_yolox_model_path(Some(&app))
-        .ok_or_else(|| "Model ONNX yolox_nano.onnx tidak ditemukan.".to_string())?;
-    let (mut session, in_w, in_h) = load_yolox_session(&model_path)?;
-    let frame_w = 960u32;
-    let frame_h = 540u32;
-    let frames = ffmpeg::extract_rgb_frames(&input_path, time_sec, time_sec + 0.25, 4.0, frame_w, frame_h)?;
+        .ok_or_else(|| "Model ONNX yolox_s.onnx / yolox_nano.onnx tidak ditemukan.".to_string())?;
+    let frame_w = 1920u32;
+    let frame_h = 1080u32;
+    let frames = ffmpeg::extract_rgb_frames(
+        &input_path,
+        time_sec,
+        time_sec + 0.25,
+        4.0,
+        frame_w,
+        frame_h,
+    )?;
     let (_, rgb) = frames
         .first()
         .ok_or_else(|| "Gagal mengekstrak frame video pada timestamp tersebut".to_string())?;
-    let mut objects =
-        detect_rgb_frame_with_thresh(&mut session, rgb, frame_w, frame_h, in_w, in_h, 0.24, 0.22)?;
-    objects.sort_by(|a, b| {
-        let a_p = if a.class_id == 0 { 0 } else { 1 };
-        let b_p = if b.class_id == 0 { 0 } else { 1 };
-        a_p.cmp(&b_p)
-            .then_with(|| a.foot_x.partial_cmp(&b.foot_x).unwrap_or(std::cmp::Ordering::Equal))
-    });
-    Ok(objects)
+    with_yolox_session(&model_path, |session, in_w, in_h| {
+        detect_rgb_frame_sahi_tiled(session, rgb, frame_w, frame_h, in_w, in_h, 0.22, 0.20)
+    })
 }
 
 #[tauri::command]
@@ -1134,17 +1354,29 @@ pub fn detect_player_boxes_range_onnx(
     fps: Option<f64>,
 ) -> Result<Vec<FrameDetectionsDto>, String> {
     let model_path = resolve_yolox_model_path(Some(&app))
-        .ok_or_else(|| "Model ONNX yolox_nano.onnx tidak ditemukan.".to_string())?;
-    let (mut session, in_w, in_h) = load_yolox_session(&model_path)?;
+        .ok_or_else(|| "Model ONNX yolox_s.onnx / yolox_nano.onnx tidak ditemukan.".to_string())?;
+    let frame_w = 960u32;
+    let frame_h = 540u32;
     let sample_fps = fps.unwrap_or(6.0).clamp(1.0, 15.0);
-    let frames = ffmpeg::extract_rgb_frames(&input_path, start_sec, end_sec, sample_fps, 640, 360)?;
+    let frames = ffmpeg::extract_rgb_frames(
+        &input_path,
+        start_sec,
+        end_sec,
+        sample_fps,
+        frame_w,
+        frame_h,
+    )?;
 
-    let mut out = Vec::with_capacity(frames.len());
-    for (t, rgb) in &frames {
-        let boxes = detect_rgb_frame(&mut session, rgb, 640, 360, in_w, in_h)?;
-        out.push(FrameDetectionsDto { time: *t, boxes });
-    }
-    Ok(out)
+    with_yolox_session(&model_path, |session, in_w, in_h| {
+        let mut out = Vec::with_capacity(frames.len());
+        for (t, rgb) in &frames {
+            let boxes = detect_rgb_frame_with_thresh(
+                session, rgb, frame_w, frame_h, in_w, in_h, 0.25, 0.22,
+            )?;
+            out.push(FrameDetectionsDto { time: *t, boxes });
+        }
+        Ok(out)
+    })
 }
 
 fn synthetic_anchor_box(
@@ -1199,9 +1431,8 @@ fn resolve_anchor_box_for_frame(
 
     let full_dets =
         detect_rgb_frame_with_thresh(session, rgb, frame_w, frame_h, in_w, in_h, 0.24, 0.22)?;
-    let roi_dets =
-        detect_in_local_roi(session, rgb, frame_w, frame_h, in_w, in_h, &fallback_synth)
-            .unwrap_or_default();
+    let roi_dets = detect_in_local_roi(session, rgb, frame_w, frame_h, in_w, in_h, &fallback_synth)
+        .unwrap_or_default();
 
     let all_dets: Vec<DetectedObject> = roi_dets.into_iter().chain(full_dets).collect();
 
@@ -1292,15 +1523,19 @@ fn track_one_direction(
                 .sqrt();
                 if pdist < best_pd {
                     best_pd = pdist;
-                    dvx = (0.45 * pvx + 0.55 * ((d.foot_x - pd.foot_x) - cam_dx)).clamp(-0.045, 0.045);
-                    dvy = (0.45 * pvy + 0.55 * ((d.foot_y - pd.foot_y) - cam_dy)).clamp(-0.045, 0.045);
+                    dvx = (0.45 * pvx + 0.55 * ((d.foot_x - pd.foot_x) - cam_dx))
+                        .clamp(-0.045, 0.045);
+                    dvy = (0.45 * pvy + 0.55 * ((d.foot_y - pd.foot_y) - cam_dy))
+                        .clamp(-0.045, 0.045);
                 }
             }
             next.push((d.clone(), dvx, dvy, dist_target));
         }
         next.sort_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal));
         next.truncate(6);
-        next.into_iter().map(|(d, dvx, dvy, _)| (d, dvx, dvy)).collect()
+        next.into_iter()
+            .map(|(d, dvx, dvy, _)| (d, dvx, dvy))
+            .collect()
     };
 
     for (pos_i, &idx) in indices.iter().enumerate() {
@@ -1329,8 +1564,7 @@ fn track_one_direction(
             .iter()
             .map(|(db, dvx, dvy)| (db.foot_x + cam_dx + dvx, db.foot_y + cam_dy + dvy))
             .collect();
-        let dets =
-            detect_in_local_roi(session, rgb, frame_w, frame_h, in_w, in_h, &pred_box)?;
+        let dets = detect_in_local_roi(session, rgb, frame_w, frame_h, in_w, in_h, &pred_box)?;
 
         let max_gate = (0.065 + 0.020 * (missed as f32)).min(0.14);
         let mut best_det: Option<(usize, DetectedObject, f32, f32, f32, f32)> = None;
@@ -1398,8 +1632,14 @@ fn track_one_direction(
                     blend_spatial_template(&mut sig.running_spatial, &fresh_sp, 0.15);
                 }
 
-                distractors =
-                    refresh_distractors(&distractors, &dets, Some(det_idx), &last_box, cam_dx, cam_dy);
+                distractors = refresh_distractors(
+                    &distractors,
+                    &dets,
+                    Some(det_idx),
+                    &last_box,
+                    cam_dx,
+                    cam_dy,
+                );
 
                 let (ax, ay) = box_anchor_point(&last_box, anchor_mode);
                 kfs.push((
@@ -1467,15 +1707,25 @@ pub fn track_single_player_onnx(
     fps: Option<f64>,
 ) -> Result<SinglePlayerTrackResult, String> {
     let model_path = resolve_yolox_model_path(Some(&app))
-        .ok_or_else(|| "Model ONNX yolox_nano.onnx tidak ditemukan.".to_string())?;
-    let (mut session, in_w, in_h) = load_yolox_session(&model_path)?;
+        .ok_or_else(|| "Model ONNX yolox_s.onnx / yolox_nano.onnx tidak ditemukan.".to_string())?;
+    let variant = model_variant_label(&model_path);
 
-    let frame_w = 960u32;
-    let frame_h = 540u32;
-    let default_fps = if (end_sec - start_sec) > 15.0 { 12.0 } else { 15.0 };
+    let frame_w = 1280u32;
+    let frame_h = 720u32;
+    let default_fps = if (end_sec - start_sec) > 10.0 {
+        12.0
+    } else {
+        15.0
+    };
     let sample_fps = fps.unwrap_or(default_fps).clamp(6.0, 24.0);
-    let frames =
-        ffmpeg::extract_rgb_frames(&input_path, start_sec, end_sec, sample_fps, frame_w, frame_h)?;
+    let frames = ffmpeg::extract_rgb_frames(
+        &input_path,
+        start_sec,
+        end_sec,
+        sample_fps,
+        frame_w,
+        frame_h,
+    )?;
 
     if frames.is_empty() {
         return Err("Tidak ada frame yang berhasil diekstrak dari klip ini.".to_string());
@@ -1499,55 +1749,27 @@ pub fn track_single_player_onnx(
         }
     }
 
-    let (anchor_t, anchor_rgb) = &frames[anchor_idx];
-    let anchor_box = resolve_anchor_box_for_frame(
-        &mut session,
-        anchor_rgb,
-        frame_w,
-        frame_h,
-        in_w,
-        in_h,
-        anchor_x,
-        anchor_y,
-        anchor_w,
-        anchor_h,
-        mode,
-    )?;
-    let anchor_sig = build_player_signature(anchor_rgb, frame_w, frame_h, &anchor_box);
-    let (ax0, ay0) = box_anchor_point(&anchor_box, mode);
-    let anchor_kf = TrackingKeyframeDto {
-        time: *anchor_t,
-        x: ax0,
-        y: ay0,
-    };
+    with_yolox_session(&model_path, |session, in_w, in_h| {
+        let (anchor_t, anchor_rgb) = &frames[anchor_idx];
+        let anchor_box = resolve_anchor_box_for_frame(
+            session, anchor_rgb, frame_w, frame_h, in_w, in_h, anchor_x, anchor_y, anchor_w,
+            anchor_h, mode,
+        )?;
+        let anchor_sig = build_player_signature(anchor_rgb, frame_w, frame_h, &anchor_box);
+        let (ax0, ay0) = box_anchor_point(&anchor_box, mode);
+        let anchor_kf = TrackingKeyframeDto {
+            time: *anchor_t,
+            x: ax0,
+            y: ay0,
+        };
 
-    let fwd_indices: Vec<usize> = ((anchor_idx + 1)..frames.len()).collect();
-    let (fwd_kfs, fwd_ai, fwd_fb, fwd_pan) = track_one_direction(
-        &mut session,
-        &frames,
-        &luma_grids,
-        anchor_idx,
-        &fwd_indices,
-        frame_w,
-        frame_h,
-        in_w,
-        in_h,
-        &anchor_box,
-        &anchor_sig,
-        mode,
-        None,
-    )?;
-
-    let (bwd_kfs, bwd_ai, bwd_fb, bwd_pan) = if dir_mode == "forward" {
-        (Vec::new(), 0, 0, 0)
-    } else {
-        let bwd_indices: Vec<usize> = (0..anchor_idx).rev().collect();
-        let (mut kfs, ai, fb, pan) = track_one_direction(
-            &mut session,
+        let fwd_indices: Vec<usize> = ((anchor_idx + 1)..frames.len()).collect();
+        let (fwd_kfs, fwd_ai, fwd_fb, fwd_pan) = track_one_direction(
+            session,
             &frames,
             &luma_grids,
             anchor_idx,
-            &bwd_indices,
+            &fwd_indices,
             frame_w,
             frame_h,
             in_w,
@@ -1557,26 +1779,54 @@ pub fn track_single_player_onnx(
             mode,
             None,
         )?;
-        kfs.reverse();
-        (kfs, ai, fb, pan)
-    };
 
-    let mut all_kfs = Vec::with_capacity(bwd_kfs.len() + 1 + fwd_kfs.len());
-    all_kfs.extend(bwd_kfs.into_iter().map(|(_, kf)| kf));
-    all_kfs.push(anchor_kf);
-    all_kfs.extend(fwd_kfs.into_iter().map(|(_, kf)| kf));
-    all_kfs.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap_or(std::cmp::Ordering::Equal));
+        let (bwd_kfs, bwd_ai, bwd_fb, bwd_pan) = if dir_mode == "forward" {
+            (Vec::new(), 0, 0, 0)
+        } else {
+            let bwd_indices: Vec<usize> = (0..anchor_idx).rev().collect();
+            let (mut kfs, ai, fb, pan) = track_one_direction(
+                session,
+                &frames,
+                &luma_grids,
+                anchor_idx,
+                &bwd_indices,
+                frame_w,
+                frame_h,
+                in_w,
+                in_h,
+                &anchor_box,
+                &anchor_sig,
+                mode,
+                None,
+            )?;
+            kfs.reverse();
+            (kfs, ai, fb, pan)
+        };
 
-    let smoothed = smooth_keyframes_zero_phase(all_kfs, 0.55);
+        let mut all_kfs = Vec::with_capacity(bwd_kfs.len() + 1 + fwd_kfs.len());
+        all_kfs.extend(bwd_kfs.into_iter().map(|(_, kf)| kf));
+        all_kfs.push(anchor_kf);
+        all_kfs.extend(fwd_kfs.into_iter().map(|(_, kf)| kf));
+        all_kfs.sort_by(|a, b| {
+            a.time
+                .partial_cmp(&b.time)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
-    Ok(SinglePlayerTrackResult {
-        keyframes: smoothed,
-        frames_processed: frames.len(),
-        matched_ai_frames: 1 + fwd_ai + bwd_ai,
-        fallback_frames: fwd_fb + bwd_fb,
-        camera_pan_frames: fwd_pan + bwd_pan,
-        engine_info: format!("Local-ROI YOLOX (960x540 @ {:.0}fps) + Spatial NCC", sample_fps),
-        anchor_box: Some(anchor_box),
+        let smoothed = smooth_keyframes_zero_phase(all_kfs, 0.55);
+
+        Ok(SinglePlayerTrackResult {
+            keyframes: smoothed,
+            frames_processed: frames.len(),
+            matched_ai_frames: 1 + fwd_ai + bwd_ai,
+            fallback_frames: fwd_fb + bwd_fb,
+            camera_pan_frames: fwd_pan + bwd_pan,
+            engine_info: format!(
+                "Local-ROI {} (1280x720 @ {:.0}fps) + Spatial NCC",
+                variant, sample_fps
+            ),
+            anchor_box: Some(anchor_box),
+        })
     })
 }
 
@@ -1620,7 +1870,10 @@ fn blend_guided_segment(
         let lin_x = ax + (bx - ax) * u;
         let lin_y = ay + (by - ay) * u;
 
-        let (x, y) = match (fwd_map.get(idx).and_then(|o| o.as_ref()), bwd_map.get(idx).and_then(|o| o.as_ref())) {
+        let (x, y) = match (
+            fwd_map.get(idx).and_then(|o| o.as_ref()),
+            bwd_map.get(idx).and_then(|o| o.as_ref()),
+        ) {
             (Some(f), Some(b)) => (f.x * w + b.x * (1.0 - w), f.y * w + b.y * (1.0 - w)),
             (Some(f), None) => (f.x * w + lin_x * (1.0 - w), f.y * w + lin_y * (1.0 - w)),
             (None, Some(b)) => (lin_x * w + b.x * (1.0 - w), lin_y * w + b.y * (1.0 - w)),
@@ -1650,7 +1903,11 @@ pub fn track_guided_anchors_onnx(
     }
 
     let mut sorted = anchors;
-    sorted.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap_or(std::cmp::Ordering::Equal));
+    sorted.sort_by(|a, b| {
+        a.time
+            .partial_cmp(&b.time)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     let mut deduped: Vec<AnchorPinDto> = Vec::new();
     for pin in sorted {
         if let Some(last) = deduped.last_mut() {
@@ -1681,15 +1938,25 @@ pub fn track_guided_anchors_onnx(
     }
 
     let model_path = resolve_yolox_model_path(Some(&app))
-        .ok_or_else(|| "Model ONNX yolox_nano.onnx tidak ditemukan.".to_string())?;
-    let (mut session, in_w, in_h) = load_yolox_session(&model_path)?;
+        .ok_or_else(|| "Model ONNX yolox_s.onnx / yolox_nano.onnx tidak ditemukan.".to_string())?;
+    let variant = model_variant_label(&model_path);
 
-    let frame_w = 960u32;
-    let frame_h = 540u32;
-    let default_fps = if (end_sec - start_sec) > 15.0 { 12.0 } else { 15.0 };
+    let frame_w = 1280u32;
+    let frame_h = 720u32;
+    let default_fps = if (end_sec - start_sec) > 10.0 {
+        12.0
+    } else {
+        15.0
+    };
     let sample_fps = fps.unwrap_or(default_fps).clamp(6.0, 24.0);
-    let frames =
-        ffmpeg::extract_rgb_frames(&input_path, start_sec, end_sec, sample_fps, frame_w, frame_h)?;
+    let frames = ffmpeg::extract_rgb_frames(
+        &input_path,
+        start_sec,
+        end_sec,
+        sample_fps,
+        frame_w,
+        frame_h,
+    )?;
 
     if frames.is_empty() {
         return Err("Tidak ada frame yang berhasil diekstrak dari klip ini.".to_string());
@@ -1710,201 +1977,197 @@ pub fn track_guided_anchors_onnx(
         sig: PlayerSignature,
     }
 
-    let mut locked_pins: Vec<LockedPin> = Vec::with_capacity(deduped.len());
-    for pin in &deduped {
-        let mut best_i = 0usize;
-        let mut best_dt = f64::INFINITY;
-        for (i, t) in frame_times.iter().enumerate() {
-            let dt = (t - pin.time).abs();
-            if dt < best_dt {
-                best_dt = dt;
-                best_i = i;
+    with_yolox_session(&model_path, |session, in_w, in_h| {
+        let mut locked_pins: Vec<LockedPin> = Vec::with_capacity(deduped.len());
+        for pin in &deduped {
+            let mut best_i = 0usize;
+            let mut best_dt = f64::INFINITY;
+            for (i, t) in frame_times.iter().enumerate() {
+                let dt = (t - pin.time).abs();
+                if dt < best_dt {
+                    best_dt = dt;
+                    best_i = i;
+                }
             }
-        }
-        let (_, rgb) = &frames[best_i];
-        let det_box = resolve_anchor_box_for_frame(
-            &mut session,
-            rgb,
-            frame_w,
-            frame_h,
-            in_w,
-            in_h,
-            pin.x,
-            pin.y,
-            None,
-            None,
-            mode,
-        )?;
-        let sig = build_player_signature(rgb, frame_w, frame_h, &det_box);
-        if let Some(prev) = locked_pins.last_mut() {
-            if prev.idx == best_i {
-                *prev = LockedPin {
-                    idx: best_i,
-                    x: pin.x,
-                    y: pin.y,
-                    box_det: det_box,
-                    sig,
-                };
-                continue;
-            }
-        }
-        locked_pins.push(LockedPin {
-            idx: best_i,
-            x: pin.x,
-            y: pin.y,
-            box_det: det_box,
-            sig,
-        });
-    }
-
-    let mut total_ai = locked_pins.len();
-    let mut total_fb = 0usize;
-    let mut total_pan = 0usize;
-    let mut all_kfs: Vec<TrackingKeyframeDto> = Vec::new();
-
-    // 1. Track backward before first pin
-    let first_pin = &locked_pins[0];
-    if first_pin.idx > 0 {
-        let bwd_indices: Vec<usize> = (0..first_pin.idx).rev().collect();
-        let (mut bwd_kfs, ai, fb, pan) = track_one_direction(
-            &mut session,
-            &frames,
-            &luma_grids,
-            first_pin.idx,
-            &bwd_indices,
-            frame_w,
-            frame_h,
-            in_w,
-            in_h,
-            &first_pin.box_det,
-            &first_pin.sig,
-            mode,
-            None,
-        )?;
-        bwd_kfs.reverse();
-        total_ai += ai;
-        total_fb += fb;
-        total_pan += pan;
-        all_kfs.extend(bwd_kfs.into_iter().map(|(_, kf)| kf));
-    }
-
-    // 2. Track and cosine-blend each interior span [Pin_k .. Pin_{k+1}]
-    for k in 0..(locked_pins.len() - 1) {
-        let pa = &locked_pins[k];
-        let pb = &locked_pins[k + 1];
-
-        let mut fwd_map: Vec<Option<TrackingKeyframeDto>> = vec![None; frames.len()];
-        let mut bwd_map: Vec<Option<TrackingKeyframeDto>> = vec![None; frames.len()];
-
-        if pb.idx > pa.idx + 1 {
-            let fwd_indices: Vec<usize> = ((pa.idx + 1)..pb.idx).collect();
-            let (fkfs, ai1, fb1, pan1) = track_one_direction(
-                &mut session,
-                &frames,
-                &luma_grids,
-                pa.idx,
-                &fwd_indices,
-                frame_w,
-                frame_h,
-                in_w,
-                in_h,
-                &pa.box_det,
-                &pa.sig,
-                mode,
-                Some((pb.idx, pb.x as f32, pb.y as f32)),
+            let (_, rgb) = &frames[best_i];
+            let det_box = resolve_anchor_box_for_frame(
+                session, rgb, frame_w, frame_h, in_w, in_h, pin.x, pin.y, None, None, mode,
             )?;
-            total_ai += ai1;
-            total_fb += fb1;
-            total_pan += pan1;
-            for (fi, kf) in fkfs {
-                fwd_map[fi] = Some(kf);
+            let sig = build_player_signature(rgb, frame_w, frame_h, &det_box);
+            if let Some(prev) = locked_pins.last_mut() {
+                if prev.idx == best_i {
+                    *prev = LockedPin {
+                        idx: best_i,
+                        x: pin.x,
+                        y: pin.y,
+                        box_det: det_box,
+                        sig,
+                    };
+                    continue;
+                }
             }
+            locked_pins.push(LockedPin {
+                idx: best_i,
+                x: pin.x,
+                y: pin.y,
+                box_det: det_box,
+                sig,
+            });
+        }
 
-            let bwd_indices: Vec<usize> = ((pa.idx + 1)..pb.idx).rev().collect();
-            let (bkfs, ai2, fb2, pan2) = track_one_direction(
-                &mut session,
+        let mut total_ai = locked_pins.len();
+        let mut total_fb = 0usize;
+        let mut total_pan = 0usize;
+        let mut all_kfs: Vec<TrackingKeyframeDto> = Vec::new();
+
+        // 1. Track backward before first pin
+        let first_pin = &locked_pins[0];
+        if first_pin.idx > 0 {
+            let bwd_indices: Vec<usize> = (0..first_pin.idx).rev().collect();
+            let (mut bwd_kfs, ai, fb, pan) = track_one_direction(
+                session,
                 &frames,
                 &luma_grids,
-                pb.idx,
+                first_pin.idx,
                 &bwd_indices,
                 frame_w,
                 frame_h,
                 in_w,
                 in_h,
-                &pb.box_det,
-                &pb.sig,
+                &first_pin.box_det,
+                &first_pin.sig,
                 mode,
-                Some((pa.idx, pa.x as f32, pa.y as f32)),
+                None,
             )?;
-            total_ai += ai2;
-            total_fb += fb2;
-            total_pan += pan2;
-            for (bi, kf) in bkfs {
-                bwd_map[bi] = Some(kf);
+            bwd_kfs.reverse();
+            total_ai += ai;
+            total_fb += fb;
+            total_pan += pan;
+            all_kfs.extend(bwd_kfs.into_iter().map(|(_, kf)| kf));
+        }
+
+        // 2. Track and cosine-blend each interior span [Pin_k .. Pin_{k+1}]
+        for k in 0..(locked_pins.len() - 1) {
+            let pa = &locked_pins[k];
+            let pb = &locked_pins[k + 1];
+
+            let mut fwd_map: Vec<Option<TrackingKeyframeDto>> = vec![None; frames.len()];
+            let mut bwd_map: Vec<Option<TrackingKeyframeDto>> = vec![None; frames.len()];
+
+            if pb.idx > pa.idx + 1 {
+                let fwd_indices: Vec<usize> = ((pa.idx + 1)..pb.idx).collect();
+                let (fkfs, ai1, fb1, pan1) = track_one_direction(
+                    session,
+                    &frames,
+                    &luma_grids,
+                    pa.idx,
+                    &fwd_indices,
+                    frame_w,
+                    frame_h,
+                    in_w,
+                    in_h,
+                    &pa.box_det,
+                    &pa.sig,
+                    mode,
+                    Some((pb.idx, pb.x as f32, pb.y as f32)),
+                )?;
+                total_ai += ai1;
+                total_fb += fb1;
+                total_pan += pan1;
+                for (fi, kf) in fkfs {
+                    fwd_map[fi] = Some(kf);
+                }
+
+                let bwd_indices: Vec<usize> = ((pa.idx + 1)..pb.idx).rev().collect();
+                let (bkfs, ai2, fb2, pan2) = track_one_direction(
+                    session,
+                    &frames,
+                    &luma_grids,
+                    pb.idx,
+                    &bwd_indices,
+                    frame_w,
+                    frame_h,
+                    in_w,
+                    in_h,
+                    &pb.box_det,
+                    &pb.sig,
+                    mode,
+                    Some((pa.idx, pa.x as f32, pa.y as f32)),
+                )?;
+                total_ai += ai2;
+                total_fb += fb2;
+                total_pan += pan2;
+                for (bi, kf) in bkfs {
+                    bwd_map[bi] = Some(kf);
+                }
+            }
+
+            let seg_kfs = blend_guided_segment(
+                (pa.idx, pa.x, pa.y),
+                (pb.idx, pb.x, pb.y),
+                &fwd_map,
+                &bwd_map,
+                &frame_times,
+            );
+            if k == 0 {
+                all_kfs.extend(seg_kfs);
+            } else {
+                all_kfs.extend(seg_kfs.into_iter().skip(1));
             }
         }
 
-        let seg_kfs = blend_guided_segment(
-            (pa.idx, pa.x, pa.y),
-            (pb.idx, pb.x, pb.y),
-            &fwd_map,
-            &bwd_map,
-            &frame_times,
-        );
-        if k == 0 {
-            all_kfs.extend(seg_kfs);
-        } else {
-            all_kfs.extend(seg_kfs.into_iter().skip(1));
+        // 3. Track forward after last pin
+        let last_pin = &locked_pins[locked_pins.len() - 1];
+        if last_pin.idx + 1 < frames.len() {
+            let fwd_indices: Vec<usize> = ((last_pin.idx + 1)..frames.len()).collect();
+            let (fwd_kfs, ai, fb, pan) = track_one_direction(
+                session,
+                &frames,
+                &luma_grids,
+                last_pin.idx,
+                &fwd_indices,
+                frame_w,
+                frame_h,
+                in_w,
+                in_h,
+                &last_pin.box_det,
+                &last_pin.sig,
+                mode,
+                None,
+            )?;
+            total_ai += ai;
+            total_fb += fb;
+            total_pan += pan;
+            all_kfs.extend(fwd_kfs.into_iter().map(|(_, kf)| kf));
         }
-    }
 
-    // 3. Track forward after last pin
-    let last_pin = &locked_pins[locked_pins.len() - 1];
-    if last_pin.idx + 1 < frames.len() {
-        let fwd_indices: Vec<usize> = ((last_pin.idx + 1)..frames.len()).collect();
-        let (fwd_kfs, ai, fb, pan) = track_one_direction(
-            &mut session,
-            &frames,
-            &luma_grids,
-            last_pin.idx,
-            &fwd_indices,
-            frame_w,
-            frame_h,
-            in_w,
-            in_h,
-            &last_pin.box_det,
-            &last_pin.sig,
-            mode,
-            None,
-        )?;
-        total_ai += ai;
-        total_fb += fb;
-        total_pan += pan;
-        all_kfs.extend(fwd_kfs.into_iter().map(|(_, kf)| kf));
-    }
-
-    let mut smoothed = smooth_keyframes_zero_phase(all_kfs, 0.65);
-    // Keep exact user ground-truth anchor pins intact
-    for lp in &locked_pins {
-        let target_t = (frame_times[lp.idx] * 1000.0).round() / 1000.0;
-        if let Some(kf) = smoothed.iter_mut().find(|k| (k.time - target_t).abs() < 0.002) {
-            kf.x = lp.x;
-            kf.y = lp.y;
+        let mut smoothed = smooth_keyframes_zero_phase(all_kfs, 0.65);
+        // Keep exact user ground-truth anchor pins intact
+        for lp in &locked_pins {
+            let target_t = (frame_times[lp.idx] * 1000.0).round() / 1000.0;
+            if let Some(kf) = smoothed
+                .iter_mut()
+                .find(|k| (k.time - target_t).abs() < 0.002)
+            {
+                kf.x = lp.x;
+                kf.y = lp.y;
+            }
         }
-    }
 
-    Ok(SinglePlayerTrackResult {
-        keyframes: smoothed,
-        frames_processed: frames.len(),
-        matched_ai_frames: total_ai,
-        fallback_frames: total_fb,
-        camera_pan_frames: total_pan,
-        engine_info: format!(
-            "Guided {} Pin · ROI YOLOX (960x540 @ {:.0}fps) + Spatial NCC",
-            locked_pins.len(),
-            sample_fps
-        ),
-        anchor_box: locked_pins.first().map(|p| p.box_det.clone()),
+        Ok(SinglePlayerTrackResult {
+            keyframes: smoothed,
+            frames_processed: frames.len(),
+            matched_ai_frames: total_ai,
+            fallback_frames: total_fb,
+            camera_pan_frames: total_pan,
+            engine_info: format!(
+                "Guided {} Pin · ROI {} (1280x720 @ {:.0}fps) + Spatial NCC",
+                locked_pins.len(),
+                variant,
+                sample_fps
+            ),
+            anchor_box: locked_pins.first().map(|p| p.box_det.clone()),
+        })
     })
 }
 
@@ -1917,13 +2180,19 @@ pub fn run_multi_player_tracking_onnx(
     fps: Option<f64>,
 ) -> Result<OnnxTrackingResult, String> {
     let model_path = resolve_yolox_model_path(Some(&app))
-        .ok_or_else(|| "Model ONNX yolox_nano.onnx tidak ditemukan.".to_string())?;
-    let (mut session, in_w, in_h) = load_yolox_session(&model_path)?;
+        .ok_or_else(|| "Model ONNX yolox_s.onnx / yolox_nano.onnx tidak ditemukan.".to_string())?;
 
-    let frame_w = 640u32;
-    let frame_h = 360u32;
+    let frame_w = 960u32;
+    let frame_h = 540u32;
     let sample_fps = fps.unwrap_or(8.0).clamp(2.0, 20.0);
-    let frames = ffmpeg::extract_rgb_frames(&input_path, start_sec, end_sec, sample_fps, frame_w, frame_h)?;
+    let frames = ffmpeg::extract_rgb_frames(
+        &input_path,
+        start_sec,
+        end_sec,
+        sample_fps,
+        frame_w,
+        frame_h,
+    )?;
 
     if frames.is_empty() {
         return Err("Tidak ada frame yang berhasil diekstrak dari rentang klip ini.".to_string());
@@ -1932,106 +2201,111 @@ pub fn run_multi_player_tracking_onnx(
     let mut tracks: Vec<ActiveTrack> = Vec::new();
     let mut next_id = 1usize;
 
-    for (t, rgb) in &frames {
-        let dets =
-            detect_rgb_frame_with_thresh(&mut session, rgb, frame_w, frame_h, in_w, in_h, 0.28, 0.22)?;
+    with_yolox_session(&model_path, |session, in_w, in_h| {
+        for (t, rgb) in &frames {
+            let dets = detect_rgb_frame_with_thresh(
+                session, rgb, frame_w, frame_h, in_w, in_h, 0.25, 0.22,
+            )?;
 
-        let mut matched_track = vec![false; tracks.len()];
-        let mut matched_det = vec![false; dets.len()];
+            let mut matched_track = vec![false; tracks.len()];
+            let mut matched_det = vec![false; dets.len()];
 
-        // Build candidate pairs sorted by velocity-predicted proximity + IoU + torso histogram
-        let mut candidates: Vec<(usize, usize, f32)> = Vec::new();
-        for (ti, tr) in tracks.iter().enumerate() {
-            if tr.missed_frames > 5 {
-                continue;
-            }
-            let pred_box = shift_box(&tr.last_box, tr.vx, tr.vy);
-            for (di, det) in dets.iter().enumerate() {
-                if tr.class_id != det.class_id {
+            // Build candidate pairs sorted by velocity-predicted proximity + IoU + torso histogram
+            let mut candidates: Vec<(usize, usize, f32)> = Vec::new();
+            for (ti, tr) in tracks.iter().enumerate() {
+                if tr.missed_frames > 5 {
                     continue;
                 }
-                let iou_val = box_iou_norm(&pred_box, det);
-                let dist = ((pred_box.foot_x - det.foot_x).powi(2)
-                    + (pred_box.foot_y - det.foot_y).powi(2))
-                .sqrt();
-                if iou_val > 0.10 || dist < 0.12 {
-                    let hist_sim = if det.class_id == 0 {
-                        let dh = extract_torso_hist64(rgb, frame_w, frame_h, det);
-                        bhattacharyya_sim(&tr.torso_hist, &dh)
-                    } else {
-                        0.5
-                    };
-                    let score = iou_val * 1.6 + (0.13 - dist).max(0.0) * 3.0 + hist_sim * 0.5;
-                    candidates.push((ti, di, score));
+                let pred_box = shift_box(&tr.last_box, tr.vx, tr.vy);
+                for (di, det) in dets.iter().enumerate() {
+                    if tr.class_id != det.class_id {
+                        continue;
+                    }
+                    let iou_val = box_iou_norm(&pred_box, det);
+                    let dist = ((pred_box.foot_x - det.foot_x).powi(2)
+                        + (pred_box.foot_y - det.foot_y).powi(2))
+                    .sqrt();
+                    if iou_val > 0.10 || dist < 0.12 {
+                        let hist_sim = if det.class_id == 0 {
+                            let dh = extract_torso_hist64(rgb, frame_w, frame_h, det);
+                            bhattacharyya_sim(&tr.torso_hist, &dh)
+                        } else {
+                            0.5
+                        };
+                        let score = iou_val * 1.6 + (0.13 - dist).max(0.0) * 3.0 + hist_sim * 0.5;
+                        candidates.push((ti, di, score));
+                    }
                 }
             }
-        }
-        candidates.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+            candidates.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
 
-        for (ti, di, _) in candidates {
-            if matched_track[ti] || matched_det[di] {
-                continue;
-            }
-            matched_track[ti] = true;
-            matched_det[di] = true;
-
-            let det = &dets[di];
-            let tr = &mut tracks[ti];
-            tr.vx = (0.5 * tr.vx + 0.5 * (det.foot_x - tr.last_box.foot_x)).clamp(-0.08, 0.08);
-            tr.vy = (0.5 * tr.vy + 0.5 * (det.foot_y - tr.last_box.foot_y)).clamp(-0.08, 0.08);
-            tr.last_box = det.clone();
-            tr.missed_frames = 0;
-            if det.class_id == 0 {
-                tr.torso_colors.push(sample_torso_rgb(rgb, frame_w, frame_h, det));
-                let dh = extract_torso_hist64(rgb, frame_w, frame_h, det);
-                for b in 0..64 {
-                    tr.torso_hist[b] = tr.torso_hist[b] * 0.88 + dh[b] * 0.12;
+            for (ti, di, _) in candidates {
+                if matched_track[ti] || matched_det[di] {
+                    continue;
                 }
-            }
-            tr.keyframes.push(TrackingKeyframeDto {
-                time: *t,
-                x: det.foot_x as f64,
-                y: det.foot_y as f64,
-            });
-        }
+                matched_track[ti] = true;
+                matched_det[di] = true;
 
-        for (ti, tr) in tracks.iter_mut().enumerate() {
-            if !matched_track[ti] {
-                tr.missed_frames += 1;
-                tr.vx *= 0.6;
-                tr.vy *= 0.6;
-            }
-        }
-
-        for (di, det) in dets.iter().enumerate() {
-            if matched_det[di] {
-                continue;
-            }
-            let mut torso_colors = Vec::new();
-            let torso_hist = if det.class_id == 0 {
-                torso_colors.push(sample_torso_rgb(rgb, frame_w, frame_h, det));
-                extract_torso_hist64(rgb, frame_w, frame_h, det)
-            } else {
-                [0.0f32; 64]
-            };
-            tracks.push(ActiveTrack {
-                id: next_id,
-                class_id: det.class_id,
-                last_box: det.clone(),
-                vx: 0.0,
-                vy: 0.0,
-                missed_frames: 0,
-                torso_colors,
-                torso_hist,
-                keyframes: vec![TrackingKeyframeDto {
+                let det = &dets[di];
+                let tr = &mut tracks[ti];
+                tr.vx = (0.5 * tr.vx + 0.5 * (det.foot_x - tr.last_box.foot_x)).clamp(-0.08, 0.08);
+                tr.vy = (0.5 * tr.vy + 0.5 * (det.foot_y - tr.last_box.foot_y)).clamp(-0.08, 0.08);
+                tr.last_box = det.clone();
+                tr.missed_frames = 0;
+                if det.class_id == 0 {
+                    tr.torso_colors
+                        .push(sample_torso_rgb(rgb, frame_w, frame_h, det));
+                    let dh = extract_torso_hist64(rgb, frame_w, frame_h, det);
+                    for b in 0..64 {
+                        tr.torso_hist[b] = tr.torso_hist[b] * 0.88 + dh[b] * 0.12;
+                    }
+                }
+                tr.keyframes.push(TrackingKeyframeDto {
                     time: *t,
                     x: det.foot_x as f64,
                     y: det.foot_y as f64,
-                }],
-            });
-            next_id += 1;
+                });
+            }
+
+            for (ti, tr) in tracks.iter_mut().enumerate() {
+                if !matched_track[ti] {
+                    tr.missed_frames += 1;
+                    tr.vx *= 0.6;
+                    tr.vy *= 0.6;
+                }
+            }
+
+            for (di, det) in dets.iter().enumerate() {
+                if matched_det[di] {
+                    continue;
+                }
+                let mut torso_colors = Vec::new();
+                let torso_hist = if det.class_id == 0 {
+                    torso_colors.push(sample_torso_rgb(rgb, frame_w, frame_h, det));
+                    extract_torso_hist64(rgb, frame_w, frame_h, det)
+                } else {
+                    [0.0f32; 64]
+                };
+                tracks.push(ActiveTrack {
+                    id: next_id,
+                    class_id: det.class_id,
+                    last_box: det.clone(),
+                    vx: 0.0,
+                    vy: 0.0,
+                    missed_frames: 0,
+                    torso_colors,
+                    torso_hist,
+                    keyframes: vec![TrackingKeyframeDto {
+                        time: *t,
+                        x: det.foot_x as f64,
+                        y: det.foot_y as f64,
+                    }],
+                });
+                next_id += 1;
+            }
         }
-    }
+        Ok(())
+    })?;
 
     let min_len = if frames.len() >= 4 { 3 } else { 1 };
     let mut player_tracks: Vec<ActiveTrack> = tracks
@@ -2173,7 +2447,11 @@ mod tests {
         for py in 20..115 {
             for px in 30..210 {
                 let idx = ((py * w + px) * 3) as usize;
-                let v = if ((px / 12) + (py / 12)) % 2 == 0 { 190 } else { 65 };
+                let v = if ((px / 12) + (py / 12)) % 2 == 0 {
+                    190
+                } else {
+                    65
+                };
                 rgb1[idx] = v;
                 rgb1[idx + 1] = v;
                 rgb1[idx + 2] = v;
@@ -2189,7 +2467,11 @@ mod tests {
             for px in 30..210 {
                 let dst_x = (px + 6).min(w - 1);
                 let idx = ((py * w + dst_x) * 3) as usize;
-                let v = if ((px / 12) + (py / 12)) % 2 == 0 { 190 } else { 65 };
+                let v = if ((px / 12) + (py / 12)) % 2 == 0 {
+                    190
+                } else {
+                    65
+                };
                 rgb2[idx] = v;
                 rgb2[idx + 1] = v;
                 rgb2[idx + 2] = v;
@@ -2197,7 +2479,11 @@ mod tests {
         }
         let g2 = downsample_luma_grid(&rgb2, w, h);
         let (dx, dy) = estimate_camera_pan(&g1, &g2);
-        assert!(dx > 0.015 && dx < 0.04, "Expected positive pan dx ~ 0.025, got {}", dx);
+        assert!(
+            dx > 0.015 && dx < 0.04,
+            "Expected positive pan dx ~ 0.025, got {}",
+            dx
+        );
         assert!(dy.abs() < 0.02, "Expected near-zero pan dy, got {}", dy);
     }
 
@@ -2207,9 +2493,13 @@ mod tests {
         let h = 135u32;
         let draw_player = |buf: &mut [u8], x0: i32, y0: i32, jersey: [u8; 3], shorts: [u8; 3]| {
             for py in y0..(y0 + 54) {
-                if py < 0 || py >= h as i32 { continue; }
+                if py < 0 || py >= h as i32 {
+                    continue;
+                }
                 for px in x0..(x0 + 22) {
-                    if px < 0 || px >= w as i32 { continue; }
+                    if px < 0 || px >= w as i32 {
+                        continue;
+                    }
                     let idx = ((py as u32 * w + px as u32) * 3) as usize;
                     let rel_y = py - y0;
                     let col = if rel_y < 10 {
@@ -2258,7 +2548,11 @@ mod tests {
             label: "Pemain".to_string(),
         };
         let (wrong_color, wrong_spatial) = score_appearance(&rgb2, w, h, &wrong_cand, &sig);
-        assert!(wrong_color < 0.45, "Opponent color sim should be rejected: {}", wrong_color);
+        assert!(
+            wrong_color < 0.45,
+            "Opponent color sim should be rejected: {}",
+            wrong_color
+        );
 
         let pred_box = shift_box(&target_box, 0.01, 0.0);
         let (found, score) = local_spatial_ncc_fallback_search(&rgb2, w, h, &pred_box, &sig, 0.08)
@@ -2272,18 +2566,126 @@ mod tests {
         let times = vec![0.0, 0.1, 0.2, 0.3, 0.4];
         let mut fwd = vec![None; 5];
         let mut bwd = vec![None; 5];
-        fwd[1] = Some(TrackingKeyframeDto { time: 0.1, x: 0.20, y: 0.30 });
-        bwd[1] = Some(TrackingKeyframeDto { time: 0.1, x: 0.24, y: 0.30 });
-        fwd[2] = Some(TrackingKeyframeDto { time: 0.2, x: 0.30, y: 0.40 });
-        bwd[2] = Some(TrackingKeyframeDto { time: 0.2, x: 0.34, y: 0.40 });
+        fwd[1] = Some(TrackingKeyframeDto {
+            time: 0.1,
+            x: 0.20,
+            y: 0.30,
+        });
+        bwd[1] = Some(TrackingKeyframeDto {
+            time: 0.1,
+            x: 0.24,
+            y: 0.30,
+        });
+        fwd[2] = Some(TrackingKeyframeDto {
+            time: 0.2,
+            x: 0.30,
+            y: 0.40,
+        });
+        bwd[2] = Some(TrackingKeyframeDto {
+            time: 0.2,
+            x: 0.34,
+            y: 0.40,
+        });
 
         let seg = blend_guided_segment((0, 0.10, 0.20), (4, 0.50, 0.60), &fwd, &bwd, &times);
         assert_eq!(seg.len(), 5);
         assert!((seg[0].x - 0.10).abs() < 1e-6 && (seg[0].y - 0.20).abs() < 1e-6);
         assert!((seg[4].x - 0.50).abs() < 1e-6 && (seg[4].y - 0.60).abs() < 1e-6);
         // At midpoint u=0.5, cosine blend is exact 50/50 average -> x=0.32
-        assert!((seg[2].x - 0.32).abs() < 1e-4, "Midpoint blend got {}", seg[2].x);
+        assert!(
+            (seg[2].x - 0.32).abs() < 1e-4,
+            "Midpoint blend got {}",
+            seg[2].x
+        );
         // At index 3 where both maps are None, linear fallback yields x=0.40
         assert!((seg[3].x - 0.40).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_yolox_s_sahi_on_real_futsal_screenshot() {
+        let img_path = Path::new(
+            r"C:\Users\Fahlefi Achmad Reza\.gemini\antigravity\brain\9b98d91f-4bae-4d5d-aa3b-0b8f2369424a\.user_uploaded\media_1795586744524_3c69cff1.jpg",
+        );
+        if !img_path.exists() {
+            println!("Skipping screenshot test: fixture not found");
+            return;
+        }
+
+        let ffmpeg_bin = ffmpeg::resolve_bin("ffmpeg");
+        let out = std::process::Command::new(&ffmpeg_bin)
+            .args([
+                "-v",
+                "error",
+                "-i",
+                &img_path.to_string_lossy(),
+                "-vf",
+                "scale=1920:1080",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "rgb24",
+                "-",
+            ])
+            .output()
+            .expect("gagal decode screenshot jpg dengan ffmpeg");
+        assert!(out.status.success(), "ffmpeg decode screenshot gagal");
+        let expected_bytes = (1920 * 1080 * 3) as usize;
+        assert!(
+            out.stdout.len() >= expected_bytes,
+            "ukuran buffer RGB tidak cukup: {}",
+            out.stdout.len()
+        );
+
+        let model_path = resolve_yolox_model_path(None).expect("model ONNX harus tersedia");
+        println!("Using ONNX model: {}", model_path.display());
+        let t0 = std::time::Instant::now();
+        let dets = with_yolox_session(&model_path, |session, in_w, in_h| {
+            detect_rgb_frame_sahi_tiled(
+                session,
+                &out.stdout[..expected_bytes],
+                1920,
+                1080,
+                in_w,
+                in_h,
+                0.22,
+                0.20,
+            )
+        })
+        .expect("SAHI detection pada screenshot gagal");
+        let elapsed_ms = t0.elapsed().as_millis();
+
+        let players: Vec<&DetectedObject> = dets.iter().filter(|d| d.class_id == 0).collect();
+        println!(
+            "SAHI 1080p detected {} players (total {} objs) in {} ms",
+            players.len(),
+            dets.len(),
+            elapsed_ms
+        );
+        for (idx, p) in players.iter().enumerate() {
+            println!(
+                "  #P{}: x={:.3} y={:.3} w={:.3} h={:.3} foot=({:.3},{:.3}) conf={:.3}",
+                idx + 1,
+                p.x,
+                p.y,
+                p.w,
+                p.h,
+                p.foot_x,
+                p.foot_y,
+                p.confidence
+            );
+        }
+
+        let red_box_hit = players
+            .iter()
+            .any(|p| p.foot_x >= 0.64 && p.foot_x <= 0.72 && p.foot_y >= 0.64 && p.foot_y <= 0.77);
+        assert!(
+            players.len() >= 10,
+            "Harap deteksi minimal 10 pemain di frame, dapat: {}",
+            players.len()
+        );
+        assert!(
+            red_box_hit,
+            "Pemain biru di kotak merah (foot_x 0.64..0.72, foot_y 0.64..0.77) harus terdeteksi!"
+        );
     }
 }

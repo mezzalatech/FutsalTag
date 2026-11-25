@@ -536,12 +536,13 @@ function drawSingleElement(
         ctx.stroke();
       }
 
-      if (el.label) {
+      const cleanLabel = el.label?.trim();
+      if (cleanLabel && !/^#P\d+$/i.test(cleanLabel)) {
         ctx.font = `bold ${Math.round(13 * scaleFactor)}px system-ui`;
         ctx.fillStyle = '#ffffff';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(el.label, cx, cy);
+        ctx.fillText(cleanLabel, cx, cy);
       }
       break;
     }

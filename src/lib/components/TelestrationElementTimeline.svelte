@@ -2,7 +2,7 @@
   import { onDestroy } from 'svelte';
   import type { DrawingElement, DrawingToolType, FreezeStop } from '$lib/types';
   import { isElementVisibleAtTime } from '$lib/tracking/playerTracker';
-  import { ChevronDown, ChevronUp, RotateCcw, Clock, Pause, Plus, X } from 'lucide-svelte';
+  import { ChevronDown, ChevronUp, RotateCcw, Clock, Pause, Plus, X, Pin } from 'lucide-svelte';
 
   interface Props {
     drawings: DrawingElement[];
@@ -77,6 +77,16 @@
     Math.max(0, Math.min(100, ((currentTime - clipStart) / clipDur) * 100))
   );
   let selectedEl = $derived(drawings.find((d) => d.id === selectedElementId) ?? null);
+  let targetFreezeStop = $derived.by(() => {
+    if (freezeStops.length === 0) return null;
+    if (selectedFreezeStopId) {
+      const sel = freezeStops.find((s) => s.id === selectedFreezeStopId);
+      if (sel) return sel;
+    }
+    return freezeStops.reduce((best, s) =>
+      Math.abs(s.time - currentTime) < Math.abs(best.time - currentTime) ? s : best
+    );
+  });
 
   function clampSpan(valStart: number, valEnd: number): [number, number] {
     let s = Math.max(clipStart, Math.min(clipEnd - MIN_SPAN, valStart));
@@ -236,6 +246,15 @@
     onChangeLifespan(selectedEl.id, curStart, Number(nextEnd.toFixed(3)));
   }
 
+  function applyOnlyAtFreezeStop() {
+    if (!selectedEl || !targetFreezeStop) return;
+    const rawStart = Math.max(clipStart, targetFreezeStop.time - 0.1);
+    const rawEnd = Math.min(clipEnd, targetFreezeStop.time + 0.1);
+    const [nextStart, nextEnd] = clampSpan(rawStart, rawEnd);
+    onChangeLifespan(selectedEl.id, nextStart, nextEnd);
+    onSeek(targetFreezeStop.time);
+  }
+
   onDestroy(() => {
     stopDragListeners();
   });
@@ -290,6 +309,18 @@
         title="Atur detik selesai elemen terpilih ke posisi playhead (Tombol O)"
       >
         Set Akhir (O)
+      </button>
+      <button
+        type="button"
+        class="tl-btn tl-btn-freeze-lock"
+        disabled={!selectedEl || !targetFreezeStop}
+        onclick={applyOnlyAtFreezeStop}
+        title={targetFreezeStop
+          ? `Kunci elemen terpilih agar tampil hanya di ${targetFreezeStop.label || 'jeda terdekat'} (${(targetFreezeStop.time - clipStart).toFixed(1)}s)`
+          : 'Tambahkan titik Jeda Freeze terlebih dahulu'}
+      >
+        <Pin size={11} />
+        <span>Hanya di Jeda Ini</span>
       </button>
       <button
         type="button"
@@ -658,6 +689,18 @@
 
   .tl-btn-freeze:hover {
     background: rgba(245, 158, 11, 0.16);
+    border-color: #f59e0b;
+    color: #ffffff;
+  }
+
+  .tl-btn-freeze-lock {
+    border-color: rgba(245, 158, 11, 0.5);
+    color: #fde68a;
+    background: rgba(245, 158, 11, 0.08);
+  }
+
+  .tl-btn-freeze-lock:hover:not(:disabled) {
+    background: rgba(245, 158, 11, 0.22);
     border-color: #f59e0b;
     color: #ffffff;
   }

@@ -1,8 +1,9 @@
 <script lang="ts">
   import { tick } from 'svelte';
   import { projectStore } from '$lib/stores/projectStore.svelte';
-  import type { Point2D, VideoTagEvent } from '$lib/types';
+  import type { FreezeStop, Point2D, VideoTagEvent } from '$lib/types';
   import { renderDrawingsToCanvas } from '$lib/export/telestrationRenderer';
+  import { getEffectiveFreezeStopsForTag } from '$lib/export/freezeStops';
   import TacticalBoard from '$lib/components/TacticalBoard.svelte';
   import {
     Play,
@@ -57,7 +58,11 @@
   let currentTime = $state(0);
   let isFreezing = $state(false);
   let freezeRemaining = $state(0);
-  let freezeTriggeredForSlide = $state(false);
+  let activeFreezeDuration = $state(3.0);
+  let activeFreezeLabel = $state('FREEZE ANALISIS');
+  let triggeredStopIds = new Set<string>();
+  let freezeStartedAtMs = 0;
+  let isReplayPass = $state(false);
   let freezeTimer: any = null;
   let activeVoiceAudio: HTMLAudioElement | null = null;
   let voicePlayedForSlide = false;
@@ -158,25 +163,42 @@
       if (currentSlide?.kind === 'clip' && videoEl && !videoEl.paused) {
         currentTime = videoEl.currentTime;
         const tag = currentSlide.tag;
-        const freezeAt = tag.freezeTimestamp ?? (tag.startTime + tag.endTime) / 2;
 
         if (
           autoFreezeEnabled &&
-          (tag.pauseDuration ?? 3.0) >= 0.2 &&
-          !freezeTriggeredForSlide &&
           !isFreezing &&
+          !isReplayPass &&
           tag.drawings &&
-          tag.drawings.length > 0 &&
-          currentTime >= freezeAt &&
-          currentTime < freezeAt + 0.35
+          tag.drawings.length > 0
         ) {
-          triggerSlideFreeze(tag);
-        } else if (currentTime >= tag.endTime) {
-          if (currentSlideIdx + 1 < slides.length) {
-            goToSlide(currentSlideIdx + 1);
+          const stops = getEffectiveFreezeStopsForTag(tag);
+          const hit = stops.find(
+            (s) =>
+              !triggeredStopIds.has(s.id) &&
+              currentTime >= s.time &&
+              currentTime < s.time + 0.35
+          );
+          if (hit) {
+            triggeredStopIds.add(hit.id);
+            videoEl.currentTime = hit.time;
+            currentTime = hit.time;
+            triggerSlideFreeze(tag, hit);
+          }
+        }
+
+        if (!isFreezing && currentTime >= tag.endTime) {
+          if (tag.appendCleanReplay && !isReplayPass) {
+            isReplayPass = true;
+            videoEl.currentTime = tag.startTime;
+            currentTime = tag.startTime;
           } else {
-            videoEl.pause();
-            isPlaying = false;
+            isReplayPass = false;
+            if (currentSlideIdx + 1 < slides.length) {
+              goToSlide(currentSlideIdx + 1);
+            } else {
+              videoEl.pause();
+              isPlaying = false;
+            }
           }
         }
       }
@@ -209,6 +231,8 @@
       videoEl.pause();
     }
     isFreezing = false;
+    isReplayPass = false;
+    freezeStartedAtMs = 0;
     isPlaying = false;
   }
 
@@ -236,12 +260,23 @@
     ctx.clearRect(0, 0, telCanvasEl.width, telCanvasEl.height);
     ctx.scale(dpr, dpr);
 
-    if (currentSlide?.kind === 'clip' && currentSlide.tag.drawings?.length) {
+    if (!isReplayPass && currentSlide?.kind === 'clip' && currentSlide.tag.drawings?.length) {
       renderDrawingsToCanvas(ctx, currentSlide.tag.drawings, w, h, currentTime, {
         videoEl,
         chromaConfig: projectStore.chromaFloorConfig,
         clipStartTime: currentSlide.tag.startTime,
-        animElapsedSec: isFreezing ? 1.0 : undefined,
+        clipEndTime: currentSlide.tag.endTime,
+        subtitleText: currentSlide.tag.voiceoverTranscript,
+        subtitleCues: currentSlide.tag.subtitleCues,
+        burnSubtitle: currentSlide.tag.burnSubtitle,
+        animElapsedSec: isFreezing
+          ? Math.max(
+              0.05,
+              freezeStartedAtMs > 0
+                ? (performance.now() - freezeStartedAtMs) / 1000
+                : activeFreezeDuration - freezeRemaining
+            )
+          : undefined,
       });
     }
     ctx.restore();
@@ -279,7 +314,9 @@
 
   async function loadCurrentSlideMedia(autoPlay: boolean) {
     cleanupMediaAndTimers();
-    freezeTriggeredForSlide = false;
+    triggeredStopIds.clear();
+    isReplayPass = false;
+    freezeStartedAtMs = 0;
     voicePlayedForSlide = false;
     await tick();
     syncCanvases();
@@ -293,7 +330,11 @@
           isPlaying = true;
         }
       }
-      if (voiceoverEnabled && currentSlide.tag.voiceoverAudioBase64 && !autoFreezeEnabled) {
+      if (
+        voiceoverEnabled &&
+        currentSlide.tag.voiceoverAudioBase64 &&
+        (!autoFreezeEnabled || getEffectiveFreezeStopsForTag(currentSlide.tag).length === 0)
+      ) {
         playSlideVoiceover(currentSlide.tag);
       }
     }
@@ -310,13 +351,15 @@
     }
   }
 
-  function triggerSlideFreeze(tag: VideoTagEvent) {
+  function triggerSlideFreeze(tag: VideoTagEvent, stop: FreezeStop) {
     if (!videoEl) return;
     videoEl.pause();
     isPlaying = false;
     isFreezing = true;
-    freezeTriggeredForSlide = true;
-    freezeRemaining = tag.pauseDuration ?? 3.0;
+    activeFreezeDuration = Math.max(0.2, stop.duration);
+    activeFreezeLabel = stop.label || 'FREEZE ANALISIS';
+    freezeRemaining = activeFreezeDuration;
+    freezeStartedAtMs = performance.now();
     playSlideVoiceover(tag);
 
     if (freezeTimer) clearInterval(freezeTimer);
@@ -334,6 +377,7 @@
       freezeTimer = null;
     }
     isFreezing = false;
+    freezeStartedAtMs = 0;
     if (videoEl && currentSlide?.kind === 'clip') {
       videoEl.play().catch(() => {});
       isPlaying = true;
@@ -572,8 +616,13 @@
         {#if isFreezing}
           <div class="freeze-pill-hud">
             <span class="fp-dot"></span>
-            <span>FREEZE ANALISIS · {Math.max(0, freezeRemaining).toFixed(1)}s</span>
+            <span>{activeFreezeLabel.toUpperCase()} · {Math.max(0, freezeRemaining).toFixed(1)}s</span>
             <button type="button" class="fp-resume" onclick={resumeFromFreeze}>Lanjut</button>
+          </div>
+        {:else if isReplayPass}
+          <div class="freeze-pill-hud replay-pill-hud">
+            <span class="fp-dot replay-dot"></span>
+            <span>REPLAY BERSIH (1x)</span>
           </div>
         {/if}
       {/if}
@@ -995,6 +1044,15 @@
     height: 8px;
     border-radius: 50%;
     background: #ef4444;
+  }
+
+  .replay-pill-hud {
+    border-color: #10b981;
+    color: #34d399;
+  }
+
+  .fp-dot.replay-dot {
+    background: #10b981;
   }
 
   .fp-resume {

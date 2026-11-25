@@ -33,6 +33,11 @@
   } from 'lucide-svelte';
   import { renderDrawingsToDataUrl } from '$lib/export/telestrationRenderer';
   import {
+    getEffectiveFreezeStopsForTag,
+    type FreezeStopExportPayload,
+  } from '$lib/export/freezeStops';
+  import { hasAnimatedTelestration } from '$lib/tracking/playerTracker';
+  import {
     exportSportsCodeXml,
     importSportsCodeXml,
     exportNativeXlsxPortable,
@@ -141,32 +146,124 @@
         const items = currentPlaylist.items;
 
         const renderItemToPath = async (item: ActionPlaylistItem, outPath: string) => {
-          const tag = item.tagEvent;
-          const hasDrawings = includeDrawings && tag.drawings && tag.drawings.length > 0;
+          const tag = projectStore.tags.find((t) => t.id === item.tagEvent.id) ?? item.tagEvent;
+          const drawings = includeDrawings ? tag.drawings || [] : [];
+          const hasDrawings = drawings.length > 0;
           const hasVoice = Boolean(tag.voiceoverAudioBase64);
-          const freezeSec = tag.freezeTimestamp ?? (tag.startTime + tag.endTime) / 2;
+          const hasSubtitle =
+            includeDrawings &&
+            Boolean(
+              tag.burnSubtitle &&
+                (tag.voiceoverTranscript?.trim() || (tag.subtitleCues?.length ?? 0) > 0)
+            );
+          const effectiveStops = includeDrawings
+            ? getEffectiveFreezeStopsForTag(tag, item.pauseDuration)
+            : [];
+          const appendCleanReplay = Boolean(tag.appendCleanReplay);
+          const clipDur = Math.max(0.2, tag.endTime - tag.startTime);
+          const freezeSec =
+            effectiveStops[0]?.time ??
+            tag.freezeTimestamp ??
+            (tag.startTime + tag.endTime) / 2;
+          const cameraZoomEl = drawings.find((d) => d.cameraZoomTarget);
+          const cameraZoomTuple: [number, number, number] | null = cameraZoomEl?.cameraZoomTarget
+            ? [
+                cameraZoomEl.cameraZoomTarget.x,
+                cameraZoomEl.cameraZoomTarget.y,
+                cameraZoomEl.cameraZoomTarget.scale,
+              ]
+            : null;
 
-          if (hasDrawings || hasVoice) {
-            const overlayBase64 = hasDrawings
-              ? renderDrawingsToDataUrl(tag.drawings || [], renderW, renderH, freezeSec)
-              : null;
+          const freezeStopsPayload: FreezeStopExportPayload[] = effectiveStops.map((st) => ({
+            time: st.time,
+            duration: st.duration,
+            overlay_base64:
+              hasDrawings || hasSubtitle
+                ? renderDrawingsToDataUrl(drawings, renderW, renderH, st.time, {
+                    chromaConfig: projectStore.chromaFloorConfig,
+                    clipStartTime: tag.startTime,
+                    clipEndTime: tag.endTime,
+                    subtitleText: tag.voiceoverTranscript,
+                    subtitleCues: tag.subtitleCues,
+                    burnSubtitle: tag.burnSubtitle,
+                    animElapsedSec: 1.0,
+                  }) || null
+                : null,
+          }));
+
+          const isAnimated =
+            hasDrawings && hasAnimatedTelestration(drawings, tag.startTime, tag.endTime);
+
+          if (isAnimated) {
+            const tempDir = await invoke<string>('get_temp_dir');
+            const seqSep = tempDir.endsWith('/') || tempDir.endsWith('\\') ? '' : '/';
+            const seqDir = `${tempDir}${seqSep}futsaltag_pl_anim_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+            const overlayFps = 12;
+            const totalFrames = Math.max(2, Math.min(240, Math.ceil(clipDur * overlayFps)));
+            try {
+              for (let fi = 0; fi < totalFrames; fi++) {
+                const t = Math.min(tag.endTime, tag.startTime + fi / overlayFps);
+                const pngBase64 = renderDrawingsToDataUrl(drawings, renderW, renderH, t, {
+                  chromaConfig: projectStore.chromaFloorConfig,
+                  clipStartTime: tag.startTime,
+                  clipEndTime: tag.endTime,
+                  subtitleText: tag.voiceoverTranscript,
+                  subtitleCues: tag.subtitleCues,
+                  burnSubtitle: tag.burnSubtitle,
+                });
+                await invoke<string>('save_overlay_frame_png', {
+                  dirPath: seqDir,
+                  frameIndex: fi + 1,
+                  pngBase64,
+                });
+              }
+
+              await invoke<string>('burn_animated_telestration_clip_ffmpeg', {
+                inputPath: projectStore.videoFilePath,
+                outputPath: outPath,
+                startSec: tag.startTime,
+                durationSec: clipDur,
+                overlayFramesDir: seqDir,
+                overlayFps,
+                freezeSec,
+                pauseDuration: effectiveStops[0]?.duration ?? 0,
+                freezeOverlayBase64: freezeStopsPayload[0]?.overlay_base64 ?? null,
+                cameraZoom: cameraZoomTuple,
+                voiceoverBase64: tag.voiceoverAudioBase64 || null,
+                targetHeight,
+                freezeStops: freezeStopsPayload.length > 0 ? freezeStopsPayload : null,
+                appendCleanReplay,
+              });
+            } finally {
+              await invoke('cleanup_temp_dir', { dirPath: seqDir }).catch(() => {});
+            }
+          } else if (
+            hasDrawings ||
+            hasVoice ||
+            hasSubtitle ||
+            freezeStopsPayload.length > 0 ||
+            appendCleanReplay
+          ) {
             await invoke<string>('burn_telestration_clip_ffmpeg', {
               inputPath: projectStore.videoFilePath,
               outputPath: outPath,
               startSec: tag.startTime,
-              durationSec: tag.endTime - tag.startTime,
+              durationSec: clipDur,
               freezeSec,
-              pauseDuration: tag.pauseDuration ?? item.pauseDuration ?? 3.0,
-              overlayBase64,
+              pauseDuration: effectiveStops[0]?.duration ?? 0,
+              overlayBase64: freezeStopsPayload[0]?.overlay_base64 ?? null,
               voiceoverBase64: tag.voiceoverAudioBase64 || null,
               targetHeight,
+              cameraZoom: cameraZoomTuple,
+              freezeStops: freezeStopsPayload.length > 0 ? freezeStopsPayload : null,
+              appendCleanReplay,
             });
           } else {
             await invoke<string>('render_video_clip_ffmpeg', {
               inputPath: projectStore.videoFilePath,
               outputPath: outPath,
               startSec: tag.startTime,
-              durationSec: tag.endTime - tag.startTime,
+              durationSec: clipDur,
               fastCopy: exportMode !== 'merged_video',
               targetHeight,
             });
@@ -554,7 +651,14 @@
                     {#if item.tagEvent.playerLabel}
                       <span class="meta-badge">{item.tagEvent.playerLabel}</span>
                     {/if}
-                    <span class="meta-freeze">Jeda Freeze: {item.pauseDuration.toFixed(1)}s</span>
+                    <span class="meta-freeze">
+                      {#if (item.tagEvent.freezeStops?.length ?? 0) > 1}
+                        {item.tagEvent.freezeStops?.length} Jeda
+                      {:else}
+                        Jeda Freeze: {(item.tagEvent.freezeStops?.[0]?.duration ?? item.tagEvent.pauseDuration ?? item.pauseDuration).toFixed(1)}s
+                      {/if}
+                      {item.tagEvent.appendCleanReplay ? ' + Replay' : ''}
+                    </span>
                   </div>
                 </div>
 

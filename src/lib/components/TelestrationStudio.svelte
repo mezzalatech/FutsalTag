@@ -195,6 +195,7 @@
   let activeFreezeDuration = $state(3.0);
   let activeFreezeLabel = $state("ANALISIS FREEZE-FRAME");
   let triggeredStopIds = new Set<string>();
+  let freezeStartedAtMs = 0;
   let freezeInterval: any = null;
   let rafId: number | null = null;
 
@@ -677,6 +678,8 @@
     activeFreezeDuration = freezeDur;
     activeFreezeLabel = label || "ANALISIS FREEZE-FRAME";
     freezeRemaining = freezeDur;
+    freezeStartedAtMs =
+      typeof performance !== "undefined" ? performance.now() : Date.now();
 
     if (freezeInterval) clearInterval(freezeInterval);
     freezeInterval = setInterval(() => {
@@ -685,6 +688,7 @@
         clearInterval(freezeInterval);
         freezeInterval = null;
         isFreezeActive = false;
+        freezeStartedAtMs = 0;
         if (videoEl && isPreviewing) {
           videoEl.play();
           isPlaying = true;
@@ -699,6 +703,7 @@
       freezeInterval = null;
     }
     isFreezeActive = false;
+    freezeStartedAtMs = 0;
     if (videoEl) {
       videoEl.play();
       isPlaying = true;
@@ -797,7 +802,18 @@
           : null,
       clipStartTime: activeClip ? activeClip.startTime : 0,
       clipEndTime: activeClip ? activeClip.endTime : duration,
-      animElapsedSec: isFreezeActive ? 1.0 : undefined,
+      animElapsedSec: isFreezeActive
+        ? Math.max(
+            0.05,
+            freezeStartedAtMs > 0
+              ? ((typeof performance !== "undefined"
+                  ? performance.now()
+                  : Date.now()) -
+                  freezeStartedAtMs) /
+                  1000
+              : activeFreezeDuration - freezeRemaining,
+          )
+        : undefined,
       selectedElementId,
       activeTool,
       subtitleText: voiceoverTranscript,

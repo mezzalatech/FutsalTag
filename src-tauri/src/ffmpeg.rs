@@ -834,6 +834,8 @@ pub fn export_whatsapp_clip_ffmpeg(
     pause_duration: Option<f64>,
     overlay_base64: Option<String>,
     voiceover_base64: Option<String>,
+    freeze_stops: Option<Vec<FreezeStopSpec>>,
+    append_clean_replay: Option<bool>,
 ) -> Result<String, String> {
     if !Path::new(&input_path).exists() {
         return Err(format!("File video input tidak ditemukan: {}", input_path));
@@ -848,8 +850,10 @@ pub fn export_whatsapp_clip_ffmpeg(
         .as_ref()
         .map(|s| !s.trim().is_empty())
         .unwrap_or(false);
+    let has_stops = freeze_stops.as_ref().map(|v| !v.is_empty()).unwrap_or(false);
+    let wants_replay = append_clean_replay.unwrap_or(false);
 
-    if has_overlay || has_vo {
+    if has_overlay || has_vo || has_stops || wants_replay {
         let f_sec = freeze_sec.unwrap_or(start_sec + duration_sec / 2.0);
         let p_dur = pause_duration.unwrap_or(if has_overlay { 3.0 } else { 0.0 });
         return burn_telestration_clip_ffmpeg(
@@ -863,8 +867,8 @@ pub fn export_whatsapp_clip_ffmpeg(
             voiceover_base64,
             Some(720),
             None,
-            None,
-            None,
+            freeze_stops,
+            append_clean_replay,
         );
     }
 
@@ -1529,6 +1533,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
         )
         .expect("export_whatsapp_clip_ffmpeg (plain) failed");
         let wa_plain_info = probe_video_info(&wa_plain_mp4.to_string_lossy()).expect("probe wa plain failed");
@@ -1546,6 +1552,8 @@ mod tests {
             Some(1.0),
             Some(tiny_png_b64.to_string()),
             Some(vo_b64),
+            None,
+            None,
         )
         .expect("export_whatsapp_clip_ffmpeg (rich) failed");
         let wa_rich_info = probe_video_info(&wa_rich_mp4.to_string_lossy()).expect("probe wa rich failed");
@@ -1576,5 +1584,112 @@ mod tests {
 
         let none = normalize_freeze_stops(None, 15.0, 0.0, None, 10.0, 20.0);
         assert!(none.is_empty());
+    }
+
+    #[test]
+    fn test_multi_freeze_stops_with_clean_replay_e2e() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let tmp = std::env::temp_dir();
+        let src_mp4 = tmp.join(format!("futsaltag_mfs_src_{}.mp4", now));
+        let out_tel_mp4 = tmp.join(format!("futsaltag_mfs_tel_{}.mp4", now));
+        let out_wa_mp4 = tmp.join(format!("futsaltag_mfs_wa_{}.mp4", now));
+        let _cleanup = TempCleanup(vec![
+            src_mp4.clone(),
+            out_tel_mp4.clone(),
+            out_wa_mp4.clone(),
+        ]);
+
+        let gen_args = vec![
+            "-y".into(),
+            "-f".into(),
+            "lavfi".into(),
+            "-i".into(),
+            "testsrc2=size=1280x720:rate=30:duration=3".into(),
+            "-f".into(),
+            "lavfi".into(),
+            "-i".into(),
+            "sine=frequency=440:sample_rate=44100:duration=3".into(),
+            "-c:v".into(),
+            "libx264".into(),
+            "-preset".into(),
+            "ultrafast".into(),
+            "-pix_fmt".into(),
+            "yuv420p".into(),
+            "-c:a".into(),
+            "aac".into(),
+            src_mp4.to_string_lossy().to_string(),
+        ];
+        run_ffmpeg(&gen_args).expect("failed generating 3s synthetic test mp4");
+
+        let tiny_png_b64 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+        let stops = vec![
+            FreezeStopSpec {
+                time: 0.8,
+                duration: 1.0,
+                overlay_base64: Some(tiny_png_b64.to_string()),
+            },
+            FreezeStopSpec {
+                time: 2.0,
+                duration: 1.5,
+                overlay_base64: Some(tiny_png_b64.to_string()),
+            },
+        ];
+        let clip_dur = 3.0;
+        let total_freeze = 1.0 + 1.5;
+
+        burn_telestration_clip_ffmpeg(
+            src_mp4.to_string_lossy().to_string(),
+            out_tel_mp4.to_string_lossy().to_string(),
+            0.0,
+            clip_dur,
+            0.8,
+            1.0,
+            Some(tiny_png_b64.to_string()),
+            None,
+            Some(720),
+            None,
+            Some(stops.clone()),
+            Some(true),
+        )
+        .expect("burn_telestration_clip_ffmpeg multi-stop + clean replay failed");
+
+        let tel_info =
+            probe_video_info(&out_tel_mp4.to_string_lossy()).expect("probe mfs tel failed");
+        assert_eq!(tel_info.width, 1280);
+        assert_eq!(tel_info.height, 720);
+        assert!(tel_info.has_audio);
+        assert!(
+            tel_info.duration >= clip_dur * 2.0 + total_freeze - 0.15,
+            "expected multi-freeze + clean replay duration >= {:.2}s, got {:.3}s",
+            clip_dur * 2.0 + total_freeze - 0.15,
+            tel_info.duration
+        );
+
+        export_whatsapp_clip_ffmpeg(
+            src_mp4.to_string_lossy().to_string(),
+            out_wa_mp4.to_string_lossy().to_string(),
+            0.0,
+            clip_dur,
+            Some(0.8),
+            Some(1.0),
+            Some(tiny_png_b64.to_string()),
+            None,
+            Some(stops),
+            Some(true),
+        )
+        .expect("export_whatsapp_clip_ffmpeg multi-stop + clean replay failed");
+
+        let wa_info = probe_video_info(&out_wa_mp4.to_string_lossy()).expect("probe mfs wa failed");
+        assert_eq!(wa_info.height, 720);
+        assert!(wa_info.has_audio);
+        assert!(
+            wa_info.duration >= clip_dur * 2.0 + total_freeze - 0.15,
+            "expected WhatsApp multi-freeze + clean replay duration >= {:.2}s, got {:.3}s",
+            clip_dur * 2.0 + total_freeze - 0.15,
+            wa_info.duration
+        );
     }
 }

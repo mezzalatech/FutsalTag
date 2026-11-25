@@ -3,6 +3,10 @@
   import { projectStore, isTauriDesktop } from '$lib/stores/projectStore.svelte';
   import { renderDrawingsToDataUrl } from '$lib/export/telestrationRenderer';
   import {
+    getEffectiveFreezeStopsForTag,
+    type FreezeStopExportPayload,
+  } from '$lib/export/freezeStops';
+  import {
     Share2,
     MessageCircle,
     X,
@@ -40,7 +44,17 @@
   );
 
   let totalDurationSec = $derived(
-    playerClips.reduce((acc, c) => acc + (c.endTime - c.startTime), 0)
+    playerClips.reduce((acc, c) => {
+      const baseDur = Math.max(0.2, c.endTime - c.startTime);
+      if (!includeTelestrationAndVoice) return acc + baseDur;
+      const stops = getEffectiveFreezeStopsForTag(c);
+      const freezeDur =
+        (c.drawings?.length ?? 0) > 0 || c.burnSubtitle || (c.freezeStops?.length ?? 0) > 0
+          ? stops.reduce((sAcc, st) => sAcc + st.duration, 0)
+          : 0;
+      const replayMul = c.appendCleanReplay ? 2 : 1;
+      return acc + baseDur * replayMul + freezeDur;
+    }, 0)
   );
 
   // Approximate file size at 720p ~1.8Mbps
@@ -88,11 +102,41 @@
         const clip = playerClips[i];
         const tempPath = `${tempDir}${sep}futsaltag_wa_clip_${i}_${Date.now()}.mp4`;
 
-        const hasDrawings = includeTelestrationAndVoice && clip.drawings && clip.drawings.length > 0;
-        const freezeSec = clip.freezeTimestamp ?? (clip.startTime + clip.endTime) / 2;
-        const overlayBase64 = hasDrawings
-          ? renderDrawingsToDataUrl(clip.drawings || [], 1280, 720, freezeSec)
-          : null;
+        const drawings = includeTelestrationAndVoice ? clip.drawings || [] : [];
+        const hasDrawings = drawings.length > 0;
+        const hasSubtitle =
+          includeTelestrationAndVoice &&
+          Boolean(
+            clip.burnSubtitle &&
+              (clip.voiceoverTranscript?.trim() || (clip.subtitleCues?.length ?? 0) > 0)
+          );
+        const effectiveStops = includeTelestrationAndVoice
+          ? getEffectiveFreezeStopsForTag(clip)
+          : [];
+        const appendCleanReplay =
+          includeTelestrationAndVoice && Boolean(clip.appendCleanReplay);
+        const freezeSec =
+          effectiveStops[0]?.time ??
+          clip.freezeTimestamp ??
+          (clip.startTime + clip.endTime) / 2;
+
+        const freezeStopsPayload: FreezeStopExportPayload[] = effectiveStops.map((st) => ({
+          time: st.time,
+          duration: st.duration,
+          overlay_base64:
+            hasDrawings || hasSubtitle
+              ? renderDrawingsToDataUrl(drawings, 1280, 720, st.time, {
+                  chromaConfig: projectStore.chromaFloorConfig,
+                  clipStartTime: clip.startTime,
+                  clipEndTime: clip.endTime,
+                  subtitleText: clip.voiceoverTranscript,
+                  subtitleCues: clip.subtitleCues,
+                  burnSubtitle: clip.burnSubtitle,
+                  animElapsedSec: 1.0,
+                }) || null
+              : null,
+        }));
+
         const voiceoverBase64 = includeTelestrationAndVoice ? (clip.voiceoverAudioBase64 || null) : null;
 
         await invoke<string>('export_whatsapp_clip_ffmpeg', {
@@ -101,9 +145,11 @@
           startSec: clip.startTime,
           durationSec: clip.endTime - clip.startTime,
           freezeSec,
-          pauseDuration: clip.pauseDuration ?? 3.0,
-          overlayBase64,
+          pauseDuration: effectiveStops[0]?.duration ?? clip.pauseDuration ?? 3.0,
+          overlayBase64: freezeStopsPayload[0]?.overlay_base64 ?? null,
           voiceoverBase64,
+          freezeStops: freezeStopsPayload.length > 0 ? freezeStopsPayload : null,
+          appendCleanReplay,
         });
 
         renderedClips.push(tempPath);

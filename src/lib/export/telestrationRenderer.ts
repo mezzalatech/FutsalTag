@@ -279,7 +279,7 @@ function hexToRgba(hex: string, alpha: number): string {
 
 function resolveActiveSubtitleText(options: RenderExportOptions, currentTime: number): string | null {
   if (!options.burnSubtitle) return null;
-  const isStaticFreeze = options.animElapsedSec !== undefined && options.animElapsedSec >= 1;
+  const isStaticFreeze = options.animElapsedSec !== undefined;
   if (!isStaticFreeze && options.subtitleCues && options.subtitleCues.length > 0) {
     const relT = Math.max(0, currentTime - (options.clipStartTime ?? 0));
     const cue = options.subtitleCues.find((c) => relT >= c.start - 0.05 && relT <= c.end + 0.15);
@@ -495,7 +495,7 @@ function drawSingleElement(
 
   ctx.save();
   const lifeAlpha =
-    options.animElapsedSec !== undefined && options.animElapsedSec >= 1
+    options.animElapsedSec !== undefined
       ? 1
       : getElementLifespanOpacity(
           el,

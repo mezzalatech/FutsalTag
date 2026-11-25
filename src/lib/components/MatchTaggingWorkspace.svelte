@@ -3,6 +3,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { isTauriDesktop, projectStore } from '$lib/stores/projectStore.svelte';
   import { exportMomenBoardJson } from '$lib/tagging/momenBoards';
+  import { renderDrawingsToDataUrl } from '$lib/export/telestrationRenderer';
   import type {
     VideoTagEvent,
     TagCategory,
@@ -15,6 +16,7 @@
   import MomenTaggingBoard from '$lib/components/MomenTaggingBoard.svelte';
   import LinimasaTimeline from '$lib/components/LinimasaTimeline.svelte';
   import VisualCodingBoard from '$lib/components/VisualCodingBoard.svelte';
+  import MatchMinutesView from '$lib/components/MatchMinutesView.svelte';
   import {
     Play,
     Pause,
@@ -47,6 +49,11 @@
     ChevronUp,
     Check,
     Link2,
+    Flag,
+    Star,
+    ThumbsUp,
+    ThumbsDown,
+    Timer,
   } from 'lucide-svelte';
 
   // --- REFS & STATE ---
@@ -56,8 +63,11 @@
   let duration = $state(120);
   let playbackRate = $state(1.0);
 
-  // Workspace subtab: 'tagging' | 'coding_board' | 'lineup'
-  let workspaceSubTab = $state<'tagging' | 'coding_board' | 'lineup'>('tagging');
+  // Workspace subtab: 'tagging' | 'coding_board' | 'minutes' | 'lineup'
+  let workspaceSubTab = $state<'tagging' | 'coding_board' | 'minutes' | 'lineup'>('tagging');
+  let showKickoffMenu = $state<boolean>(false);
+  let microFilter = $state<'all' | 'home' | 'away' | 'fav' | 'good' | 'eval'>('all');
+  let exportingQuickClipId = $state<string | null>(null);
 
   // 2-Tier Momen Layout State
   let showSpatialCanvas = $state<boolean>(true);
@@ -285,6 +295,110 @@
     notifyUser(`Klip dipangkas: ${formatTime(newStart)} - ${formatTime(newEnd)}`);
   }
 
+  function handleMoveClip(tagId: string, newStart: number, newEnd: number) {
+    const target = projectStore.tags.find((t) => t.id === tagId);
+    if (!target) return;
+    projectStore.updateTag({
+      ...target,
+      startTime: newStart,
+      endTime: newEnd,
+    });
+    notifyUser(`Klip digeser ke ${formatTime(newStart)} - ${formatTime(newEnd)}`);
+  }
+
+  function handleReassignClipCategory(
+    tagId: string,
+    targetCategory: string,
+    targetColor: string,
+    targetButtonId?: string
+  ) {
+    const target = projectStore.tags.find((t) => t.id === tagId);
+    if (!target || target.category === targetCategory) return;
+    const oldCat = target.category;
+    const nextTitle = target.title.startsWith(oldCat)
+      ? targetCategory + target.title.slice(oldCat.length)
+      : `${targetCategory} - ${target.playerLabel || target.title}`;
+    projectStore.updateTag({
+      ...target,
+      title: nextTitle,
+      category: targetCategory as TagCategory,
+      color: targetColor,
+      boardButtonId: targetButtonId || target.boardButtonId,
+    });
+    notifyUser(`Kategori dipindah ke "${targetCategory}"`);
+  }
+
+  function toggleClipFavorite(tag: VideoTagEvent) {
+    projectStore.updateTag({
+      ...tag,
+      favorite: !tag.favorite,
+    });
+  }
+
+  async function handleQuickExportSingleClip(tag: VideoTagEvent) {
+    if (exportingQuickClipId) return;
+    if (!isTauriDesktop()) {
+      notifyUser('Quick Export MP4 memerlukan aplikasi desktop Tauri.');
+      return;
+    }
+    const path = projectStore.videoFilePath;
+    if (!path || (!path.startsWith('/') && !/^[A-Za-z]:[\\/]/.test(path))) {
+      notifyUser('Buka file video asli di Hub Proyek sebelum ekspor MP4.');
+      return;
+    }
+
+    try {
+      const { save } = await import('@tauri-apps/plugin-dialog');
+      const cleanCat = tag.category.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const outPath = await save({
+        title: `Quick Export MP4 — ${tag.category}`,
+        defaultPath: `FutsalTag_${cleanCat}_${Math.round(tag.startTime)}s.mp4`,
+        filters: [{ name: 'MP4 Video', extensions: ['mp4'] }],
+      });
+      if (!outPath) return;
+
+      exportingQuickClipId = tag.id;
+      notifyUser(`Mengekspor MP4 "${tag.category}"...`);
+
+      const hasDrawings = Boolean(tag.drawings && tag.drawings.length > 0);
+      const hasVoice = Boolean(tag.voiceoverAudioBase64);
+      if (hasDrawings || hasVoice) {
+        const freezeSec = tag.freezeTimestamp ?? (tag.startTime + tag.endTime) / 2;
+        const overlayBase64 = hasDrawings
+          ? renderDrawingsToDataUrl(tag.drawings || [], 1280, 720, freezeSec, {
+              chromaConfig: projectStore.chromaFloorConfig,
+              clipStartTime: tag.startTime,
+              animElapsedSec: 1.0,
+            })
+          : null;
+        await invoke<string>('burn_telestration_clip_ffmpeg', {
+          inputPath: path,
+          outputPath: outPath,
+          startSec: tag.startTime,
+          durationSec: Math.max(0.4, tag.endTime - tag.startTime),
+          freezeSec,
+          pauseDuration: tag.pauseDuration || 3.0,
+          overlayBase64,
+          voiceoverBase64: tag.voiceoverAudioBase64 || null,
+          targetHeight: 720,
+        });
+      } else {
+        await invoke<string>('render_video_clip_ffmpeg', {
+          inputPath: path,
+          outputPath: outPath,
+          startSec: tag.startTime,
+          durationSec: Math.max(0.4, tag.endTime - tag.startTime),
+          fastCopy: true,
+        });
+      }
+      notifyUser(`Klip MP4 berhasil disimpan!`);
+    } catch (err: any) {
+      notifyUser(`Quick Export gagal: ${err?.message || err}`);
+    } finally {
+      exportingQuickClipId = null;
+    }
+  }
+
   async function handleHeaderImportBoard() {
     if (isTauriDesktop()) {
       try {
@@ -395,13 +509,18 @@
         e.preventDefault();
         togglePlay();
       } else if (e.key === 'Escape') {
-        if (Object.keys(activeContinuousTags).length > 0) {
+        if (showKickoffMenu) {
+          showKickoffMenu = false;
+        } else if (Object.keys(activeContinuousTags).length > 0) {
           e.preventDefault();
           stopAllContinuousTags();
         }
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
         e.preventDefault();
         handleUndoLastTag();
+      } else if (e.altKey && e.key.toLowerCase() === 'u') {
+        e.preventDefault();
+        createClipFromInOut();
       } else if (e.key === '/') {
         e.preventDefault();
         document.getElementById('quick-tag-search-input')?.focus();
@@ -446,6 +565,7 @@
   function handleTimeUpdate() {
     if (!videoEl) return;
     currentTime = videoEl.currentTime;
+    projectStore.currentTime = currentTime;
 
     // Sequential Queue Playback (e.g. from Cross-Tabulation Matrix)
     if (activeClipQueue.length > 0 && activeQueueIndex < activeClipQueue.length) {
@@ -477,11 +597,16 @@
   }
 
   function seekTo(seconds: number) {
-    if (!videoEl) return;
+    if (!videoEl) {
+      currentTime = Math.max(0, Math.min(seconds, duration));
+      projectStore.currentTime = currentTime;
+      return;
+    }
     activeLoopClip = null;
     activeClipQueue = [];
     videoEl.currentTime = Math.max(0, Math.min(seconds, duration));
     currentTime = videoEl.currentTime;
+    projectStore.currentTime = currentTime;
   }
 
   function stepFrame(step: number) {
@@ -491,6 +616,7 @@
     const fps = 25;
     videoEl.currentTime = Math.max(0, Math.min(videoEl.currentTime + step / fps, duration));
     currentTime = videoEl.currentTime;
+    projectStore.currentTime = currentTime;
   }
 
   function setInPoint() {
@@ -508,16 +634,69 @@
         endTime: Number(outPoint.toFixed(2)),
         color: '#38bdf8',
         playerLabel: activeSelectedPlayer,
+        playersInvolved: [activeSelectedPlayer],
+        teamSide: activeTeamSide,
         outcomeLabel: 'Gol / Sukses',
         rating: '⭐⭐⭐ Bagus',
         pauseDuration: 3.0,
         drawings: [],
       };
       projectStore.addTag(newTag);
+      selectedClipId = newTag.id;
       inPoint = null;
       outPoint = null;
       notifyUser(`Klip Manual Disimpan (${activeSelectedPlayer})`);
     }
+  }
+
+  function createClipFromInOut() {
+    if (inPoint === null) {
+      notifyUser('Tandai titik IN (I) terlebih dahulu lalu tekan Alt+U');
+      return;
+    }
+    const start = inPoint;
+    let end = outPoint !== null && outPoint > start + 0.2 ? outPoint : currentTime;
+    if (end <= start + 0.2) {
+      end = Math.min(Math.max(duration, start + 1), start + Math.max(1, lagTimeSeconds));
+    }
+
+    const firstBoardCat = activeBoard.buttons.find((b) => b.kind === 'category');
+    const resolvedCategory = primaryActiveContinuous
+      ? primaryActiveContinuous.name
+      : targetExistingClip
+        ? targetExistingClip.category
+        : firstBoardCat?.name || 'Transition Attack';
+    const resolvedColor = primaryActiveContinuous
+      ? primaryActiveContinuous.color
+      : targetExistingClip
+        ? targetExistingClip.color
+        : firstBoardCat?.color || '#38bdf8';
+    const resolvedBtnId = primaryActiveContinuous
+      ? primaryActiveContinuous.buttonId
+      : targetExistingClip?.boardButtonId || firstBoardCat?.id;
+
+    const newTag: VideoTagEvent = {
+      id: `tag-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      title: `${resolvedCategory} - ${activeSelectedPlayer} (${formatTime(start)} - ${formatTime(end)})`,
+      category: resolvedCategory as TagCategory,
+      startTime: Number(start.toFixed(2)),
+      endTime: Number(end.toFixed(2)),
+      color: resolvedColor,
+      playerLabel: activeSelectedPlayer,
+      playersInvolved: [activeSelectedPlayer],
+      labels: resolvedBtnId ? buildSeedLabels(resolvedBtnId) : [],
+      teamSide: activeTeamSide,
+      boardButtonId: resolvedBtnId,
+      outcomeLabel: 'Gol / Sukses',
+      rating: '⭐⭐⭐ Bagus',
+      pauseDuration: 3.0,
+      drawings: [],
+    };
+    projectStore.addTag(newTag);
+    selectedClipId = newTag.id;
+    inPoint = null;
+    outPoint = null;
+    notifyUser(`Klip Alt+U: ${resolvedCategory} (${(end - start).toFixed(1)}s)`);
   }
 
   function buildSeedLabels(catButtonId: string): TagDescriptor[] {
@@ -918,7 +1097,17 @@
           )
         );
 
-      return matchSearch && matchCat && matchPlayer;
+      const isAwayClip =
+        t.teamSide === 'away' || projectStore.normalizePlayerLabel(t.playerLabel) === 'Tim Lawan';
+      const matchMicro =
+        microFilter === 'all' ||
+        (microFilter === 'home' && !isAwayClip) ||
+        (microFilter === 'away' && isAwayClip) ||
+        (microFilter === 'fav' && Boolean(t.favorite)) ||
+        (microFilter === 'good' && t.rating === '⭐⭐⭐ Bagus') ||
+        (microFilter === 'eval' && (t.rating === '⚠️ Evaluasi' || t.rating === '❌ Kesalahan Fatal'));
+
+      return matchSearch && matchCat && matchPlayer && matchMicro;
     })
   );
 
@@ -948,6 +1137,15 @@
         >
           <LayoutGrid size={12} />
           <span>Action Pad</span>
+        </button>
+        <button
+          class="subnav-btn"
+          class:active={workspaceSubTab === 'minutes'}
+          onclick={() => (workspaceSubTab = 'minutes')}
+          title="Menit Bermain, Pergantian & Analisis Quartet 4v4"
+        >
+          <Timer size={12} />
+          <span>Menit</span>
         </button>
         <button
           class="subnav-btn"
@@ -1372,7 +1570,108 @@
                     <Play size={15} />
                   {/if}
                 </button>
-                <span class="curr-time-hero">{formatCompactElapsed(currentTime)}</span>
+                <button
+                  type="button"
+                  class="curr-time-hero-btn"
+                  class:match-clock={projectStore.useMatchClock && projectStore.periodKickoffs.length > 0}
+                  onclick={() => {
+                    if (projectStore.periodKickoffs.length > 0) {
+                      projectStore.useMatchClock = !projectStore.useMatchClock;
+                    }
+                  }}
+                  title={projectStore.periodKickoffs.length > 0
+                    ? 'Klik untuk beralih antara Waktu Video dan Match Clock (B1/B2)'
+                    : 'Waktu Video (atur Kick-off di tombol KO untuk Match Clock)'}
+                >
+                  {projectStore.useMatchClock && projectStore.periodKickoffs.length > 0
+                    ? projectStore.formatMatchClock(currentTime)
+                    : formatCompactElapsed(currentTime)}
+                </button>
+                <div class="kickoff-anchor">
+                  <button
+                    type="button"
+                    class="btn-kickoff-ko"
+                    class:configured={projectStore.periodKickoffs.length > 0}
+                    onclick={() => (showKickoffMenu = !showKickoffMenu)}
+                    title="Sinkronisasi Kick-off di sini (Babak 1 / Babak 2 / Extra)"
+                  >
+                    <Flag size={10} />
+                    <span>KO</span>
+                  </button>
+
+                  {#if showKickoffMenu}
+                    <div class="kickoff-popover" role="menu">
+                      <div class="ko-pop-hdr">
+                        <span>Kick-off di sini ({formatTime(currentTime)})</span>
+                        <button type="button" class="ko-close" onclick={() => (showKickoffMenu = false)}>
+                          <X size={11} />
+                        </button>
+                      </div>
+                      <button
+                        type="button"
+                        class="ko-action-btn"
+                        onclick={() => {
+                          projectStore.setPeriodKickoff(1, currentTime);
+                          showKickoffMenu = false;
+                          notifyUser(`Kick-off Babak 1 diset di ${formatTime(currentTime)}`);
+                        }}
+                      >
+                        <Flag size={11} class="text-emerald-400" />
+                        <span>Kick-off Babak 1 di sini</span>
+                      </button>
+                      <button
+                        type="button"
+                        class="ko-action-btn"
+                        onclick={() => {
+                          projectStore.setPeriodKickoff(2, currentTime);
+                          showKickoffMenu = false;
+                          notifyUser(`Kick-off Babak 2 diset di ${formatTime(currentTime)}`);
+                        }}
+                      >
+                        <Flag size={11} class="text-amber-400" />
+                        <span>Kick-off Babak 2 di sini</span>
+                      </button>
+                      <button
+                        type="button"
+                        class="ko-action-btn"
+                        onclick={() => {
+                          projectStore.setPeriodKickoff(3, currentTime);
+                          showKickoffMenu = false;
+                          notifyUser(`Kick-off Extra diset di ${formatTime(currentTime)}`);
+                        }}
+                      >
+                        <Flag size={11} class="text-purple-400" />
+                        <span>Kick-off Extra di sini</span>
+                      </button>
+
+                      {#if projectStore.periodKickoffs.length > 0}
+                        <div class="ko-list-sep"></div>
+                        {#each projectStore.periodKickoffs as ko (ko.period)}
+                          <div class="ko-saved-row">
+                            <button
+                              type="button"
+                              class="ko-seek-link"
+                              onclick={() => {
+                                seekTo(ko.videoTime);
+                                showKickoffMenu = false;
+                              }}
+                            >
+                              {ko.label}: {formatTime(ko.videoTime)}
+                            </button>
+                            <button
+                              type="button"
+                              class="ko-del-btn"
+                              onclick={() => projectStore.clearPeriodKickoff(ko.period)}
+                              title="Hapus penanda {ko.label}"
+                            >
+                              <X size={10} />
+                            </button>
+                          </div>
+                        {/each}
+                      {/if}
+                    </div>
+                  {/if}
+                </div>
                 <span class="play-status-pill" class:running={isPlaying}>
                   ● {isPlaying ? 'jalan' : 'jeda'}
                 </span>
@@ -1577,6 +1876,71 @@
                     {/each}
                   </select>
                 </div>
+
+                <div class="micro-filter-bar">
+                  <button
+                    type="button"
+                    class="mf-pill"
+                    class:active={microFilter === 'all'}
+                    onclick={() => (microFilter = 'all')}
+                  >
+                    Semua
+                  </button>
+                  <button
+                    type="button"
+                    class="mf-pill"
+                    class:active={microFilter === 'home'}
+                    onclick={() => (microFilter = microFilter === 'home' ? 'all' : 'home')}
+                    title="Filter Klip Tim Home"
+                  >
+                    H
+                  </button>
+                  <button
+                    type="button"
+                    class="mf-pill"
+                    class:active={microFilter === 'away'}
+                    onclick={() => (microFilter = microFilter === 'away' ? 'all' : 'away')}
+                    title="Filter Klip Tim Lawan (Away)"
+                  >
+                    A
+                  </button>
+                  <button
+                    type="button"
+                    class="mf-pill mf-star"
+                    class:active={microFilter === 'fav'}
+                    onclick={() => (microFilter = microFilter === 'fav' ? 'all' : 'fav')}
+                    title="Filter Momen Favorit (★)"
+                  >
+                    ★
+                  </button>
+                  <button
+                    type="button"
+                    class="mf-pill"
+                    class:active={microFilter === 'good'}
+                    onclick={() => (microFilter = microFilter === 'good' ? 'all' : 'good')}
+                    title="Filter Rating Bagus"
+                  >
+                    <ThumbsUp size={9} />
+                  </button>
+                  <button
+                    type="button"
+                    class="mf-pill"
+                    class:active={microFilter === 'eval'}
+                    onclick={() => (microFilter = microFilter === 'eval' ? 'all' : 'eval')}
+                    title="Filter Klip Evaluasi / Kesalahan"
+                  >
+                    <ThumbsDown size={9} />
+                  </button>
+                </div>
+
+                {#if filterPlayer !== 'ALL'}
+                  <div class="active-player-filter-chip">
+                    <span>Pemain: <strong>{filterPlayer}</strong></span>
+                    <button type="button" onclick={() => (filterPlayer = 'ALL')} title="Reset filter pemain">
+                      <X size={10} />
+                    </button>
+                  </div>
+                {/if}
               </div>
 
               <div class="list-items-scroll">
@@ -1604,12 +1968,29 @@
                     >
                       <div class="clip-row-main">
                         <span class="clip-color-bar" style="background-color: {tag.color};"></span>
+                        <button
+                          type="button"
+                          class="clip-star-btn"
+                          class:starred={Boolean(tag.favorite)}
+                          onclick={(e) => {
+                            e.stopPropagation();
+                            toggleClipFavorite(tag);
+                          }}
+                          title={tag.favorite ? 'Hapus dari Favorit' : 'Tandai Favorit (★)'}
+                        >
+                          <Star size={10} fill={tag.favorite ? '#f59e0b' : 'none'} />
+                        </button>
                         <span class="clip-cat-chip" title={tag.title}>
                           {#if tag.isContinuous}<span class="clip-cont-dot">●</span>{/if}
                           {tag.category}
                         </span>
-                        <span class="clip-time-mono">
-                          {formatTime(tag.startTime).slice(0, 5)}–{formatTime(tag.endTime).slice(0, 5)}
+                        <span
+                          class="clip-time-mono"
+                          title="Video: {formatTime(tag.startTime).slice(0, 5)}–{formatTime(tag.endTime).slice(0, 5)}"
+                        >
+                          {projectStore.useMatchClock && projectStore.periodKickoffs.length > 0
+                            ? projectStore.formatMatchClock(tag.startTime)
+                            : `${formatTime(tag.startTime).slice(0, 5)}–${formatTime(tag.endTime).slice(0, 5)}`}
                         </span>
                         <span class="clip-dur-micro">{(tag.endTime - tag.startTime).toFixed(1)}s</span>
                       </div>
@@ -1688,6 +2069,18 @@
                               <Clipboard size={10} />
                             </button>
                           {/if}
+                          <button
+                            type="button"
+                            class="icon-act-btn"
+                            disabled={exportingQuickClipId !== null}
+                            onclick={(e) => {
+                              e.stopPropagation();
+                              handleQuickExportSingleClip(tag);
+                            }}
+                            title="Quick Export MP4 Klip Ini"
+                          >
+                            <Download size={10} />
+                          </button>
                           <button
                             type="button"
                             class="icon-act-btn"
@@ -1813,6 +2206,9 @@
             {lagTimeSeconds}
             {selectedClipId}
             activeLoopClipId={activeLoopClip?.id ?? null}
+            periodKickoffs={projectStore.periodKickoffs}
+            useMatchClock={projectStore.useMatchClock}
+            formatMatchClock={(t) => projectStore.formatMatchClock(t)}
             onSeek={seekTo}
             onSelectClip={(tag) => {
               selectedClipId = tag.id;
@@ -1820,6 +2216,8 @@
             }}
             onEditClip={openTagEditor}
             onTrimClip={handleTrimClip}
+            onMoveClip={handleMoveClip}
+            onReassignClipCategory={handleReassignClipCategory}
             onChangeLead={(sec) => (leadTimeSeconds = sec)}
             onChangeLag={(sec) => (lagTimeSeconds = sec)}
           />
@@ -1873,6 +2271,19 @@
           }}
         />
       </div>
+    {:else if workspaceSubTab === 'minutes'}
+      <!-- MODE 2B: FUTSAL ROTATION, MENIT BERMAIN & QUARTET 4v4 -->
+      <MatchMinutesView
+        {currentTime}
+        {duration}
+        {isPlaying}
+        onTogglePlay={togglePlay}
+        onSeek={seekTo}
+        onPlayClips={(clips, title) => {
+          workspaceSubTab = 'tagging';
+          playSequentialClips(clips, title);
+        }}
+      />
     {:else if workspaceSubTab === 'lineup'}
       <!-- MODE 3: FUTSAL ROSTER & LINEUP COURT (MOMEN SPORTS STYLE) -->
       <div class="lineup-fullscreen">
@@ -3844,5 +4255,243 @@
   .btn-filter-player:hover {
     color: #ffffff;
     border-color: #38bdf8;
+  }
+
+  /* MATCH CLOCK & KICK-OFF POPOVER */
+  .curr-time-hero-btn {
+    background: transparent;
+    border: 1px solid transparent;
+    font-family: 'Fira Code', monospace;
+    font-size: 12px;
+    font-weight: 900;
+    color: #ffffff;
+    padding: 2px 5px;
+    border-radius: 4px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .curr-time-hero-btn.match-clock {
+    color: #34d399;
+    background: rgba(16, 185, 129, 0.14);
+    border-color: rgba(16, 185, 129, 0.4);
+  }
+
+  .kickoff-anchor {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .btn-kickoff-ko {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    background: #0b172a;
+    border: 1px solid #1e3a5f;
+    color: #93c5fd;
+    font-size: 9px;
+    font-weight: 800;
+    padding: 3px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .btn-kickoff-ko:hover,
+  .btn-kickoff-ko.configured {
+    border-color: #10b981;
+    color: #34d399;
+    background: rgba(16, 185, 129, 0.14);
+  }
+
+  .kickoff-popover {
+    position: fixed;
+    bottom: 245px;
+    left: 220px;
+    width: 225px;
+    background: #0a1628;
+    border: 1px solid #38bdf8;
+    border-radius: 8px;
+    padding: 8px;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.75);
+    z-index: 80;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .ko-pop-hdr {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 10px;
+    font-weight: 800;
+    color: #38bdf8;
+    padding-bottom: 4px;
+    border-bottom: 1px solid #1a355d;
+  }
+
+  .ko-close {
+    background: transparent;
+    border: none;
+    color: #94a3b8;
+    cursor: pointer;
+  }
+
+  .ko-action-btn {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    background: #0f203a;
+    border: 1px solid #1a355d;
+    color: #f0f6fc;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 5px 8px;
+    border-radius: 5px;
+    cursor: pointer;
+    text-align: left;
+  }
+
+  .ko-action-btn:hover {
+    border-color: #38bdf8;
+    background: #142c50;
+  }
+
+  .ko-list-sep {
+    height: 1px;
+    background: #1a355d;
+    margin: 2px 0;
+  }
+
+  .ko-saved-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 9.5px;
+    background: #060c17;
+    border-radius: 4px;
+    padding: 3px 6px;
+  }
+
+  .ko-seek-link {
+    background: transparent;
+    border: none;
+    color: #34d399;
+    font-family: 'Fira Code', monospace;
+    font-size: 9.5px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .ko-del-btn {
+    background: transparent;
+    border: none;
+    color: #64748b;
+    cursor: pointer;
+  }
+
+  .ko-del-btn:hover {
+    color: #ef4444;
+  }
+
+  /* MICRO FILTER BAR & 1-CLICK FAVORITE */
+  .micro-filter-bar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 6px;
+  }
+
+  .mf-pill {
+    flex: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: #060b14;
+    border: 1px solid #1a355d;
+    color: #94a3b8;
+    font-size: 9px;
+    font-weight: 800;
+    padding: 3px 4px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.12s ease;
+  }
+
+  .mf-pill:hover {
+    color: #ffffff;
+    border-color: #38bdf8;
+  }
+
+  .mf-pill.active {
+    background: #0284c7;
+    border-color: #38bdf8;
+    color: #ffffff;
+  }
+
+  .mf-pill.mf-star.active {
+    background: rgba(245, 158, 11, 0.25);
+    border-color: #f59e0b;
+    color: #fbbf24;
+  }
+
+  .active-player-filter-chip {
+    margin-top: 5px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 9.5px;
+    color: #38bdf8;
+    background: rgba(2, 132, 199, 0.15);
+    border: 1px solid rgba(56, 189, 248, 0.35);
+    padding: 2px 7px;
+    border-radius: 4px;
+  }
+
+  .active-player-filter-chip button {
+    background: transparent;
+    border: none;
+    color: #93c5fd;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+  }
+
+  .clip-star-btn {
+    background: transparent;
+    border: none;
+    padding: 0 2px;
+    color: #475569;
+    display: inline-flex;
+    align-items: center;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  .clip-star-btn:hover,
+  .clip-star-btn.starred {
+    color: #f59e0b;
+  }
+
+  @media (max-width: 1220px) {
+    .tagging-top-tier {
+      grid-template-columns: 176px minmax(0, 1fr) 232px;
+    }
+    .hdr-tool-btn span {
+      display: none;
+    }
+    .play-status-pill {
+      display: none;
+    }
+    .momen-transport-bar {
+      gap: 4px;
+      padding: 0 6px;
+    }
+    .btn-draw-quick span,
+    .btn-canvas-toggle span {
+      display: none;
+    }
   }
 </style>

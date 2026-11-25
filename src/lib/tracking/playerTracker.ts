@@ -1,6 +1,6 @@
 // Visual Single-Player Auto-Tracking Engine (Coarse-to-Fine NCC + Color Histogram)
 // Used for interactive "Track Elemen Ini" in TelestrationStudio
-import type { TrackingKeyframe } from '$lib/types';
+import type { DrawingElement, Point2D, TrackingKeyframe } from '$lib/types';
 
 export interface BoundingBox {
   x: number; // normalized 0..1 (top-left)
@@ -157,6 +157,10 @@ export async function runPlayerAutoTracking(
   return keyframes;
 }
 
+export function seekVideoElementSafe(video: HTMLVideoElement, time: number): Promise<void> {
+  return seekVideoSafe(video, time);
+}
+
 function seekVideoSafe(video: HTMLVideoElement, time: number): Promise<void> {
   return new Promise((resolve) => {
     const clamped = Math.max(0, Math.min(time, video.duration || time));
@@ -308,4 +312,38 @@ export function getInterpolatedPosition(
   }
 
   return null;
+}
+
+export function getElementPointsAtTime(el: DrawingElement, time: number): Point2D[] {
+  if (!el.points || el.points.length === 0) return [];
+
+  if (el.pointTracks && Object.keys(el.pointTracks).length > 0) {
+    return el.points.map((pt, idx) => {
+      const kfs = el.pointTracks?.[idx];
+      if (kfs && kfs.length > 0) {
+        return getInterpolatedPosition(kfs, time) ?? pt;
+      }
+      return pt;
+    });
+  }
+
+  if (el.keyframes && el.keyframes.length > 0) {
+    const tracked = getInterpolatedPosition(el.keyframes, time);
+    if (!tracked) return el.points;
+    if (el.points.length <= 1) return [tracked];
+    const dx = tracked.x - el.points[0].x;
+    const dy = tracked.y - el.points[0].y;
+    return el.points.map((pt) => ({ x: pt.x + dx, y: pt.y + dy }));
+  }
+
+  return el.points;
+}
+
+export function hasAnimatedTelestration(drawings: DrawingElement[]): boolean {
+  return drawings.some((d) => {
+    if ((d.keyframes?.length ?? 0) > 1) return true;
+    if (d.pointTracks && Object.values(d.pointTracks).some((kfs) => kfs.length > 1)) return true;
+    if (d.animationStyle && d.animationStyle !== 'none') return true;
+    return false;
+  });
 }

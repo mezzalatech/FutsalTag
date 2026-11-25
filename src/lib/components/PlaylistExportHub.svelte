@@ -27,13 +27,30 @@
     MoveDown,
     Settings2,
     Tv,
+    Upload,
+    FileCode2,
+    MonitorPlay,
   } from 'lucide-svelte';
   import { renderDrawingsToDataUrl } from '$lib/export/telestrationRenderer';
+  import {
+    exportSportsCodeXml,
+    importSportsCodeXml,
+    exportMultiSheetExcelXml,
+    saveTextFilePortable,
+    openTextFilePortable,
+  } from '$lib/export/interopExporters';
+
+  interface Props {
+    onOpenPresentation?: () => void;
+  }
+
+  let { onOpenPresentation }: Props = $props();
 
   let currentPlaylist = $derived(projectStore.playlists[0]);
   let selectedItemIndex = $state(0);
   let isPlayingPresentation = $state(false);
   let presentationVideoEl = $state<HTMLVideoElement | null>(null);
+  let xmlImportInputEl = $state<HTMLInputElement | undefined>(undefined);
 
   // Export Settings State
   let exportMode = $state<ExportMode>('merged_video');
@@ -273,6 +290,107 @@
     link.click();
     document.body.removeChild(link);
   }
+
+  async function handleExportSportsCodeXml() {
+    if (projectStore.tags.length === 0) {
+      exportStatusMessage = 'Belum ada klip untuk diekspor ke XML.';
+      return;
+    }
+    const xml = exportSportsCodeXml(projectStore.tags, projectStore.videoTitle);
+    const safeName = (projectStore.videoTitle || 'futsaltag')
+      .replace(/[^a-zA-Z0-9_-]/g, '_')
+      .toLowerCase();
+    const saved = await saveTextFilePortable(
+      `${safeName}_sportscode.xml`,
+      xml,
+      'application/xml;charset=utf-8',
+      'SportsCode / Once Sport XML',
+      ['xml']
+    );
+    if (saved) {
+      exportSuccessPath = saved;
+      exportStatusMessage = `XML SportsCode/Once Sport (${projectStore.tags.length} klip) diekspor ke: ${saved}`;
+    }
+  }
+
+  function applyImportedXml(xmlStr: string, sourceName: string) {
+    const imported = importSportsCodeXml(xmlStr);
+    if (imported.length === 0) {
+      exportStatusMessage = `Tidak ditemukan klip valid di dalam "${sourceName}".`;
+      return;
+    }
+    for (const tag of imported) {
+      projectStore.addTag(tag);
+    }
+    exportSuccessPath = sourceName;
+    exportStatusMessage = `Berhasil mengimpor ${imported.length} klip dari "${sourceName}" ke Linimasa!`;
+  }
+
+  async function handleImportSportsCodeXmlClick() {
+    if (isTauriDesktop()) {
+      try {
+        const res = await openTextFilePortable(
+          'Impor XML SportsCode / Once Sport (.xml)',
+          'XML Files',
+          ['xml']
+        );
+        if (res) applyImportedXml(res.content, res.name);
+      } catch (err: any) {
+        exportStatusMessage = `Gagal impor XML: ${err?.message || err}`;
+      }
+    } else {
+      xmlImportInputEl?.click();
+    }
+  }
+
+  function handleXmlFileChange(e: Event) {
+    const input = e.target as HTMLInputElement;
+    if (!input.files || input.files.length === 0) return;
+    const file = input.files[0];
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const text = ev.target?.result as string;
+      if (text) {
+        try {
+          applyImportedXml(text, file.name);
+        } catch (err: any) {
+          exportStatusMessage = `Gagal impor XML: ${err?.message || err}`;
+        }
+      }
+    };
+    reader.readAsText(file);
+    input.value = '';
+  }
+
+  async function handleExportExcelWorkbook() {
+    const xmlWorkbook = exportMultiSheetExcelXml({
+      matchTitle: projectStore.videoTitle,
+      tags: projectStore.tags,
+      roster: projectStore.roster,
+      duration: projectStore.duration,
+      periodKickoffs: projectStore.periodKickoffs,
+      startingLineupIds: projectStore.startingLineupIds,
+      substitutions: projectStore.substitutions,
+      formatMatchClock: (s) => projectStore.formatMatchClock(s),
+      getPlayerDisplayLabel: (p) => projectStore.getPlayerDisplayLabel(p),
+      normalizePlayerLabel: (lbl) => projectStore.normalizePlayerLabel(lbl),
+      isGoalkeeper: (p) => projectStore.isGoalkeeper(p),
+    });
+    const safeName = (projectStore.videoTitle || 'laporan_futsal')
+      .replace(/[^a-zA-Z0-9_-]/g, '_')
+      .toLowerCase();
+    const saved = await saveTextFilePortable(
+      `${safeName}_4sheet.xls`,
+      xmlWorkbook,
+      'application/vnd.ms-excel;charset=utf-8',
+      'Laporan Excel Multi-Sheet (.xls)',
+      ['xls', 'xml']
+    );
+    if (saved) {
+      exportSuccessPath = saved;
+      exportStatusMessage = `Laporan Excel Multi-Sheet (4 lembar kerja) tersimpan: ${saved}`;
+    }
+  }
 </script>
 
 <div class="playlist-export-hub">
@@ -290,6 +408,12 @@
     </div>
 
     <div class="header-right">
+      {#if onOpenPresentation}
+        <button class="btn-csv" onclick={onOpenPresentation} title="Buka Studio Presentasi Fullscreen Ruang Ganti">
+          <MonitorPlay size={15} />
+          <span>Presenter Fullscreen</span>
+        </button>
+      {/if}
       <button class="btn-csv" onclick={exportCSVStats}>
         <FileSpreadsheet size={15} />
         <span>Ekspor Rekap CSV</span>
@@ -540,6 +664,35 @@
           <Film size={16} />
           <span>{isExporting ? 'Sedang Memproses Render...' : 'Render & Simpan Video'}</span>
         </button>
+      </div>
+
+      <!-- INTEROPERABILITY & MULTI-SHEET REPORTS CARD -->
+      <div class="export-config-card interop-card">
+        <div class="config-header">
+          <FileCode2 size={16} />
+          <span>Interoperabilitas & Laporan Industri</span>
+        </div>
+        <div class="interop-grid">
+          <button type="button" class="btn-interop" onclick={handleImportSportsCodeXmlClick}>
+            <Upload size={13} />
+            <span>Impor XML (Once/SportsCode)</span>
+          </button>
+          <input
+            bind:this={xmlImportInputEl}
+            type="file"
+            accept=".xml"
+            onchange={handleXmlFileChange}
+            style="display: none;"
+          />
+          <button type="button" class="btn-interop" onclick={handleExportSportsCodeXml}>
+            <Download size={13} />
+            <span>Ekspor XML SportsCode</span>
+          </button>
+          <button type="button" class="btn-interop btn-interop-excel" onclick={handleExportExcelWorkbook}>
+            <FileSpreadsheet size={13} />
+            <span>Laporan Excel (4 Sheet)</span>
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -993,6 +1146,53 @@
   .export-column {
     display: flex;
     flex-direction: column;
+    gap: 12px;
+    overflow-y: auto;
+    min-height: 0;
+  }
+
+  .interop-card {
+    gap: 10px;
+  }
+
+  .interop-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .btn-interop {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    background: #0d1e38;
+    border: 1px solid #1e3a5f;
+    color: #93c5fd;
+    padding: 8px 10px;
+    border-radius: 7px;
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .btn-interop:hover {
+    border-color: #38bdf8;
+    color: #ffffff;
+    background: #132c52;
+  }
+
+  .btn-interop-excel {
+    grid-column: 1 / -1;
+    background: rgba(16, 185, 129, 0.15);
+    border-color: rgba(52, 211, 153, 0.45);
+    color: #34d399;
+  }
+
+  .btn-interop-excel:hover {
+    background: rgba(16, 185, 129, 0.28);
+    border-color: #10b981;
   }
 
   .export-config-card {

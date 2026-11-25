@@ -67,6 +67,12 @@ pub struct OnnxTrackingResult {
     pub model_used: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FrameDetectionsDto {
+    pub time: f64,
+    pub boxes: Vec<DetectedObject>,
+}
+
 pub fn resolve_yolox_model_path(app: Option<&tauri::AppHandle>) -> Option<PathBuf> {
     if let Some(handle) = app {
         if let Ok(res_dir) = handle.path().resource_dir() {
@@ -498,6 +504,28 @@ pub fn detect_players_in_frame_onnx(
         .first()
         .ok_or_else(|| "Gagal mengekstrak frame video pada timestamp tersebut".to_string())?;
     detect_rgb_frame(&mut session, rgb, 640, 360, in_w, in_h)
+}
+
+#[tauri::command]
+pub fn detect_player_boxes_range_onnx(
+    app: tauri::AppHandle,
+    input_path: String,
+    start_sec: f64,
+    end_sec: f64,
+    fps: Option<f64>,
+) -> Result<Vec<FrameDetectionsDto>, String> {
+    let model_path = resolve_yolox_model_path(Some(&app))
+        .ok_or_else(|| "Model ONNX yolox_nano.onnx tidak ditemukan.".to_string())?;
+    let (mut session, in_w, in_h) = load_yolox_session(&model_path)?;
+    let sample_fps = fps.unwrap_or(6.0).clamp(1.0, 15.0);
+    let frames = ffmpeg::extract_rgb_frames(&input_path, start_sec, end_sec, sample_fps, 640, 360)?;
+
+    let mut out = Vec::with_capacity(frames.len());
+    for (t, rgb) in &frames {
+        let boxes = detect_rgb_frame(&mut session, rgb, 640, 360, in_w, in_h)?;
+        out.push(FrameDetectionsDto { time: *t, boxes });
+    }
+    Ok(out)
 }
 
 #[tauri::command]

@@ -107,11 +107,9 @@
     return base;
   });
 
-  const BASE_PLAYERS = ['#1 Kiper', '#4 Anchor', '#7 Flank Kiri', '#11 Flank Kanan', '#9 Pivot', 'Tim Lawan'];
-
-  // Dynamically resolve roster: default starting 5 + Tim Lawan + any custom/substitute players in tags
+  // Dynamically resolve roster: unified projectStore.roster + any custom/substitute players in tags
   const resolvedPlayers = $derived.by(() => {
-    const list = [...BASE_PLAYERS];
+    const list = projectStore.roster.map((p) => projectStore.getPlayerDisplayLabel(p));
     for (const t of tags) {
       const allTagPlayers =
         t.playersInvolved && t.playersInvolved.length > 0
@@ -289,6 +287,8 @@
     projectStore.loadSampleDemo();
   }
 
+  let includeMatchClockInExport = $state<boolean>(true);
+
   function exportCSV() {
     let csv = '';
     if (matrixView === 'tag_label') {
@@ -309,6 +309,16 @@
       }
       const colTotals = resolvedCategories.map((c) => getCategoryColTotal(c).length);
       csv += `"TOTAL TIM",` + colTotals.join(',') + `,${tags.length},${sumDurationSec(tags).toFixed(1)}\n`;
+    }
+
+    if (includeMatchClockInExport && tags.length > 0) {
+      csv += '\n"DAFTAR KLIP & WAKTU PERTANDINGAN (MATCH CLOCK)"\n';
+      csv += 'Judul,Kategori,Pemain,Match Clock Mulai,Match Clock Selesai,Video Mulai (s),Video Selesai (s)\n';
+      for (const t of tags) {
+        const mcStart = projectStore.formatMatchClock(t.startTime);
+        const mcEnd = projectStore.formatMatchClock(t.endTime);
+        csv += `"${t.title}","${t.category}","${t.playerLabel || ''}","${mcStart}","${mcEnd}",${t.startTime.toFixed(1)},${t.endTime.toFixed(1)}\n`;
+      }
     }
 
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -340,6 +350,19 @@
       </div>
 
       <div class="header-actions">
+        {#if projectStore.periodKickoffs.length > 0}
+          <span class="match-pill" title="Kick-off Match Clock aktif">
+            {projectStore.periodKickoffs.map((k) => `${k.period === 1 ? 'B1' : k.period === 2 ? 'B2' : 'ET'} ${Math.floor(k.videoTime)}s`).join(' · ')}
+          </span>
+        {/if}
+        <button
+          type="button"
+          class="btn-clean"
+          onclick={() => (includeMatchClockInExport = !includeMatchClockInExport)}
+          title="Sertakan daftar klip dengan Match Clock pada file CSV"
+        >
+          <span>{includeMatchClockInExport ? '✓ Match Clock CSV' : 'Matriks Saja'}</span>
+        </button>
         <button class="btn-clean" onclick={exportCSV} title="Ekspor Lembar Kerja CSV">
           <Download size={13} />
           <span>Ekspor CSV</span>

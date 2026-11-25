@@ -8,6 +8,9 @@
   import LockerRoomChalkboardModal from '$lib/components/LockerRoomChalkboardModal.svelte';
   import FutsalHeatmapModal from '$lib/components/FutsalHeatmapModal.svelte';
   import WhatsAppPlayerExporterModal from '$lib/components/WhatsAppPlayerExporterModal.svelte';
+  import PresentationStudioModal from '$lib/components/PresentationStudioModal.svelte';
+  import TeamDatabaseModal from '$lib/components/TeamDatabaseModal.svelte';
+  import SeasonAnalyticsModal from '$lib/components/SeasonAnalyticsModal.svelte';
   import {
     FolderOpen,
     Scissors,
@@ -18,11 +21,17 @@
     Tv,
     Flame,
     MessageCircle,
+    MonitorPlay,
+    Shield,
+    BarChart3,
   } from 'lucide-svelte';
 
   let isChalkboardOpen = $state(false);
   let isHeatmapOpen = $state(false);
   let isWhatsAppOpen = $state(false);
+  let isPresentationOpen = $state(false);
+  let isTeamDbOpen = $state(false);
+  let isSeasonAnalyticsOpen = $state(false);
   let openProjectInputEl: HTMLInputElement | undefined = $state();
 
   async function handleSaveProject() {
@@ -178,6 +187,36 @@
       <div class="pro-tools-bar">
         <button
           type="button"
+          class="btn-pro-tool btn-klub"
+          onclick={() => (isTeamDbOpen = true)}
+          title="Library Klub, Jersey & Roster Futsal Persisten"
+        >
+          <Shield size={13} />
+          <span>Klub</span>
+        </button>
+
+        <button
+          type="button"
+          class="btn-pro-tool btn-musim"
+          onclick={() => (isSeasonAnalyticsOpen = true)}
+          title="Season & Multi-Match Analytics Hub (.futsal)"
+        >
+          <BarChart3 size={13} />
+          <span>Musim</span>
+        </button>
+
+        <button
+          type="button"
+          class="btn-pro-tool btn-presenter"
+          onclick={() => (isPresentationOpen = true)}
+          title="Fullscreen Presentation Studio (Klip + Slide Taktik 2D + Live Pen)"
+        >
+          <MonitorPlay size={13} />
+          <span>Presentasi</span>
+        </button>
+
+        <button
+          type="button"
           class="btn-pro-tool btn-chalkboard"
           onclick={() => (isChalkboardOpen = true)}
           title="Buka Ruang Ganti Chalkboard (Auto-Pause Layar Sentuh & Telestrasi Kilat)"
@@ -241,13 +280,16 @@
   <!-- WORKSPACE VIEWPORT -->
   <main class="app-workspace">
     {#if projectStore.stage === 'hub'}
-      <ProjectHub />
+      <ProjectHub
+        onOpenTeamDatabase={() => (isTeamDbOpen = true)}
+        onOpenSeasonAnalytics={() => (isSeasonAnalyticsOpen = true)}
+      />
     {:else if projectStore.stage === 'tagging'}
       <MatchTaggingWorkspace />
     {:else if projectStore.stage === 'telestrator'}
       <TelestrationStudio />
     {:else if projectStore.stage === 'playlist_export'}
-      <PlaylistExportHub />
+      <PlaylistExportHub onOpenPresentation={() => (isPresentationOpen = true)} />
     {:else if projectStore.stage === 'coachboard'}
       <TacticalBoard />
     {/if}
@@ -267,6 +309,21 @@
   <WhatsAppPlayerExporterModal
     isOpen={isWhatsAppOpen}
     onClose={() => (isWhatsAppOpen = false)}
+  />
+
+  <PresentationStudioModal
+    isOpen={isPresentationOpen}
+    onClose={() => (isPresentationOpen = false)}
+  />
+
+  <TeamDatabaseModal
+    isOpen={isTeamDbOpen}
+    onClose={() => (isTeamDbOpen = false)}
+  />
+
+  <SeasonAnalyticsModal
+    isOpen={isSeasonAnalyticsOpen}
+    onClose={() => (isSeasonAnalyticsOpen = false)}
   />
 </div>
 
@@ -615,7 +672,7 @@
     }
   }
 
-  @media (max-width: 1180px) {
+  @media (max-width: 1280px) {
     .step-num {
       display: none;
     }
@@ -631,6 +688,41 @@
     .btn-pro-tool {
       padding: 6px 8px;
     }
+  }
+
+  .btn-klub {
+    background: rgba(56, 189, 248, 0.12);
+    border-color: rgba(56, 189, 248, 0.35);
+    color: #38bdf8;
+  }
+
+  .btn-klub:hover {
+    background: rgba(56, 189, 248, 0.25);
+    border-color: #38bdf8;
+  }
+
+  .btn-musim {
+    background: rgba(234, 179, 8, 0.12);
+    border-color: rgba(250, 204, 21, 0.35);
+    color: #fde047;
+  }
+
+  .btn-musim:hover {
+    background: rgba(234, 179, 8, 0.25);
+    border-color: #eab308;
+  }
+
+  .btn-presenter {
+    background: rgba(168, 85, 247, 0.14);
+    border-color: rgba(192, 132, 252, 0.4);
+    color: #d8b4fe;
+  }
+
+  .btn-presenter:hover {
+    background: rgba(168, 85, 247, 0.28);
+    border-color: #a855f7;
+    box-shadow: 0 0 12px rgba(168, 85, 247, 0.35);
+    transform: translateY(-1px);
   }
 
   .btn-chalkboard {

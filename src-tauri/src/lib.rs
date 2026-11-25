@@ -3,6 +3,7 @@ mod ffmpeg;
 
 use std::fs;
 use std::path::Path;
+use tauri::Manager;
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -49,11 +50,46 @@ fn load_project_file(file_path: String) -> Result<String, String> {
         .map_err(|e| format!("Gagal membaca berkas proyek: {}", e))
 }
 
+#[tauri::command]
+fn save_club_library(app: tauri::AppHandle, content: String) -> Result<String, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Gagal mengakses AppData: {}", e))?;
+    fs::create_dir_all(&dir).map_err(|e| format!("Gagal membuat folder AppData: {}", e))?;
+    let file_path = dir.join("club_library.json");
+    fs::write(&file_path, content).map_err(|e| format!("Gagal menyimpan library klub: {}", e))?;
+    Ok(file_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn load_club_library(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Gagal mengakses AppData: {}", e))?;
+    let file_path = dir.join("club_library.json");
+    if !file_path.exists() {
+        return Ok(None);
+    }
+    let data = fs::read_to_string(&file_path)
+        .map_err(|e| format!("Gagal membaca library klub: {}", e))?;
+    Ok(Some(data))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             greet,
             get_temp_dir,
@@ -61,12 +97,18 @@ pub fn run() {
             cleanup_temp_files,
             save_project_file,
             load_project_file,
+            save_club_library,
+            load_club_library,
             ffmpeg::render_video_clip_ffmpeg,
             ffmpeg::concat_playlist_ffmpeg,
             ffmpeg::burn_telestration_clip_ffmpeg,
+            ffmpeg::burn_animated_telestration_clip_ffmpeg,
+            ffmpeg::save_overlay_frame_png,
+            ffmpeg::cleanup_temp_dir,
             ffmpeg::export_whatsapp_clip_ffmpeg,
             ai_tracker::check_ai_model_status,
             ai_tracker::detect_players_in_frame_onnx,
+            ai_tracker::detect_player_boxes_range_onnx,
             ai_tracker::run_multi_player_tracking_onnx,
         ])
         .run(tauri::generate_context!())

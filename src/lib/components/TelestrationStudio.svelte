@@ -1,32 +1,46 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
-  import { invoke } from '@tauri-apps/api/core';
-  import { projectStore, isTauriDesktop } from '$lib/stores/projectStore.svelte';
+  import { onMount, onDestroy } from "svelte";
+  import { invoke } from "@tauri-apps/api/core";
+  import {
+    projectStore,
+    isTauriDesktop,
+  } from "$lib/stores/projectStore.svelte";
   import type {
     VideoTagEvent,
     DrawingElement,
     DrawingToolType,
     Point2D,
     TrackingKeyframe,
-  } from '$lib/types';
+    DetectedPlayerBox,
+    MultiPlayerTrack,
+    BroadcastAnimationStyle,
+  } from "$lib/types";
   import {
     runMultiPlayerAutoTracking,
     checkAiModelStatus,
-  } from '$lib/tracking/multiPlayerTracker';
+    detectPlayersInFrameOnnx,
+    bindElementPointsToTracks,
+  } from "$lib/tracking/multiPlayerTracker";
   import {
     runPlayerAutoTracking,
     getInterpolatedPosition,
-  } from '$lib/tracking/playerTracker';
+    getElementPointsAtTime,
+    hasAnimatedTelestration,
+    seekVideoElementSafe,
+  } from "$lib/tracking/playerTracker";
   import {
     CALIBRATION_PRESETS,
     calculatePitchCalibration,
-    getCalibratedDistanceMeters,
-    canvasToCourtMeters,
     drawCalibratedCourtOverlay,
     type PitchCalibrationPoints,
-  } from '$lib/pitch/homographyCalibration';
-  import { renderDrawingsToDataUrl } from '$lib/export/telestrationRenderer';
-  import VoiceoverRecorder from '$lib/components/VoiceoverRecorder.svelte';
+  } from "$lib/pitch/homographyCalibration";
+  import {
+    renderDrawingsToDataUrl,
+    renderDrawingsToCanvas,
+    sampleFloorRgbFromVideo,
+    isFloorElType,
+  } from "$lib/export/telestrationRenderer";
+  import VoiceoverRecorder from "$lib/components/VoiceoverRecorder.svelte";
   import {
     Sparkles,
     MoveRight,
@@ -54,7 +68,9 @@
     ZoomIn,
     XCircle,
     Download,
-  } from 'lucide-svelte';
+    Crosshair,
+    Scissors,
+  } from "lucide-svelte";
 
   // --- REFS & STATE ---
   let videoEl = $state<HTMLVideoElement | null>(null);
@@ -62,7 +78,7 @@
   let videoContainer = $state<HTMLDivElement | null>(null);
 
   let activeClip = $derived(
-    projectStore.activeClipForDrawing || projectStore.tags[0] || null
+    projectStore.activeClipForDrawing || projectStore.tags[0] || null,
   );
 
   let currentTime = $state(0);
@@ -71,8 +87,8 @@
   let isPreviewing = $state(false);
 
   // Telestration Drawing State
-  let activeTool = $state<DrawingToolType>('spotlight-3d');
-  let activeColor = $state('#00f0ff');
+  let activeTool = $state<DrawingToolType>("spotlight-3d");
+  let activeColor = $state("#00f0ff");
   let drawings = $state<DrawingElement[]>([]);
   let inProgressDrawing = $state<DrawingElement | null>(null);
   let pauseDuration = $state(3.0); // freeze duration in seconds
@@ -88,9 +104,11 @@
 
   // Pilar 2: AI Homography 3D Court Calibration State
   let isPitchCalibrated = $state(false);
-  let activePresetKey = $state('main-sideline');
-  let calibrationPoints = $state<PitchCalibrationPoints>({ ...CALIBRATION_PRESETS['main-sideline'].points });
-  let activeCornerDrag = $state<'tl' | 'tr' | 'br' | 'bl' | null>(null);
+  let activePresetKey = $state("main-sideline");
+  let calibrationPoints = $state<PitchCalibrationPoints>({
+    ...CALIBRATION_PRESETS["main-sideline"].points,
+  });
+  let activeCornerDrag = $state<"tl" | "tr" | "br" | "bl" | null>(null);
   let homographyResult = $derived(calculatePitchCalibration(calibrationPoints));
 
   // Pilar 1: Direct Video Export State
@@ -103,16 +121,29 @@
   let freezeInterval: any = null;
   let rafId: number | null = null;
 
-  // AI Tracking state
+  // AI Tracking & Chroma-Key Floor Cutout state
   let isMultiTracking = $state(false);
   let isSingleTracking = $state(false);
+  let isMultiPointTracking = $state(false);
   let singleTrackProgress = $state(0);
   let trackAbortController: AbortController | null = null;
-  let aiEngineLabel = $state<string>('ONNX YOLOX-Nano');
+  let aiEngineLabel = $state<string>("ONNX YOLOX-Nano");
+  let detectedTracks = $state<MultiPlayerTrack[]>([]);
+  let isSamplingFloor = $state(false);
+  let isDetectingCutout = $state(false);
+  let liveDetectedBoxes = $state<DetectedPlayerBox[]>([]);
 
   // Selected element derived
   let selectedElement = $derived(
-    drawings.find((d) => d.id === selectedElementId) || null
+    drawings.find((d) => d.id === selectedElementId) || null,
+  );
+
+  let activeCameraZoom = $derived(
+    isFreezeActive
+      ? selectedElement?.cameraZoomTarget ||
+          drawings.find((d) => d.cameraZoomTarget)?.cameraZoomTarget ||
+          null
+      : null,
   );
 
   // Feature 2: Coach Voiceover Audio State
@@ -124,39 +155,113 @@
     }
   });
 
-  const TOOLS: { id: DrawingToolType; label: string; icon: any; desc: string }[] = [
-    { id: 'select', label: 'Pilih & Edit (Select)', icon: MousePointer, desc: 'Pilih elemen, geser posisi atau atur kelengkungan' },
-    { id: 'spotlight-3d', label: '3D Spotlight Futsal', icon: Sparkles, desc: 'Sorotan 3D dengan elips lantai & berkas cahaya' },
-    { id: 'curved-arrow', label: 'Panah Lengkung (Curved)', icon: CornerUpRight, desc: 'Operan lambung / pisang khas Once Sport' },
-    { id: 'pass-arrow', label: 'Panah Operan / Tembakan', icon: MoveRight, desc: 'Panah lurus tegas untuk passing atau shooting' },
-    { id: 'run-arrow', label: 'Panah Lari (Dashed)', icon: MoveRight, desc: 'Lintasan lari pemain tanpa bola' },
-    { id: 'player-circle', label: 'Lingkaran Pemain (#)', icon: CircleDot, desc: 'Highlight pemain dengan nomor punggung' },
-    { id: 'vision-cone', label: 'Radar Visi (FOV)', icon: Eye, desc: 'Sudut pandang / jangkauan pandangan pemain' },
-    { id: 'compactness-hull', label: 'Area Kompak Tim (Hull)', icon: Layers, desc: 'Poligon kerapatan formasi tim futsal (m²)' },
-    { id: 'distance-line', label: 'Garis Jarak (Meter)', icon: Ruler, desc: 'Ukur jarak antar pemain atau ke gawang' },
-    { id: 'magnifier', label: 'Lensa Zoom (Magnifier)', icon: ZoomIn, desc: 'Kaca pembesar detail kontrol bola / kaki pemain (Once Sport)' },
-    { id: 'player-cross', label: 'Silang Taktik (Cross)', icon: XCircle, desc: 'Tanda silang (X) kesalahan posisi atau rotasi taktik' },
-    { id: 'note-text', label: 'Catatan Taktik', icon: Type, desc: 'Label instruksi taktik pelatih' },
-    { id: 'freehand', label: 'Marker Bebas', icon: Sparkles, desc: 'Coretan bebas di atas video' },
+  const TOOLS: {
+    id: DrawingToolType;
+    label: string;
+    icon: any;
+    desc: string;
+  }[] = [
+    {
+      id: "select",
+      label: "Pilih & Edit (Select)",
+      icon: MousePointer,
+      desc: "Pilih elemen, geser posisi atau atur kelengkungan",
+    },
+    {
+      id: "spotlight-3d",
+      label: "3D Spotlight Futsal",
+      icon: Sparkles,
+      desc: "Sorotan 3D dengan elips lantai & berkas cahaya",
+    },
+    {
+      id: "curved-arrow",
+      label: "Panah Lengkung (Curved)",
+      icon: CornerUpRight,
+      desc: "Operan lambung / pisang khas Once Sport",
+    },
+    {
+      id: "pass-arrow",
+      label: "Panah Operan / Tembakan",
+      icon: MoveRight,
+      desc: "Panah lurus tegas untuk passing atau shooting",
+    },
+    {
+      id: "run-arrow",
+      label: "Panah Lari (Dashed)",
+      icon: MoveRight,
+      desc: "Lintasan lari pemain tanpa bola",
+    },
+    {
+      id: "player-circle",
+      label: "Lingkaran Pemain (#)",
+      icon: CircleDot,
+      desc: "Highlight pemain dengan nomor punggung",
+    },
+    {
+      id: "vision-cone",
+      label: "Radar Visi (FOV)",
+      icon: Eye,
+      desc: "Sudut pandang / jangkauan pandangan pemain",
+    },
+    {
+      id: "compactness-hull",
+      label: "Area Kompak Tim (Hull)",
+      icon: Layers,
+      desc: "Poligon kerapatan formasi tim futsal (m²)",
+    },
+    {
+      id: "distance-line",
+      label: "Garis Jarak (Meter)",
+      icon: Ruler,
+      desc: "Ukur jarak antar pemain atau ke gawang",
+    },
+    {
+      id: "magnifier",
+      label: "Lensa Zoom (Magnifier)",
+      icon: ZoomIn,
+      desc: "Kaca pembesar detail kontrol bola / kaki pemain (Once Sport)",
+    },
+    {
+      id: "player-cross",
+      label: "Silang Taktik (Cross)",
+      icon: XCircle,
+      desc: "Tanda silang (X) kesalahan posisi atau rotasi taktik",
+    },
+    {
+      id: "note-text",
+      label: "Catatan Taktik",
+      icon: Type,
+      desc: "Label instruksi taktik pelatih",
+    },
+    {
+      id: "freehand",
+      label: "Marker Bebas",
+      icon: Sparkles,
+      desc: "Coretan bebas di atas video",
+    },
   ];
 
   const PALETTE = [
-    '#00f0ff', // Cyan Neon
-    '#10b981', // Emerald Green
-    '#f59e0b', // Amber
-    '#ef4444', // Red
-    '#ec4899', // Pink
-    '#a855f7', // Purple
-    '#ffffff', // White
-    '#38bdf8', // Sky Blue
+    "#00f0ff", // Cyan Neon
+    "#10b981", // Emerald Green
+    "#f59e0b", // Amber
+    "#ef4444", // Red
+    "#ec4899", // Pink
+    "#a855f7", // Purple
+    "#ffffff", // White
+    "#38bdf8", // Sky Blue
   ];
 
   onMount(() => {
     if (activeClip) {
-      drawings = activeClip.drawings ? JSON.parse(JSON.stringify(activeClip.drawings)) : [];
+      drawings = activeClip.drawings
+        ? JSON.parse(JSON.stringify(activeClip.drawings))
+        : [];
       pauseDuration = activeClip.pauseDuration || 3.0;
       currentTime = activeClip.startTime;
-      freezeTime = activeClip.freezeTimestamp ?? (activeClip.startTime + activeClip.endTime) / 2;
+      freezeTime =
+        activeClip.freezeTimestamp ??
+        (activeClip.startTime + activeClip.endTime) / 2;
     }
 
     checkAiModelStatus()
@@ -167,10 +272,10 @@
 
     syncCanvasSize();
     rafId = requestAnimationFrame(renderLoop);
-    window.addEventListener('resize', syncCanvasSize);
+    window.addEventListener("resize", syncCanvasSize);
 
     return () => {
-      window.removeEventListener('resize', syncCanvasSize);
+      window.removeEventListener("resize", syncCanvasSize);
       if (freezeInterval) clearInterval(freezeInterval);
       if (rafId !== null) cancelAnimationFrame(rafId);
       trackAbortController?.abort();
@@ -257,7 +362,7 @@
   // --- DRAWING CANVAS RENDER ENGINE ---
   function drawCanvas() {
     if (!canvasEl) return;
-    const ctx = canvasEl.getContext('2d');
+    const ctx = canvasEl.getContext("2d");
     if (!ctx) return;
 
     const dpr = window.devicePixelRatio || 1;
@@ -268,634 +373,30 @@
     const w = canvasEl.width / dpr;
     const h = canvasEl.height / dpr;
 
-    // Render all saved drawings
-    for (const d of drawings) {
-      drawVideoElement(ctx, d, w, h);
-    }
+    const allToRender = inProgressDrawing
+      ? [...drawings, inProgressDrawing]
+      : drawings;
+    const listWithBlend = isFloorBlend
+      ? allToRender.map((d) => ({
+          ...d,
+          isChromaFloor: d.isChromaFloor ?? isFloorElType(d.type),
+        }))
+      : allToRender;
 
-    // Render in-progress drawing
-    if (inProgressDrawing) {
-      drawVideoElement(ctx, inProgressDrawing, w, h);
-    }
+    renderDrawingsToCanvas(ctx, listWithBlend, w, h, currentTime, {
+      videoEl,
+      homographyResult: isPitchCalibrated ? homographyResult : null,
+      chromaConfig: projectStore.chromaFloorConfig,
+      detectedBoxes: liveDetectedBoxes,
+      clipStartTime: activeClip ? activeClip.startTime : 0,
+      animElapsedSec: isFreezeActive ? 1.0 : undefined,
+      selectedElementId,
+      activeTool,
+    });
 
     // Render 3D court homography calibration grid if active
     if (isPitchCalibrated) {
       drawCalibratedCourtOverlay(ctx, calibrationPoints, w, h);
-    }
-
-    ctx.restore();
-  }
-
-  function hexToRgba(hex: string, alpha: number): string {
-    if (!hex || !hex.startsWith('#')) return `rgba(56, 189, 248, ${alpha})`;
-    const clean = hex.replace('#', '');
-    let r = 0, g = 0, b = 0;
-    if (clean.length === 3) {
-      r = parseInt(clean[0] + clean[0], 16);
-      g = parseInt(clean[1] + clean[1], 16);
-      b = parseInt(clean[2] + clean[2], 16);
-    } else if (clean.length === 6) {
-      r = parseInt(clean.substring(0, 2), 16);
-      g = parseInt(clean.substring(2, 4), 16);
-      b = parseInt(clean.substring(4, 6), 16);
-    }
-    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-  }
-
-  function drawVideoElement(
-    ctx: CanvasRenderingContext2D,
-    el: DrawingElement,
-    w: number,
-    h: number
-  ) {
-    if (el.points.length === 0) return;
-    ctx.save();
-
-    // Keyframe interpolation for moving elements
-    let centerPt = el.points[0];
-    if (el.keyframes && el.keyframes.length > 0) {
-      const tracked = getInterpolatedPosition(el.keyframes, currentTime);
-      if (tracked) {
-        centerPt = tracked;
-      }
-    }
-
-    const isSelected = el.id === selectedElementId;
-
-    switch (el.type) {
-      // 1. ONCE SPORT 3D SPOTLIGHT
-      case 'spotlight-3d': {
-        const cx = centerPt.x * w;
-        const cy = centerPt.y * h;
-        const rx = 65;
-        const ry = 26;
-
-        ctx.save();
-        if (isFloorBlend || el.isChromaFloor) {
-          ctx.globalCompositeOperation = 'screen';
-        }
-
-        // Volumetric vertical beam shining down
-        const beamHeight = 150;
-        const beamTopWidth = 30;
-        const beamGrad = ctx.createLinearGradient(cx, cy - beamHeight, cx, cy);
-        beamGrad.addColorStop(0, 'rgba(0, 0, 0, 0)');
-        beamGrad.addColorStop(0.3, hexToRgba(el.color || '#00f0ff', 0.08));
-        beamGrad.addColorStop(0.8, hexToRgba(el.color || '#00f0ff', 0.22));
-        beamGrad.addColorStop(1, hexToRgba(el.color || '#00f0ff', 0.42));
-
-        ctx.beginPath();
-        ctx.moveTo(cx - beamTopWidth, cy - beamHeight);
-        ctx.lineTo(cx + beamTopWidth, cy - beamHeight);
-        ctx.lineTo(cx + rx, cy);
-        ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI, false);
-        ctx.lineTo(cx - rx, cy);
-        ctx.closePath();
-        ctx.fillStyle = beamGrad;
-        ctx.fill();
-
-        // Floor perspective base ellipse
-        const floorGrad = ctx.createRadialGradient(cx, cy, ry * 0.15, cx, cy, rx);
-        floorGrad.addColorStop(0, hexToRgba(el.color || '#00f0ff', 0.65));
-        floorGrad.addColorStop(0.65, hexToRgba(el.color || '#00f0ff', 0.25));
-        floorGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
-
-        ctx.beginPath();
-        ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
-        ctx.fillStyle = floorGrad;
-        ctx.fill();
-
-        // Crisp glowing rim
-        ctx.beginPath();
-        ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
-        ctx.strokeStyle = el.color || '#00f0ff';
-        ctx.lineWidth = isSelected ? 3.5 : 2.5;
-        ctx.stroke();
-
-        // Radar pulse ring during preview or freeze
-        if (isPreviewing || isFreezeActive) {
-          const pulseOffset = (Date.now() / 280) % 1;
-          const prx = rx + pulseOffset * 22;
-          const pry = ry + pulseOffset * 9;
-          ctx.beginPath();
-          ctx.ellipse(cx, cy, prx, pry, 0, 0, Math.PI * 2);
-          ctx.strokeStyle = hexToRgba(el.color || '#00f0ff', 1 - pulseOffset);
-          ctx.lineWidth = 1.5;
-          ctx.stroke();
-        }
-
-        ctx.restore();
-
-        // Floating player pill banner above beam
-        const badgeY = cy - beamHeight - 12;
-        const labelText = el.label || '#10 Pivot';
-        ctx.font = 'bold 11px system-ui, sans-serif';
-        const tm = ctx.measureText(labelText);
-        const pw = tm.width + 26;
-        const ph = 22;
-
-        ctx.fillStyle = 'rgba(11, 23, 42, 0.95)';
-        ctx.beginPath();
-        ctx.roundRect(cx - pw / 2, badgeY - ph / 2, pw, ph, 11);
-        ctx.fill();
-        ctx.strokeStyle = el.color || '#00f0ff';
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-
-        // Beacon dot inside badge
-        ctx.beginPath();
-        ctx.arc(cx - pw / 2 + 10, badgeY, 4, 0, Math.PI * 2);
-        ctx.fillStyle = el.color || '#00f0ff';
-        ctx.fill();
-
-        ctx.fillStyle = '#ffffff';
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(labelText, cx - pw / 2 + 18, badgeY);
-
-        break;
-      }
-
-      // 2. ONCE SPORT CURVED PASSING/SHOOTING ARROW
-      case 'curved-arrow': {
-        if (el.points.length < 2) break;
-        const p0 = { x: el.points[0].x * w, y: el.points[0].y * h };
-        const p2 = { x: el.points[1].x * w, y: el.points[1].y * h };
-
-        // Determine control point for quadratic bezier
-        let cp: Point2D;
-        if (el.controlPoint) {
-          cp = { x: el.controlPoint.x * w, y: el.controlPoint.y * h };
-        } else {
-          const mx = (p0.x + p2.x) / 2;
-          const my = (p0.y + p2.y) / 2;
-          const dx = p2.x - p0.x;
-          const dy = p2.y - p0.y;
-          const len = Math.hypot(dx, dy) || 1;
-          const nx = -dy / len;
-          const ny = dx / len;
-          const offset = (el.curveOffset !== undefined ? el.curveOffset : -0.28) * len;
-          cp = { x: mx + nx * offset, y: my + ny * offset };
-        }
-
-        ctx.save();
-        if (isFloorBlend || el.isChromaFloor) {
-          ctx.globalCompositeOperation = 'screen';
-        }
-
-        // Dark background stroke for broadcast separation
-        ctx.beginPath();
-        ctx.moveTo(p0.x, p0.y);
-        ctx.quadraticCurveTo(cp.x, cp.y, p2.x, p2.y);
-        ctx.strokeStyle = 'rgba(0, 0, 0, 0.7)';
-        ctx.lineWidth = 6;
-        ctx.lineCap = 'round';
-        ctx.stroke();
-
-        // Primary vibrant curved stroke
-        ctx.beginPath();
-        ctx.moveTo(p0.x, p0.y);
-        ctx.quadraticCurveTo(cp.x, cp.y, p2.x, p2.y);
-        ctx.strokeStyle = el.color || '#00f0ff';
-        ctx.lineWidth = 3.5;
-        ctx.lineCap = 'round';
-        ctx.stroke();
-
-        // Broadcast Arrowhead at p2, aligned to curve tangent (p2 - cp)
-        const angle = Math.atan2(p2.y - cp.y, p2.x - cp.x);
-        const headlen = 16;
-        ctx.beginPath();
-        ctx.moveTo(p2.x, p2.y);
-        ctx.lineTo(
-          p2.x - headlen * Math.cos(angle - Math.PI / 6),
-          p2.y - headlen * Math.sin(angle - Math.PI / 6)
-        );
-        ctx.lineTo(
-          p2.x - (headlen * 0.7) * Math.cos(angle),
-          p2.y - (headlen * 0.7) * Math.sin(angle)
-        );
-        ctx.lineTo(
-          p2.x - headlen * Math.cos(angle + Math.PI / 6),
-          p2.y - headlen * Math.sin(angle + Math.PI / 6)
-        );
-        ctx.closePath();
-        ctx.fillStyle = el.color || '#00f0ff';
-        ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)';
-        ctx.lineWidth = 1.5;
-        ctx.fill();
-        ctx.stroke();
-
-        // Control Handle for interactive bending (if selected or select tool active)
-        if (isSelected || activeTool === 'select') {
-          ctx.beginPath();
-          ctx.setLineDash([3, 3]);
-          ctx.moveTo((p0.x + p2.x) / 2, (p0.y + p2.y) / 2);
-          ctx.lineTo(cp.x, cp.y);
-          ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
-          ctx.lineWidth = 1;
-          ctx.stroke();
-          ctx.setLineDash([]);
-
-          ctx.beginPath();
-          ctx.arc(cp.x, cp.y, 6, 0, Math.PI * 2);
-          ctx.fillStyle = '#ffffff';
-          ctx.strokeStyle = el.color || '#00f0ff';
-          ctx.lineWidth = 2;
-          ctx.fill();
-          ctx.stroke();
-        }
-
-        ctx.restore();
-        break;
-      }
-
-      // 3. TACTICAL COMPACTNESS HULL
-      case 'compactness-hull': {
-        if (el.points.length < 3) break;
-        ctx.save();
-        if (isFloorBlend || el.isChromaFloor) {
-          ctx.globalCompositeOperation = 'screen';
-        }
-
-        ctx.beginPath();
-        ctx.moveTo(el.points[0].x * w, el.points[0].y * h);
-        let sumX = el.points[0].x;
-        let sumY = el.points[0].y;
-        for (let i = 1; i < el.points.length; i++) {
-          ctx.lineTo(el.points[i].x * w, el.points[i].y * h);
-          sumX += el.points[i].x;
-          sumY += el.points[i].y;
-        }
-        ctx.closePath();
-
-        // Semi-transparent tactical fill
-        ctx.fillStyle = hexToRgba(el.color || '#38bdf8', 0.22);
-        ctx.fill();
-
-        // Perimeter stroke
-        ctx.strokeStyle = el.color || '#38bdf8';
-        ctx.lineWidth = isSelected ? 3 : 2;
-        ctx.setLineDash([6, 4]);
-        ctx.stroke();
-        ctx.setLineDash([]);
-
-        // Calculate centroid & futsal court area (real Homography m² when calibrated)
-        const cx = (sumX / el.points.length) * w;
-        const cy = (sumY / el.points.length) * h;
-
-        let areaM2Str: string;
-        if (isPitchCalibrated && homographyResult) {
-          const mPts = el.points.map((p) => canvasToCourtMeters(p, homographyResult!.H_inv));
-          let areaM2 = 0;
-          for (let i = 0; i < mPts.length; i++) {
-            const j = (i + 1) % mPts.length;
-            areaM2 += mPts[i].x * mPts[j].y - mPts[j].x * mPts[i].y;
-          }
-          areaM2 = Math.abs(areaM2) / 2;
-          areaM2Str = `${areaM2.toFixed(1)} m²`;
-        } else {
-          let areaNorm = 0;
-          for (let i = 0; i < el.points.length; i++) {
-            const j = (i + 1) % el.points.length;
-            areaNorm += el.points[i].x * el.points[j].y;
-            areaNorm -= el.points[j].x * el.points[i].y;
-          }
-          areaNorm = Math.abs(areaNorm) / 2;
-          areaM2Str = `~${(areaNorm * 800).toFixed(1)} m² (est.)`;
-        }
-
-        // Centroid dot
-        ctx.beginPath();
-        ctx.arc(cx, cy, 4, 0, Math.PI * 2);
-        ctx.fillStyle = '#ffffff';
-        ctx.fill();
-
-        // Area badge
-        const label = `Kompak: ${areaM2Str}`;
-        ctx.font = 'bold 11px system-ui';
-        const tm = ctx.measureText(label);
-        ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
-        ctx.fillRect(cx - tm.width / 2 - 6, cy - 22, tm.width + 12, 18);
-        ctx.strokeStyle = el.color || '#38bdf8';
-        ctx.strokeRect(cx - tm.width / 2 - 6, cy - 22, tm.width + 12, 18);
-        ctx.fillStyle = '#38bdf8';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(label, cx, cy - 13);
-
-        ctx.restore();
-        break;
-      }
-
-      // 4. PLAYER CIRCLE
-      case 'player-circle': {
-        const cx = centerPt.x * w;
-        const cy = centerPt.y * h;
-        const r = 24;
-
-        ctx.beginPath();
-        ctx.arc(cx, cy, r, 0, Math.PI * 2);
-        ctx.strokeStyle = el.color || '#f59e0b';
-        ctx.lineWidth = isSelected ? 3.5 : 2.5;
-        ctx.stroke();
-
-        ctx.fillStyle = hexToRgba(el.color || '#f59e0b', 0.22);
-        ctx.fill();
-
-        if (el.label) {
-          ctx.font = 'bold 11px system-ui';
-          ctx.fillStyle = '#ffffff';
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillText(el.label, cx, cy);
-        }
-        break;
-      }
-
-      // 5. RADAR VISION CONE (FOV)
-      case 'vision-cone': {
-        const cx = centerPt.x * w;
-        const cy = centerPt.y * h;
-        let angle = -Math.PI / 4;
-        let length = 135;
-        if (el.points.length >= 2) {
-          const tx = el.points[1].x * w;
-          const ty = el.points[1].y * h;
-          const dist = Math.hypot(tx - cx, ty - cy);
-          if (dist > 10) {
-            angle = Math.atan2(ty - cy, tx - cx);
-            length = dist;
-          }
-        }
-        const fov = Math.PI / 3;
-
-        ctx.beginPath();
-        ctx.moveTo(cx, cy);
-        ctx.arc(cx, cy, length, angle - fov / 2, angle + fov / 2);
-        ctx.closePath();
-
-        const grad = ctx.createRadialGradient(cx, cy, 10, cx, cy, length);
-        grad.addColorStop(0, hexToRgba(el.color || '#f59e0b', 0.45));
-        grad.addColorStop(1, hexToRgba(el.color || '#f59e0b', 0.05));
-        ctx.fillStyle = grad;
-        ctx.fill();
-
-        ctx.strokeStyle = el.color || '#f59e0b';
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-        break;
-      }
-
-      // 6. PASS & RUN ARROWS
-      case 'pass-arrow':
-      case 'run-arrow': {
-        if (el.points.length < 2) break;
-        const p1 = { x: el.points[0].x * w, y: el.points[0].y * h };
-        const p2 = { x: el.points[1].x * w, y: el.points[1].y * h };
-
-        // Background outline
-        ctx.beginPath();
-        ctx.moveTo(p1.x, p1.y);
-        ctx.lineTo(p2.x, p2.y);
-        ctx.strokeStyle = 'rgba(0, 0, 0, 0.6)';
-        ctx.lineWidth = 5.5;
-        if (el.type === 'run-arrow') ctx.setLineDash([8, 6]);
-        ctx.stroke();
-        ctx.setLineDash([]);
-
-        // Vibrant stroke
-        ctx.beginPath();
-        ctx.moveTo(p1.x, p1.y);
-        ctx.lineTo(p2.x, p2.y);
-        ctx.strokeStyle = el.color || '#10b981';
-        ctx.lineWidth = 3.5;
-        if (el.type === 'run-arrow') ctx.setLineDash([8, 6]);
-        ctx.stroke();
-        ctx.setLineDash([]);
-
-        // Arrow head
-        const headlen = 15;
-        const dx = p2.x - p1.x;
-        const dy = p2.y - p1.y;
-        const angle = Math.atan2(dy, dx);
-        ctx.beginPath();
-        ctx.moveTo(p2.x, p2.y);
-        ctx.lineTo(
-          p2.x - headlen * Math.cos(angle - Math.PI / 6),
-          p2.y - headlen * Math.sin(angle - Math.PI / 6)
-        );
-        ctx.lineTo(
-          p2.x - headlen * Math.cos(angle + Math.PI / 6),
-          p2.y - headlen * Math.sin(angle + Math.PI / 6)
-        );
-        ctx.closePath();
-        ctx.fillStyle = el.color || '#10b981';
-        ctx.fill();
-        break;
-      }
-
-      // 7. DISTANCE LINE
-      case 'distance-line': {
-        if (el.points.length < 2) break;
-        const p1 = { x: el.points[0].x * w, y: el.points[0].y * h };
-        const p2 = { x: el.points[1].x * w, y: el.points[1].y * h };
-
-        ctx.beginPath();
-        ctx.moveTo(p1.x, p1.y);
-        ctx.lineTo(p2.x, p2.y);
-        ctx.strokeStyle = '#ffffff';
-        ctx.lineWidth = 2;
-        ctx.setLineDash([4, 4]);
-        ctx.stroke();
-        ctx.setLineDash([]);
-
-        const distPx = Math.hypot(p2.x - p1.x, p2.y - p1.y);
-        let distM = (distPx / (w * 0.05)).toFixed(1);
-        if (isPitchCalibrated && homographyResult) {
-          distM = getCalibratedDistanceMeters(el.points[0], el.points[1], homographyResult.H_inv).toFixed(1);
-        }
-        const mx = (p1.x + p2.x) / 2;
-        const my = (p1.y + p2.y) / 2;
-
-        ctx.fillStyle = '#0f172a';
-        ctx.fillRect(mx - 24, my - 10, 48, 20);
-        ctx.strokeStyle = '#38bdf8';
-        ctx.strokeRect(mx - 24, my - 10, 48, 20);
-
-        ctx.font = 'bold 10px monospace';
-        ctx.fillStyle = '#38bdf8';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(`${distM}m`, mx, my);
-        break;
-      }
-
-      // 8. NOTE TEXT
-      case 'note-text': {
-        const cx = centerPt.x * w;
-        const cy = centerPt.y * h;
-        const text = el.label || 'Catatan Taktik';
-
-        ctx.font = 'bold 12px system-ui';
-        const metrics = ctx.measureText(text);
-        const pad = 8;
-
-        ctx.fillStyle = 'rgba(15, 23, 42, 0.95)';
-        ctx.fillRect(cx - pad, cy - 14 - pad, metrics.width + pad * 2, 26 + pad);
-        ctx.strokeStyle = el.color || '#38bdf8';
-        ctx.lineWidth = 1.5;
-        ctx.strokeRect(cx - pad, cy - 14 - pad, metrics.width + pad * 2, 26 + pad);
-
-        ctx.fillStyle = '#ffffff';
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(text, cx, cy);
-        break;
-      }
-
-      // 9. FREEHAND
-      case 'freehand': {
-        if (el.points.length < 2) break;
-        ctx.beginPath();
-        ctx.moveTo(el.points[0].x * w, el.points[0].y * h);
-        for (let i = 1; i < el.points.length; i++) {
-          ctx.lineTo(el.points[i].x * w, el.points[i].y * h);
-        }
-        ctx.strokeStyle = el.color || '#ec4899';
-        ctx.lineWidth = 3.5;
-        ctx.lineCap = 'round';
-        ctx.stroke();
-        break;
-      }
-
-      // 10. ONCE SPORT MAGNIFIER (ZOOM LENS)
-      case 'magnifier': {
-        const cx = centerPt.x * w;
-        const cy = centerPt.y * h;
-        const r = 52;
-        const zoom = el.zoomScale || 1.8;
-
-        ctx.save();
-        // Clip circular lens
-        ctx.beginPath();
-        ctx.arc(cx, cy, r, 0, Math.PI * 2);
-        ctx.clip();
-
-        if (videoEl && videoEl.videoWidth > 0 && videoEl.videoHeight > 0) {
-          const vw = videoEl.videoWidth;
-          const vh = videoEl.videoHeight;
-          const vSrcX = centerPt.x * vw;
-          const vSrcY = centerPt.y * vh;
-          const vSrcW = (r / zoom) * (vw / w);
-          const vSrcH = (r / zoom) * (vh / h);
-
-          ctx.drawImage(
-            videoEl,
-            Math.max(0, vSrcX - vSrcW),
-            Math.max(0, vSrcY - vSrcH),
-            Math.min(vw, vSrcW * 2),
-            Math.min(vh, vSrcH * 2),
-            cx - r,
-            cy - r,
-            r * 2,
-            r * 2
-          );
-        } else {
-          ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
-          ctx.fill();
-        }
-
-        ctx.restore();
-
-        // Lens Glass Rim & Shadow
-        ctx.save();
-        ctx.beginPath();
-        ctx.arc(cx, cy, r, 0, Math.PI * 2);
-        ctx.strokeStyle = el.color || '#38bdf8';
-        ctx.lineWidth = isSelected ? 4 : 2.5;
-        ctx.stroke();
-
-        // Crosshair Reticle inside lens
-        ctx.beginPath();
-        ctx.moveTo(cx - 10, cy);
-        ctx.lineTo(cx + 10, cy);
-        ctx.moveTo(cx, cy - 10);
-        ctx.lineTo(cx, cy + 10);
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.45)';
-        ctx.lineWidth = 1;
-        ctx.stroke();
-
-        // Floating Lens Zoom Badge
-        const badgeY = cy + r + 14;
-        const badgeText = `${zoom.toFixed(1)}x ZOOM DETAIL`;
-        ctx.font = 'bold 10px monospace';
-        const bM = ctx.measureText(badgeText);
-        ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
-        ctx.fillRect(cx - bM.width / 2 - 6, badgeY - 8, bM.width + 12, 16);
-        ctx.strokeStyle = el.color || '#38bdf8';
-        ctx.strokeRect(cx - bM.width / 2 - 6, badgeY - 8, bM.width + 12, 16);
-        ctx.fillStyle = '#38bdf8';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(badgeText, cx, badgeY);
-        ctx.restore();
-        break;
-      }
-
-      // 11. ONCE SPORT PLAYER CROSS (KESALAHAN TAKTIK)
-      case 'player-cross': {
-        const cx = centerPt.x * w;
-        const cy = centerPt.y * h;
-        const arm = 16;
-
-        ctx.save();
-        // Dark contrast background cross
-        ctx.beginPath();
-        ctx.moveTo(cx - arm, cy - arm);
-        ctx.lineTo(cx + arm, cy + arm);
-        ctx.moveTo(cx + arm, cy - arm);
-        ctx.lineTo(cx - arm, cy + arm);
-        ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)';
-        ctx.lineWidth = 6;
-        ctx.lineCap = 'round';
-        ctx.stroke();
-
-        // Vibrant Cross
-        ctx.beginPath();
-        ctx.moveTo(cx - arm, cy - arm);
-        ctx.lineTo(cx + arm, cy + arm);
-        ctx.moveTo(cx + arm, cy - arm);
-        ctx.lineTo(cx - arm, cy + arm);
-        ctx.strokeStyle = el.color || '#ef4444';
-        ctx.lineWidth = 3.5;
-        ctx.lineCap = 'round';
-        ctx.stroke();
-
-        // Pulsing dashed ring
-        ctx.beginPath();
-        ctx.arc(cx, cy, arm * 1.5, 0, Math.PI * 2);
-        ctx.strokeStyle = hexToRgba(el.color || '#ef4444', 0.6);
-        ctx.lineWidth = 1.5;
-        ctx.setLineDash([4, 4]);
-        ctx.stroke();
-        ctx.setLineDash([]);
-
-        // Floating Error Label
-        const labelText = el.label || 'Salah Posisi';
-        const badgeY = cy - arm - 12;
-        ctx.font = 'bold 10px system-ui';
-        const tm = ctx.measureText(labelText);
-        ctx.fillStyle = 'rgba(239, 68, 68, 0.2)';
-        ctx.fillRect(cx - tm.width / 2 - 6, badgeY - 8, tm.width + 12, 16);
-        ctx.strokeStyle = '#ef4444';
-        ctx.strokeRect(cx - tm.width / 2 - 6, badgeY - 8, tm.width + 12, 16);
-        ctx.fillStyle = '#fca5a5';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(labelText, cx, badgeY);
-        ctx.restore();
-        break;
-      }
     }
 
     ctx.restore();
@@ -915,9 +416,27 @@
     if (!canvasEl) return;
     const pt = getCanvasCoords(e);
 
+    // -1. Court floor chroma-key eyedropper sampler
+    if (isSamplingFloor) {
+      isSamplingFloor = false;
+      if (videoEl && videoEl.videoWidth > 0) {
+        const rgb = sampleFloorRgbFromVideo(videoEl, pt.x, pt.y);
+        if (rgb) {
+          projectStore.chromaFloorConfig.targetRgb = rgb;
+          projectStore.chromaFloorConfig.enabled = true;
+          exportNotice = `Warna lantai dikalibrasi: rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`;
+          setTimeout(() => (exportNotice = null), 3500);
+          return;
+        }
+      }
+      exportNotice = "Video belum termuat untuk mengambil sampel warna lantai.";
+      setTimeout(() => (exportNotice = null), 3000);
+      return;
+    }
+
     // 0. If 3D pitch calibration is active, check corner pin dragging
     if (isPitchCalibrated) {
-      const corners: ('tl' | 'tr' | 'br' | 'bl')[] = ['tl', 'tr', 'br', 'bl'];
+      const corners: ("tl" | "tr" | "br" | "bl")[] = ["tl", "tr", "br", "bl"];
       for (const c of corners) {
         const pin = calibrationPoints[c];
         if (Math.hypot(pt.x - pin.x, pt.y - pin.y) < 0.05) {
@@ -928,9 +447,9 @@
     }
 
     // If Select Tool is active:
-    if (activeTool === 'select') {
+    if (activeTool === "select") {
       // 1. Check if clicking on curve control point of a curved arrow
-      if (selectedElement && selectedElement.type === 'curved-arrow') {
+      if (selectedElement && selectedElement.type === "curved-arrow") {
         const p0 = selectedElement.points[0];
         const p2 = selectedElement.points[1];
         let cp = selectedElement.controlPoint;
@@ -954,8 +473,9 @@
       // 2. Check if clicking near any existing element to select it
       let found: DrawingElement | null = null;
       for (const d of drawings) {
-        if (d.points.length > 0) {
-          const dist = Math.hypot(pt.x - d.points[0].x, pt.y - d.points[0].y);
+        const effPts = getElementPointsAtTime(d, currentTime);
+        if (effPts.length > 0) {
+          const dist = Math.hypot(pt.x - effPts[0].x, pt.y - effPts[0].y);
           if (dist < 0.08) {
             found = d;
             break;
@@ -974,11 +494,11 @@
     }
 
     // Creating new element
-    if (activeTool === 'compactness-hull') {
+    if (activeTool === "compactness-hull") {
       if (!inProgressDrawing) {
         inProgressDrawing = {
           id: `hull-${Date.now()}`,
-          type: 'compactness-hull',
+          type: "compactness-hull",
           color: activeColor,
           points: [pt],
           timeStart: activeClip ? activeClip.startTime : currentTime,
@@ -987,7 +507,10 @@
       } else {
         // If clicking near first point, finish the hull
         const p0 = inProgressDrawing.points[0];
-        if (inProgressDrawing.points.length >= 3 && Math.hypot(pt.x - p0.x, pt.y - p0.y) < 0.05) {
+        if (
+          inProgressDrawing.points.length >= 3 &&
+          Math.hypot(pt.x - p0.x, pt.y - p0.y) < 0.05
+        ) {
           drawings.push({ ...inProgressDrawing });
           selectedElementId = inProgressDrawing.id;
           inProgressDrawing = null;
@@ -1005,9 +528,20 @@
       points: [pt],
       timeStart: activeClip ? activeClip.startTime : currentTime,
       timeEnd: activeClip ? activeClip.endTime : currentTime + 5,
-      label: activeTool === 'player-circle' ? '#9' : activeTool === 'note-text' ? 'Evaluasi Rotasi' : activeTool === 'magnifier' ? '1.8x Zoom' : activeTool === 'player-cross' ? 'Salah Posisi' : undefined,
-      curveOffset: activeTool === 'curved-arrow' ? -0.28 : undefined,
-      zoomScale: activeTool === 'magnifier' ? 1.8 : undefined,
+      isChromaFloor: isFloorBlend || isFloorElType(activeTool),
+      animationStyle: "none",
+      label:
+        activeTool === "player-circle"
+          ? "#9"
+          : activeTool === "note-text"
+            ? "Evaluasi Rotasi"
+            : activeTool === "magnifier"
+              ? "1.8x Zoom"
+              : activeTool === "player-cross"
+                ? "Salah Posisi"
+                : undefined,
+      curveOffset: activeTool === "curved-arrow" ? -0.28 : undefined,
+      zoomScale: activeTool === "magnifier" ? 1.8 : undefined,
     };
   }
 
@@ -1046,7 +580,11 @@
 
       // If Keyframe Tracking mode is active, record keyframe at currentTime!
       if (isKeyframeMode) {
-        addOrUpdateKeyframe(selectedElement, currentTime, selectedElement.points[0]);
+        addOrUpdateKeyframe(
+          selectedElement,
+          currentTime,
+          selectedElement.points[0],
+        );
       }
 
       dragStartPos = pt;
@@ -1057,7 +595,7 @@
     // In-progress drawing updates
     if (!inProgressDrawing) return;
 
-    if (inProgressDrawing.type === 'freehand') {
+    if (inProgressDrawing.type === "freehand") {
       inProgressDrawing.points.push(pt);
     } else if (inProgressDrawing.points.length === 1) {
       inProgressDrawing.points.push(pt);
@@ -1072,10 +610,14 @@
     isDraggingSelected = false;
     dragStartPos = null;
 
-    if (!inProgressDrawing || inProgressDrawing.type === 'compactness-hull') return;
+    if (!inProgressDrawing || inProgressDrawing.type === "compactness-hull")
+      return;
 
     // Finish curved arrow with initial control point
-    if (inProgressDrawing.type === 'curved-arrow' && inProgressDrawing.points.length >= 2) {
+    if (
+      inProgressDrawing.type === "curved-arrow" &&
+      inProgressDrawing.points.length >= 2
+    ) {
       const p0 = inProgressDrawing.points[0];
       const p2 = inProgressDrawing.points[1];
       const mx = (p0.x + p2.x) / 2;
@@ -1086,7 +628,10 @@
       const nx = -dy / len;
       const ny = dx / len;
       const offset = (inProgressDrawing.curveOffset || -0.28) * len;
-      inProgressDrawing.controlPoint = { x: mx + nx * offset, y: my + ny * offset };
+      inProgressDrawing.controlPoint = {
+        x: mx + nx * offset,
+        y: my + ny * offset,
+      };
     }
 
     drawings.push({ ...inProgressDrawing });
@@ -1095,11 +640,17 @@
   }
 
   // --- KEYFRAME TRACKING ENGINE ---
-  function addOrUpdateKeyframe(element: DrawingElement, time: number, pt: Point2D) {
+  function addOrUpdateKeyframe(
+    element: DrawingElement,
+    time: number,
+    pt: Point2D,
+  ) {
     if (!element.keyframes) {
       element.keyframes = [];
     }
-    const existingIdx = element.keyframes.findIndex((k) => Math.abs(k.time - time) < 0.08);
+    const existingIdx = element.keyframes.findIndex(
+      (k) => Math.abs(k.time - time) < 0.08,
+    );
     if (existingIdx !== -1) {
       element.keyframes[existingIdx].x = pt.x;
       element.keyframes[existingIdx].y = pt.y;
@@ -1112,14 +663,18 @@
 
   function handleAddCurrentKeyframe() {
     if (!selectedElement) return;
-    addOrUpdateKeyframe(selectedElement, currentTime, selectedElement.points[0]);
+    addOrUpdateKeyframe(
+      selectedElement,
+      currentTime,
+      selectedElement.points[0],
+    );
     drawings = [...drawings];
   }
 
   function handleDeleteCurrentKeyframe() {
     if (!selectedElement || !selectedElement.keyframes) return;
     selectedElement.keyframes = selectedElement.keyframes.filter(
-      (k) => Math.abs(k.time - currentTime) >= 0.15
+      (k) => Math.abs(k.time - currentTime) >= 0.15,
     );
     if (selectedElement.keyframes.length === 0) {
       selectedElement.isTracking = false;
@@ -1184,37 +739,74 @@
     exportNotice = `Menjalankan deteksi AI (${aiEngineLabel})...`;
 
     try {
-      const result = await runMultiPlayerAutoTracking(projectStore.videoFilePath, start, end, 8);
+      const result = await runMultiPlayerAutoTracking(
+        projectStore.videoFilePath,
+        start,
+        end,
+        8,
+      );
       if (result.tracks.length === 0) {
-        exportNotice = 'AI tidak mendeteksi pemain yang cukup konsisten di klip ini.';
+        exportNotice =
+          "AI tidak mendeteksi pemain yang cukup konsisten di klip ini.";
         setTimeout(() => (exportNotice = null), 4000);
         return;
       }
+
+      detectedTracks = result.tracks;
 
       for (const track of result.tracks) {
         const firstKf = track.keyframes[0] || { x: 0.5, y: 0.5 };
         drawings.push({
           id: `mot-${track.id}-${Date.now()}`,
-          type: 'spotlight-3d',
+          type: "spotlight-3d",
           color: track.color,
           points: [{ x: firstKf.x, y: firstKf.y }],
           keyframes: track.keyframes,
           isTracking: true,
+          isChromaFloor: true,
           label: track.label,
           timeStart: start,
           timeEnd: end,
         });
       }
 
-      // Also attach initial compactness hull for home team if >= 3 players detected
+      // Attach dynamic multi-point compactness hull for home team (up to 5 players)
+      const homeTracks = result.tracks
+        .filter((tr) => tr.team === "home" && tr.keyframes.length > 0)
+        .slice(0, 5);
       const firstHomeHull = result.homeHullKeyframes.values().next().value;
-      if (firstHomeHull && firstHomeHull.length >= 3) {
+      if (homeTracks.length >= 3) {
+        const hullPts: Point2D[] = [];
+        const hullPointTracks: Record<number, TrackingKeyframe[]> = {};
+        const hullPointIds: Record<number, string> = {};
+        homeTracks.forEach((tr, idx) => {
+          const kf0 =
+            getInterpolatedPosition(tr.keyframes, start) ?? tr.keyframes[0];
+          hullPts.push({ x: kf0.x, y: kf0.y });
+          hullPointTracks[idx] = tr.keyframes;
+          hullPointIds[idx] = tr.id;
+        });
         drawings.push({
           id: `mot-hull-home-${Date.now()}`,
-          type: 'compactness-hull',
-          color: '#ef4444',
+          type: "compactness-hull",
+          color: "#ef4444",
+          points: hullPts,
+          pointTracks: hullPointTracks,
+          pointTrackIds: hullPointIds,
+          isTracking: true,
+          isChromaFloor: true,
+          label: "Kompak Tim A",
+          timeStart: start,
+          timeEnd: end,
+        });
+      } else if (firstHomeHull && firstHomeHull.length >= 3) {
+        drawings.push({
+          id: `mot-hull-home-${Date.now()}`,
+          type: "compactness-hull",
+          color: "#ef4444",
           points: firstHomeHull,
-          label: 'Kompak Tim A',
+          isChromaFloor: true,
+          label: "Kompak Tim A",
           timeStart: start,
           timeEnd: end,
         });
@@ -1234,7 +826,7 @@
   // Trigger Visual Single-Player Auto-Tracking on currently selected element
   async function triggerSingleElementTracking() {
     if (!selectedElement || !videoEl || selectedElement.points.length === 0) {
-      exportNotice = 'Pilih elemen dan pastikan video termuat untuk melacak.';
+      exportNotice = "Pilih elemen dan pastikan video termuat untuk melacak.";
       setTimeout(() => (exportNotice = null), 3500);
       return;
     }
@@ -1246,7 +838,9 @@
     }
 
     const start = activeClip ? activeClip.startTime : currentTime;
-    const end = activeClip ? activeClip.endTime : Math.min(duration, currentTime + 5);
+    const end = activeClip
+      ? activeClip.endTime
+      : Math.min(duration, currentTime + 5);
     const anchor = selectedElement.points[0];
     const box = {
       x: Math.max(0, anchor.x - 0.025),
@@ -1290,9 +884,9 @@
       drawings,
       pauseDuration,
       voiceoverAudio || undefined,
-      freezeTime
+      freezeTime,
     );
-    exportNotice = 'Telestrasi & posisi freeze-frame disimpan!';
+    exportNotice = "Telestrasi & posisi freeze-frame disimpan!";
     setTimeout(() => (exportNotice = null), 2500);
   }
 
@@ -1303,17 +897,20 @@
       drawings,
       pauseDuration,
       voiceoverAudio || undefined,
-      freezeTime
+      freezeTime,
     );
     if (projectStore.activeClipForDrawing) {
       drawings = projectStore.activeClipForDrawing.drawings
         ? JSON.parse(JSON.stringify(projectStore.activeClipForDrawing.drawings))
         : [];
       pauseDuration = projectStore.activeClipForDrawing.pauseDuration || 3.0;
-      voiceoverAudio = projectStore.activeClipForDrawing.voiceoverAudioBase64 || null;
+      voiceoverAudio =
+        projectStore.activeClipForDrawing.voiceoverAudioBase64 || null;
       freezeTime =
         projectStore.activeClipForDrawing.freezeTimestamp ??
-        (projectStore.activeClipForDrawing.startTime + projectStore.activeClipForDrawing.endTime) / 2;
+        (projectStore.activeClipForDrawing.startTime +
+          projectStore.activeClipForDrawing.endTime) /
+          2;
       if (videoEl) {
         videoEl.currentTime = projectStore.activeClipForDrawing.startTime;
       }
@@ -1322,7 +919,7 @@
 
   function handleBackToTagging() {
     handleSave();
-    projectStore.setStage('tagging');
+    projectStore.setStage("tagging");
   }
 
   function triggerPreview() {
@@ -1354,10 +951,149 @@
     selectedElementId = null;
   }
 
-  // Pilar 1: Direct Telestration Video Burner (with absolute Save dialog + full tool parity)
+  async function triggerCutoutDetect() {
+    if (isDetectingCutout) return;
+    isDetectingCutout = true;
+    exportNotice = "Mendeteksi siluet pemain (YOLOX-Nano) untuk Cutout Mask...";
+    try {
+      const boxes = await detectPlayersInFrameOnnx(
+        projectStore.videoFilePath,
+        currentTime,
+      );
+      liveDetectedBoxes = boxes;
+      if (boxes.length > 0) {
+        projectStore.chromaFloorConfig.enabled = true;
+        exportNotice = `Cutout aktif: ${boxes.length} objek terdeteksi pada ${currentTime.toFixed(2)}s`;
+      } else {
+        exportNotice =
+          "Tidak ada bounding box terdeteksi di frame ini (Chroma HSV tetap aktif).";
+      }
+      setTimeout(() => (exportNotice = null), 3500);
+    } finally {
+      isDetectingCutout = false;
+    }
+  }
+
+  function bindTrackToPoint(
+    el: DrawingElement,
+    pointIdx: number,
+    trackId: string,
+  ) {
+    const nextTracks = { ...(el.pointTracks || {}) };
+    const nextIds = { ...(el.pointTrackIds || {}) };
+    if (!trackId) {
+      delete nextTracks[pointIdx];
+      delete nextIds[pointIdx];
+    } else {
+      const tr = detectedTracks.find((t) => t.id === trackId);
+      if (tr) {
+        nextTracks[pointIdx] = [...tr.keyframes];
+        nextIds[pointIdx] = tr.id;
+      }
+    }
+    el.pointTracks = nextTracks;
+    el.pointTrackIds = nextIds;
+    el.isTracking =
+      Object.keys(nextTracks).length > 0 || (el.keyframes?.length ?? 0) > 0;
+    drawings = [...drawings];
+  }
+
+  function autoBindSelectedPointsToTracks() {
+    if (!selectedElement || detectedTracks.length === 0) return;
+    const res = bindElementPointsToTracks(
+      selectedElement,
+      detectedTracks,
+      currentTime,
+    );
+    if (res.boundCount === 0) {
+      exportNotice = "Tidak ada track AI yang dekat dengan titik elemen ini.";
+      setTimeout(() => (exportNotice = null), 3000);
+      return;
+    }
+    selectedElement.pointTracks = res.pointTracks;
+    selectedElement.pointTrackIds = res.pointTrackIds;
+    selectedElement.isTracking = true;
+    drawings = [...drawings];
+    exportNotice = `${res.boundCount} titik diikat ke pemain AI.`;
+    setTimeout(() => (exportNotice = null), 3000);
+  }
+
+  async function triggerMultiPointTracking() {
+    if (!selectedElement || !videoEl || selectedElement.points.length < 2)
+      return;
+    if (isMultiPointTracking) {
+      trackAbortController?.abort();
+      isMultiPointTracking = false;
+      return;
+    }
+
+    const start = activeClip ? activeClip.startTime : currentTime;
+    const end = activeClip
+      ? activeClip.endTime
+      : Math.min(duration, currentTime + 5);
+    isMultiPointTracking = true;
+    singleTrackProgress = 0;
+    trackAbortController = new AbortController();
+
+    try {
+      const nextPointTracks: Record<number, TrackingKeyframe[]> = {
+        ...(selectedElement.pointTracks || {}),
+      };
+      const ptsCount = selectedElement.points.length;
+
+      for (let idx = 0; idx < ptsCount; idx++) {
+        if (trackAbortController.signal.aborted) break;
+        const pt = selectedElement.points[idx];
+        const box = {
+          x: Math.max(0, pt.x - 0.025),
+          y: Math.max(0, pt.y - 0.06),
+          width: 0.05,
+          height: 0.09,
+        };
+        const kfs = await runPlayerAutoTracking(videoEl, box, start, end, {
+          stepSeconds: 0.08,
+          signal: trackAbortController.signal,
+          onProgress: (p) => {
+            singleTrackProgress = Math.round(((idx + p) / ptsCount) * 100);
+          },
+        });
+        if (kfs.length > 0) {
+          nextPointTracks[idx] = kfs;
+        }
+      }
+
+      if (selectedElement && Object.keys(nextPointTracks).length > 0) {
+        selectedElement.pointTracks = nextPointTracks;
+        selectedElement.isTracking = true;
+        drawings = [...drawings];
+        exportNotice = `Multi-Point Tracking selesai (${Object.keys(nextPointTracks).length} titik).`;
+        setTimeout(() => (exportNotice = null), 3500);
+      }
+    } catch (err: any) {
+      exportNotice = `Multi-Point Tracking gagal: ${err?.message || err}`;
+      setTimeout(() => (exportNotice = null), 4000);
+    } finally {
+      isMultiPointTracking = false;
+      trackAbortController = null;
+    }
+  }
+
+  function toggleCameraZoomOnSelected() {
+    if (!selectedElement || selectedElement.points.length === 0) return;
+    if (selectedElement.cameraZoomTarget) {
+      selectedElement.cameraZoomTarget = undefined;
+    } else {
+      const p = selectedElement.points[0];
+      selectedElement.cameraZoomTarget = { x: p.x, y: p.y, scale: 1.45 };
+    }
+    drawings = [...drawings];
+  }
+
+  // Pilar 1 & Sprint 2: Direct Telestration Video Burner (Static Freeze OR Continuous Animated Sequence)
   async function handleDirectExportClip() {
     if (!isTauriDesktop()) {
-      exportNotice = 'Ekspor MP4 FFmpeg hanya tersedia di aplikasi desktop Tauri.';
+      exportNotice =
+        "Ekspor MP4 FFmpeg hanya tersedia di aplikasi desktop Tauri.";
       setTimeout(() => (exportNotice = null), 4000);
       return;
     }
@@ -1365,43 +1101,173 @@
     if (
       !activeClip ||
       !projectStore.videoFilePath ||
-      (!projectStore.videoFilePath.startsWith('/') && !/^[A-Za-z]:[\\/]/.test(projectStore.videoFilePath))
+      (!projectStore.videoFilePath.startsWith("/") &&
+        !/^[A-Za-z]:[\\/]/.test(projectStore.videoFilePath))
     ) {
-      exportNotice = 'Path file video absolut tidak ditemukan. Buka video lewat Hub Proyek.';
+      exportNotice =
+        "Path file video absolut tidak ditemukan. Buka video lewat Hub Proyek.";
       setTimeout(() => (exportNotice = null), 4000);
       return;
     }
 
+    let seqDirToClean: string | null = null;
+
     try {
-      const { save } = await import('@tauri-apps/plugin-dialog');
-      const cleanCat = activeClip.category.replace(/[^a-zA-Z0-9]/g, '_');
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const cleanCat = activeClip.category.replace(/[^a-zA-Z0-9]/g, "_");
       const outPath = await save({
-        title: 'Simpan Klip Telestrasi MP4',
+        title: "Simpan Klip Telestrasi MP4",
         defaultPath: `FutsalTag_Telestrasi_${cleanCat}.mp4`,
-        filters: [{ name: 'MP4 Video', extensions: ['mp4'] }],
+        filters: [{ name: "MP4 Video", extensions: ["mp4"] }],
       });
       if (!outPath) return;
 
       isExportingClip = true;
-      exportNotice = 'Merender klip telestrasi broadcast dengan FFmpeg...';
+      const freezeSec =
+        freezeTime || (activeClip.startTime + activeClip.endTime) / 2;
+      const zoomObj =
+        drawings.find((d) => d.cameraZoomTarget)?.cameraZoomTarget || null;
+      const cameraZoomTuple = zoomObj
+        ? [zoomObj.x, zoomObj.y, zoomObj.scale]
+        : null;
+      const needsAnimatedExport = hasAnimatedTelestration(drawings);
 
-      const freezeSec = freezeTime || (activeClip.startTime + activeClip.endTime) / 2;
-      const overlayBase64 = renderDrawingsToDataUrl(drawings, 1920, 1080, freezeSec, {
-        videoEl,
-        homographyResult: isPitchCalibrated ? homographyResult : null,
-      });
+      if (needsAnimatedExport) {
+        const tmpRoot = await invoke<string>("get_temp_dir");
+        const sep = tmpRoot.includes("\\") ? "\\" : "/";
+        const seqDir = `${tmpRoot.replace(/[\\/]+$/, "")}${sep}futsaltag_seq_${Date.now()}`;
+        seqDirToClean = seqDir;
 
-      await invoke<string>('burn_telestration_clip_ffmpeg', {
-        inputPath: projectStore.videoFilePath,
-        outputPath: outPath,
-        startSec: activeClip.startTime,
-        durationSec: activeClip.endTime - activeClip.startTime,
-        freezeSec,
-        pauseDuration: pauseDuration || 3.0,
-        overlayBase64,
-        voiceoverBase64: voiceoverAudio || null,
-        targetHeight: 1080,
-      });
+        const overlayFps = 15;
+        const clipDur = Math.max(
+          0.4,
+          activeClip.endTime - activeClip.startTime,
+        );
+        const totalFrames = Math.max(2, Math.ceil(clipDur * overlayFps));
+
+        let rangeBoxes: { time: number; boxes: DetectedPlayerBox[] }[] = [];
+        if (projectStore.chromaFloorConfig.enabled) {
+          exportNotice =
+            "Mendeteksi pemain (YOLOX-Nano) untuk Cutout Mask animasi...";
+          try {
+            rangeBoxes = await invoke<
+              { time: number; boxes: DetectedPlayerBox[] }[]
+            >("detect_player_boxes_range_onnx", {
+              inputPath: projectStore.videoFilePath,
+              startSec: activeClip.startTime,
+              endSec: activeClip.endTime,
+              fps: 6,
+            });
+          } catch {
+            rangeBoxes = [];
+          }
+        }
+
+        const findClosestBoxes = (t: number): DetectedPlayerBox[] => {
+          if (rangeBoxes.length === 0) return liveDetectedBoxes;
+          let best = rangeBoxes[0];
+          let minD = Math.abs(best.time - t);
+          for (const rb of rangeBoxes) {
+            const d = Math.abs(rb.time - t);
+            if (d < minD) {
+              minD = d;
+              best = rb;
+            }
+          }
+          return best.boxes;
+        };
+
+        const needsVideoPixels =
+          projectStore.chromaFloorConfig.enabled ||
+          drawings.some((d) => d.type === "magnifier");
+
+        for (let i = 0; i < totalFrames; i++) {
+          const t = Math.min(
+            activeClip.endTime,
+            activeClip.startTime + i / overlayFps,
+          );
+          if (needsVideoPixels && videoEl) {
+            await seekVideoElementSafe(videoEl, t);
+          }
+          exportNotice = `Merender frame telestrasi bergerak (${i + 1}/${totalFrames})...`;
+          const pngBase64 = renderDrawingsToDataUrl(drawings, 1280, 720, t, {
+            videoEl,
+            homographyResult: isPitchCalibrated ? homographyResult : null,
+            chromaConfig: projectStore.chromaFloorConfig,
+            detectedBoxes: findClosestBoxes(t),
+            clipStartTime: activeClip.startTime,
+          });
+          await invoke<string>("save_overlay_frame_png", {
+            dirPath: seqDir,
+            frameIndex: i + 1,
+            pngBase64,
+          });
+        }
+
+        if (needsVideoPixels && videoEl) {
+          await seekVideoElementSafe(videoEl, freezeSec);
+        }
+        const freezeOverlayBase64 = renderDrawingsToDataUrl(
+          drawings,
+          1280,
+          720,
+          freezeSec,
+          {
+            videoEl,
+            homographyResult: isPitchCalibrated ? homographyResult : null,
+            chromaConfig: projectStore.chromaFloorConfig,
+            detectedBoxes: findClosestBoxes(freezeSec),
+            clipStartTime: activeClip.startTime,
+            animElapsedSec: 1.0,
+          },
+        );
+
+        exportNotice =
+          "Menggabungkan sequence animasi dengan FFmpeg hardware encoder...";
+        await invoke<string>("burn_animated_telestration_clip_ffmpeg", {
+          inputPath: projectStore.videoFilePath,
+          outputPath: outPath,
+          startSec: activeClip.startTime,
+          durationSec: clipDur,
+          overlayFramesDir: seqDir,
+          overlayFps,
+          freezeSec,
+          pauseDuration: pauseDuration || 3.0,
+          freezeOverlayBase64,
+          cameraZoom: cameraZoomTuple,
+          voiceoverBase64: voiceoverAudio || null,
+          targetHeight: 720,
+        });
+      } else {
+        exportNotice = "Merender klip telestrasi broadcast dengan FFmpeg...";
+        const overlayBase64 = renderDrawingsToDataUrl(
+          drawings,
+          1920,
+          1080,
+          freezeSec,
+          {
+            videoEl,
+            homographyResult: isPitchCalibrated ? homographyResult : null,
+            chromaConfig: projectStore.chromaFloorConfig,
+            detectedBoxes: liveDetectedBoxes,
+            clipStartTime: activeClip.startTime,
+            animElapsedSec: 1.0,
+          },
+        );
+
+        await invoke<string>("burn_telestration_clip_ffmpeg", {
+          inputPath: projectStore.videoFilePath,
+          outputPath: outPath,
+          startSec: activeClip.startTime,
+          durationSec: activeClip.endTime - activeClip.startTime,
+          freezeSec,
+          pauseDuration: pauseDuration || 3.0,
+          overlayBase64,
+          voiceoverBase64: voiceoverAudio || null,
+          targetHeight: 1080,
+          cameraZoom: cameraZoomTuple,
+        });
+      }
 
       exportNotice = `Klip berhasil diekspor ke: ${outPath}`;
       setTimeout(() => (exportNotice = null), 6000);
@@ -1409,6 +1275,11 @@
       exportNotice = `Gagal ekspor: ${err?.message || err}`;
       setTimeout(() => (exportNotice = null), 6000);
     } finally {
+      if (seqDirToClean) {
+        await invoke("cleanup_temp_dir", { dirPath: seqDirToClean }).catch(
+          () => {},
+        );
+      }
       isExportingClip = false;
     }
   }
@@ -1418,42 +1289,74 @@
   <!-- TOP STUDIO HEADER -->
   <header class="studio-header">
     <div class="header-left">
-      <button class="btn-back" onclick={handleBackToTagging} title="Kembali ke Workspace Tagging">
+      <button
+        class="btn-back"
+        onclick={handleBackToTagging}
+        title="Kembali ke Workspace Tagging"
+      >
         <ArrowLeft size={15} />
         <span>Tagging</span>
       </button>
 
       {#if activeClip}
         <div class="clip-badge-info">
-          <span class="clip-cat-badge" style="background-color: {activeClip.color}">
+          <span
+            class="clip-cat-badge"
+            style="background-color: {activeClip.color}"
+          >
             {activeClip.category}
           </span>
-          <span class="clip-name-text" title={activeClip.title}>{activeClip.title}</span>
+          <span class="clip-name-text" title={activeClip.title}
+            >{activeClip.title}</span
+          >
           <span class="clip-time-text">
-            [{activeClip.startTime.toFixed(1)}s - {activeClip.endTime.toFixed(1)}s]
+            [{activeClip.startTime.toFixed(1)}s - {activeClip.endTime.toFixed(
+              1,
+            )}s]
           </span>
         </div>
       {/if}
     </div>
 
     <div class="header-right">
-      <button class="btn-undo" onclick={undoLastDrawing} title="Batalkan gambar terakhir (Undo)">
+      <button
+        class="btn-undo"
+        onclick={undoLastDrawing}
+        title="Batalkan gambar terakhir (Undo)"
+      >
         <RotateCcw size={14} />
         <span>Undo</span>
       </button>
-      <button class="btn-clear" onclick={clearAllDrawings} title="Hapus semua coretan">
+      <button
+        class="btn-clear"
+        onclick={clearAllDrawings}
+        title="Hapus semua coretan"
+      >
         <Trash2 size={14} />
         <span>Hapus</span>
       </button>
-      <button class="btn-save" onclick={handleSave} title="Simpan coretan telestrasi">
+      <button
+        class="btn-save"
+        onclick={handleSave}
+        title="Simpan coretan telestrasi"
+      >
         <Check size={14} />
         <span>Simpan</span>
       </button>
-      <button class="btn-export-direct" onclick={handleDirectExportClip} disabled={isExportingClip} title="Ekspor klip ini dengan telestrasi terbakar ke format MP4">
+      <button
+        class="btn-export-direct"
+        onclick={handleDirectExportClip}
+        disabled={isExportingClip}
+        title="Ekspor klip ini dengan telestrasi terbakar ke format MP4"
+      >
         <Download size={14} />
-        <span>{isExportingClip ? 'Merender...' : 'Ekspor MP4'}</span>
+        <span>{isExportingClip ? "Merender..." : "Ekspor MP4"}</span>
       </button>
-      <button class="btn-save-next" onclick={handleSaveAndNext} title="Simpan & Klip Berikutnya">
+      <button
+        class="btn-save-next"
+        onclick={handleSaveAndNext}
+        title="Simpan & Klip Berikutnya"
+      >
         <span>Lanjut</span>
         <ArrowRight size={14} />
       </button>
@@ -1483,19 +1386,110 @@
 
       <!-- BROADCAST ONCE SPORT LAYERING & KEYFRAME TOGGLE -->
       <div class="palette-group-title">FITUR SIARAN (BROADCAST)</div>
-      <label class="toggle-control-item" title="Mode pencampuran grafis ke lantai lapangan (Screen Blend)">
-        <input type="checkbox" bind:checked={isFloorBlend} />
-        <span class="toggle-label">Layer Lantai (Screen Blend)</span>
+      <label
+        class="toggle-control-item"
+        title="Chroma-Key lantai agar grafis tertanam di bawah kaki pemain"
+      >
+        <input
+          type="checkbox"
+          bind:checked={projectStore.chromaFloorConfig.enabled}
+        />
+        <span class="toggle-label">Chroma-Key Lantai (Di Bawah Kaki)</span>
       </label>
 
-      <label class="toggle-control-item" title="Aktifkan mode rekam keyframe gerakan pemain">
+      <div class="chroma-controls-box">
+        <div class="chroma-row">
+          <button
+            type="button"
+            class="btn-chroma-sample"
+            class:active={isSamplingFloor}
+            onclick={() => {
+              isSamplingFloor = !isSamplingFloor;
+              if (isSamplingFloor) {
+                exportNotice =
+                  "Klik area lantai lapangan pada video untuk kalibrasi warna.";
+              }
+            }}
+            title="Pipet warna lantai lapangan langsung dari video"
+          >
+            <Crosshair size={12} />
+            <span>{isSamplingFloor ? "Klik Lantai..." : "Pipet Lantai"}</span>
+          </button>
+          <span
+            class="chroma-swatch"
+            style="background-color: rgb({projectStore.chromaFloorConfig
+              .targetRgb[0]}, {projectStore.chromaFloorConfig
+              .targetRgb[1]}, {projectStore.chromaFloorConfig.targetRgb[2]});"
+            title="Warna lantai terkalibrasi"
+          ></span>
+        </div>
+
+        {#if projectStore.chromaFloorConfig.enabled}
+          <div class="chroma-slider-row">
+            <span>Toleransi: {projectStore.chromaFloorConfig.tolerance}</span>
+            <input
+              type="range"
+              min="10"
+              max="80"
+              step="1"
+              bind:value={projectStore.chromaFloorConfig.tolerance}
+              class="pause-slider"
+              style="width: 100%;"
+            />
+          </div>
+          <div class="chroma-slider-row">
+            <span>Feather: {projectStore.chromaFloorConfig.feather}</span>
+            <input
+              type="range"
+              min="2"
+              max="30"
+              step="1"
+              bind:value={projectStore.chromaFloorConfig.feather}
+              class="pause-slider"
+              style="width: 100%;"
+            />
+          </div>
+          <button
+            type="button"
+            class="btn-chroma-cutout"
+            disabled={isDetectingCutout}
+            onclick={triggerCutoutDetect}
+            title="Gunakan deteksi YOLOX-Nano untuk mempertajam cutout kaki pemain"
+          >
+            <Scissors size={12} />
+            <span
+              >{isDetectingCutout
+                ? "Mendeteksi..."
+                : `Cutout AI (${liveDetectedBoxes.length})`}</span
+            >
+          </button>
+        {/if}
+      </div>
+
+      <label
+        class="toggle-control-item"
+        title="Mode pencampuran grafis ke lantai lapangan (Screen Blend)"
+      >
+        <input type="checkbox" bind:checked={isFloorBlend} />
+        <span class="toggle-label">Screen Blend (Cahaya Lantai)</span>
+      </label>
+
+      <label
+        class="toggle-control-item"
+        title="Aktifkan mode rekam keyframe gerakan pemain"
+      >
         <input type="checkbox" bind:checked={isKeyframeMode} />
         <span class="toggle-label highlight-kf">Mode Gerak (Keyframes)</span>
       </label>
 
-      <label class="toggle-control-item" title="Kalibrasi Lapangan Futsal 3D (Once Sport Homography)">
+      <label
+        class="toggle-control-item"
+        title="Kalibrasi Lapangan Futsal 3D (Once Sport Homography)"
+      >
         <input type="checkbox" bind:checked={isPitchCalibrated} />
-        <span class="toggle-label highlight-homography">Kalibrasi 3D (Homography)</span>
+        <span class="toggle-label highlight-homography"
+          >Kalibrasi 3D (Homography)</span
+        >
       </label>
 
       {#if isPitchCalibrated}
@@ -1506,7 +1500,9 @@
             bind:value={activePresetKey}
             onchange={() => {
               if (CALIBRATION_PRESETS[activePresetKey]) {
-                calibrationPoints = { ...CALIBRATION_PRESETS[activePresetKey].points };
+                calibrationPoints = {
+                  ...CALIBRATION_PRESETS[activePresetKey].points,
+                };
               }
             }}
           >
@@ -1514,7 +1510,10 @@
               <option value={key}>{val.label}</option>
             {/each}
           </select>
-          <span class="preset-tip">Tarik 4 pin biru (TL, TR, BR, BL) di layar untuk menyamakan garis lapangan</span>
+          <span class="preset-tip"
+            >Tarik 4 pin biru (TL, TR, BR, BL) di layar untuk menyamakan garis
+            lapangan</span
+          >
         </div>
       {/if}
 
@@ -1530,7 +1529,9 @@
         title="Deteksi 10 Pemain & Bola via YOLOX-Nano ONNX di Rust"
       >
         <Users size={16} />
-        <span class="tool-label">{isMultiTracking ? 'Memproses ONNX...' : 'AI Detect 10 Pemain'}</span>
+        <span class="tool-label"
+          >{isMultiTracking ? "Memproses ONNX..." : "AI Detect 10 Pemain"}</span
+        >
       </button>
 
       <div class="palette-divider"></div>
@@ -1559,36 +1560,48 @@
 
     <!-- CANVAS & VIDEO VIEWER -->
     <div class="canvas-viewer-container" bind:this={videoContainer}>
-      {#if projectStore.videoSrc}
-        <!-- svelte-ignore a11y_media_has_caption -->
-        <video
-          bind:this={videoEl}
-          src={projectStore.videoSrc}
-          class="studio-video"
-          onloadedmetadata={() => {
-            if (videoEl && activeClip) {
-              videoEl.currentTime = activeClip.startTime;
-              duration = videoEl.duration || 120;
-            }
-          }}
-        ></video>
-      {:else}
-        <div class="mock-court-video">
-          <div class="mock-tag-overlay">
-            <h3>Kanvas Telestrasi Futsal (Tingkat Once Sport)</h3>
-            <p>Klik dan seret kursor untuk menggambar 3D Spotlight, Panah Lengkung (Curved), atau Radar Visi di atas video.</p>
+      <div
+        class="zoom-stage"
+        style={activeCameraZoom
+          ? `transform: scale(${activeCameraZoom.scale}); transform-origin: ${activeCameraZoom.x * 100}% ${activeCameraZoom.y * 100}%;`
+          : ""}
+      >
+        {#if projectStore.videoSrc}
+          <!-- svelte-ignore a11y_media_has_caption -->
+          <video
+            bind:this={videoEl}
+            src={projectStore.videoSrc}
+            crossorigin="anonymous"
+            class="studio-video"
+            onloadedmetadata={() => {
+              if (videoEl && activeClip) {
+                videoEl.currentTime = activeClip.startTime;
+                duration = videoEl.duration || 120;
+              }
+            }}
+          ></video>
+        {:else}
+          <div class="mock-court-video">
+            <div class="mock-tag-overlay">
+              <h3>Kanvas Telestrasi Futsal (Tingkat Once Sport)</h3>
+              <p>
+                Klik dan seret kursor untuk menggambar 3D Spotlight, Panah
+                Lengkung (Curved), atau Radar Visi di atas video.
+              </p>
+            </div>
           </div>
-        </div>
-      {/if}
+        {/if}
 
-      <!-- INTERACTIVE OVERLAY CANVAS -->
-      <canvas
-        bind:this={canvasEl}
-        class="telestrator-canvas"
-        onpointerdown={handlePointerDown}
-        onpointermove={handlePointerMove}
-        onpointerup={handlePointerUp}
-      ></canvas>
+        <!-- INTERACTIVE OVERLAY CANVAS -->
+        <canvas
+          bind:this={canvasEl}
+          class="telestrator-canvas"
+          class:sampling={isSamplingFloor}
+          onpointerdown={handlePointerDown}
+          onpointermove={handlePointerMove}
+          onpointerup={handlePointerUp}
+        ></canvas>
+      </div>
 
       <!-- EXPORT NOTICE TOAST -->
       {#if exportNotice}
@@ -1607,7 +1620,14 @@
 
           <div class="hud-countdown-ring">
             <svg width="68" height="68" viewBox="0 0 68 68">
-              <circle cx="34" cy="34" r="30" stroke="rgba(255, 255, 255, 0.15)" stroke-width="4" fill="rgba(11, 23, 42, 0.85)" />
+              <circle
+                cx="34"
+                cy="34"
+                r="30"
+                stroke="rgba(255, 255, 255, 0.15)"
+                stroke-width="4"
+                fill="rgba(11, 23, 42, 0.85)"
+              />
               <circle
                 cx="34"
                 cy="34"
@@ -1616,11 +1636,19 @@
                 stroke-width="4"
                 fill="none"
                 stroke-dasharray="188.5"
-                stroke-dashoffset={188.5 * (1 - Math.max(0, freezeRemaining) / (pauseDuration || 3.0))}
+                stroke-dashoffset={188.5 *
+                  (1 - Math.max(0, freezeRemaining) / (pauseDuration || 3.0))}
                 transform="rotate(-90 34 34)"
                 stroke-linecap="round"
               />
-              <text x="34" y="38" text-anchor="middle" fill="#38bdf8" font-size="12" font-weight="bold">
+              <text
+                x="34"
+                y="38"
+                text-anchor="middle"
+                fill="#38bdf8"
+                font-size="12"
+                font-weight="bold"
+              >
                 {Math.max(0, freezeRemaining).toFixed(1)}s
               </text>
             </svg>
@@ -1644,7 +1672,11 @@
       <div class="inspector-header">
         <span class="inspector-title">ELEMEN KLIP ({drawings.length})</span>
         {#if selectedElement}
-          <button class="btn-delete-element" onclick={deleteSelectedElement} title="Hapus elemen terpilih">
+          <button
+            class="btn-delete-element"
+            onclick={deleteSelectedElement}
+            title="Hapus elemen terpilih"
+          >
             <Trash2 size={13} />
           </button>
         {/if}
@@ -1658,14 +1690,20 @@
             voiceoverAudio = b64;
             if (activeClip) {
               activeClip.voiceoverAudioBase64 = b64;
-              projectStore.updateTag({ ...activeClip, voiceoverAudioBase64: b64 });
+              projectStore.updateTag({
+                ...activeClip,
+                voiceoverAudioBase64: b64,
+              });
             }
           }}
           onClearVoiceover={() => {
             voiceoverAudio = null;
             if (activeClip) {
               activeClip.voiceoverAudioBase64 = undefined;
-              projectStore.updateTag({ ...activeClip, voiceoverAudioBase64: undefined });
+              projectStore.updateTag({
+                ...activeClip,
+                voiceoverAudioBase64: undefined,
+              });
             }
           }}
         />
@@ -1680,7 +1718,9 @@
           </div>
 
           <div class="prop-row">
-            <label class="prop-label" for="prop-label-input">Label / Nama:</label>
+            <label class="prop-label" for="prop-label-input"
+              >Label / Nama:</label
+            >
             <input
               id="prop-label-input"
               type="text"
@@ -1693,13 +1733,134 @@
           <div class="prop-row">
             <span class="prop-label">Keyframes:</span>
             <span class="kf-count-pill">
-              {selectedElement.keyframes ? selectedElement.keyframes.length : 0} titik gerak
+              {selectedElement.keyframes ? selectedElement.keyframes.length : 0}
+              titik gerak
             </span>
           </div>
 
-          {#if selectedElement.type === 'magnifier'}
+          <!-- BROADCAST PRESET & CHROMA FLOOR -->
+          <label class="prop-check-row">
+            <input
+              type="checkbox"
+              bind:checked={selectedElement.isChromaFloor}
+            />
+            <span>Tempel Lantai (Chroma Floor)</span>
+          </label>
+
+          <div class="prop-row">
+            <label class="prop-label" for="prop-anim-select"
+              >Animasi Siaran (Broadcast):</label
+            >
+            <select
+              id="prop-anim-select"
+              class="preset-select"
+              value={selectedElement.animationStyle || "none"}
+              onchange={(e) => {
+                if (!selectedElement) return;
+                selectedElement.animationStyle = (
+                  e.currentTarget as HTMLSelectElement
+                ).value as BroadcastAnimationStyle;
+                drawings = [...drawings];
+              }}
+            >
+              <option value="none">Tanpa Animasi</option>
+              <option value="fade">Fade In Halus</option>
+              <option value="draw-on">Gambar Bertahap (Draw-On)</option>
+              <option value="pulse">Denyut Radar (Pulse)</option>
+            </select>
+          </div>
+
+          <div class="prop-row">
+            <div class="prop-zoom-hdr">
+              <label class="prop-check-row">
+                <input
+                  type="checkbox"
+                  checked={Boolean(selectedElement.cameraZoomTarget)}
+                  onchange={toggleCameraZoomOnSelected}
+                />
+                <span>Fokus Zoom Freeze</span>
+              </label>
+              {#if selectedElement.cameraZoomTarget}
+                <span class="kf-count-pill"
+                  >{selectedElement.cameraZoomTarget.scale.toFixed(2)}x</span
+                >
+              {/if}
+            </div>
+            {#if selectedElement.cameraZoomTarget}
+              <input
+                type="range"
+                min="1.15"
+                max="2.2"
+                step="0.05"
+                bind:value={selectedElement.cameraZoomTarget.scale}
+                class="pause-slider"
+                style="width: 100%;"
+              />
+            {/if}
+          </div>
+
+          {#if selectedElement.points.length >= 2}
+            <div class="multipoint-box">
+              <div class="preset-title">
+                Multi-Point Tracking ({selectedElement.points.length} Titik)
+              </div>
+              <button
+                type="button"
+                class="btn-kf-add"
+                style="width: 100%; justify-content: center;"
+                onclick={triggerMultiPointTracking}
+              >
+                <Activity size={12} />
+                <span>
+                  {isMultiPointTracking
+                    ? `Melacak Titik (${singleTrackProgress}%) - Batal`
+                    : "Auto-Track Semua Titik"}
+                </span>
+              </button>
+
+              {#if detectedTracks.length > 0}
+                <button
+                  type="button"
+                  class="btn-chroma-sample"
+                  style="width: 100%; justify-content: center;"
+                  onclick={autoBindSelectedPointsToTracks}
+                >
+                  <Users size={12} />
+                  <span>Auto-Ikat ke Pemain AI Terdekat</span>
+                </button>
+                {#each selectedElement.points as _, ptIdx}
+                  <div class="mp-bind-row">
+                    <span>Titik {ptIdx + 1}:</span>
+                    <select
+                      class="preset-select"
+                      value={selectedElement.pointTrackIds?.[ptIdx] || ""}
+                      onchange={(e) => {
+                        if (!selectedElement) return;
+                        bindTrackToPoint(
+                          selectedElement,
+                          ptIdx,
+                          (e.currentTarget as HTMLSelectElement).value,
+                        );
+                      }}
+                    >
+                      <option value="">-- Statis --</option>
+                      {#each detectedTracks as tr (tr.id)}
+                        <option value={tr.id}>{tr.label}</option>
+                      {/each}
+                    </select>
+                  </div>
+                {/each}
+              {/if}
+            </div>
+          {/if}
+
+          {#if selectedElement.type === "magnifier"}
             <div class="prop-row">
-              <span class="prop-label">Perbesaran Lensa: {(selectedElement.zoomScale || 1.8).toFixed(1)}x</span>
+              <span class="prop-label"
+                >Perbesaran Lensa: {(selectedElement.zoomScale || 1.8).toFixed(
+                  1,
+                )}x</span
+              >
               <input
                 type="range"
                 min="1.2"
@@ -1713,11 +1874,19 @@
 
           <!-- KEYFRAME TOOLS -->
           <div class="keyframe-actions-wrap">
-            <button class="btn-kf-add" onclick={handleAddCurrentKeyframe} title="Simpan titik posisi elemen pada detik sekarang">
+            <button
+              class="btn-kf-add"
+              onclick={handleAddCurrentKeyframe}
+              title="Simpan titik posisi elemen pada detik sekarang"
+            >
               <Plus size={13} />
               <span>Rekam KF ({currentTime.toFixed(2)}s)</span>
             </button>
-            <button class="btn-kf-del" onclick={handleDeleteCurrentKeyframe} title="Hapus keyframe pada detik ini">
+            <button
+              class="btn-kf-del"
+              onclick={handleDeleteCurrentKeyframe}
+              title="Hapus keyframe pada detik ini"
+            >
               <Trash2 size={13} />
               <span>Hapus KF</span>
             </button>
@@ -1730,7 +1899,11 @@
             title="Lacak posisi elemen ini otomatis sepanjang klip (NCC + Histogram)"
           >
             <Activity size={13} />
-            <span>{isSingleTracking ? `Melacak (${singleTrackProgress}%) - Klik Batal` : 'Auto-Track Elemen Ini'}</span>
+            <span
+              >{isSingleTracking
+                ? `Melacak (${singleTrackProgress}%) - Klik Batal`
+                : "Auto-Track Elemen Ini"}</span
+            >
           </button>
         </div>
       {/if}
@@ -1744,10 +1917,13 @@
             onclick={() => (selectedElementId = d.id)}
             role="button"
             tabindex="0"
-            onkeydown={(e) => { if (e.key === 'Enter') selectedElementId = d.id; }}
+            onkeydown={(e) => {
+              if (e.key === "Enter") selectedElementId = d.id;
+            }}
           >
             <div class="drawing-item-left">
-              <span class="item-color-pill" style="background-color: {d.color}"></span>
+              <span class="item-color-pill" style="background-color: {d.color}"
+              ></span>
               <span class="item-type-name">{d.label || d.type}</span>
             </div>
             <div class="drawing-item-right">
@@ -1760,7 +1936,10 @@
 
         {#if drawings.length === 0}
           <div class="empty-drawings">
-            <span>Belum ada grafis telestrasi. Pilih alat di sebelah kiri dan gambar di atas video.</span>
+            <span
+              >Belum ada grafis telestrasi. Pilih alat di sebelah kiri dan
+              gambar di atas video.</span
+            >
           </div>
         {/if}
       </div>
@@ -1770,28 +1949,51 @@
   <!-- MINI VIDEO TRANSPORT SCRUBBER & KEYFRAME BAR -->
   <div class="studio-scrubber-bar">
     <div class="transport-controls">
-      <button class="btn-transport" onclick={jumpToClipStart} title="Lompat ke Awal Klip">
+      <button
+        class="btn-transport"
+        onclick={jumpToClipStart}
+        title="Lompat ke Awal Klip"
+      >
         <SkipBack size={14} />
       </button>
-      <button class="btn-transport" onclick={() => stepFrame(-1)} title="Mundur 1 Frame (-0.04s)">
+      <button
+        class="btn-transport"
+        onclick={() => stepFrame(-1)}
+        title="Mundur 1 Frame (-0.04s)"
+      >
         -1F
       </button>
-      <button class="btn-transport btn-play" onclick={togglePlay} title={isPlaying ? 'Jeda' : 'Putar'}>
+      <button
+        class="btn-transport btn-play"
+        onclick={togglePlay}
+        title={isPlaying ? "Jeda" : "Putar"}
+      >
         {#if isPlaying}
           <Pause size={15} />
         {:else}
           <Play size={15} />
         {/if}
       </button>
-      <button class="btn-transport" onclick={() => stepFrame(1)} title="Maju 1 Frame (+0.04s)">
+      <button
+        class="btn-transport"
+        onclick={() => stepFrame(1)}
+        title="Maju 1 Frame (+0.04s)"
+      >
         +1F
       </button>
-      <button class="btn-transport" onclick={jumpToClipEnd} title="Lompat ke Akhir Klip">
+      <button
+        class="btn-transport"
+        onclick={jumpToClipEnd}
+        title="Lompat ke Akhir Klip"
+      >
         <SkipForward size={14} />
       </button>
 
       <span class="timecode-display">
-        {currentTime.toFixed(2)}s / {(activeClip ? activeClip.endTime : duration).toFixed(2)}s
+        {currentTime.toFixed(2)}s / {(activeClip
+          ? activeClip.endTime
+          : duration
+        ).toFixed(2)}s
       </span>
     </div>
 
@@ -1813,7 +2015,10 @@
           {#each selectedElement.keyframes as kf}
             {@const clipStart = activeClip.startTime}
             {@const clipDur = activeClip.endTime - activeClip.startTime || 1}
-            {@const pct = Math.max(0, Math.min(100, ((kf.time - clipStart) / clipDur) * 100))}
+            {@const pct = Math.max(
+              0,
+              Math.min(100, ((kf.time - clipStart) / clipDur) * 100),
+            )}
             <button
               class="kf-diamond-pip"
               style="left: {pct}%"
@@ -1857,7 +2062,9 @@
     </div>
 
     <div class="footer-right">
-      <span class="info-note">ONNX YOLOX-Nano AI Tracking & FFmpeg Broadcast Burn-In (.futsal)</span>
+      <span class="info-note"
+        >ONNX YOLOX-Nano AI Tracking & FFmpeg Broadcast Burn-In (.futsal)</span
+      >
     </div>
   </footer>
 </div>
@@ -2143,7 +2350,11 @@
   }
 
   .tool-btn.active {
-    background: linear-gradient(135deg, rgba(2, 132, 199, 0.35), rgba(37, 99, 235, 0.45));
+    background: linear-gradient(
+      135deg,
+      rgba(2, 132, 199, 0.35),
+      rgba(37, 99, 235, 0.45)
+    );
     border-color: #38bdf8;
     color: #38bdf8;
     box-shadow: 0 0 10px rgba(56, 189, 248, 0.25);
@@ -2231,18 +2442,32 @@
   }
 
   @keyframes fadeInToast {
-    from { opacity: 0; transform: translate(-50%, 10px); }
-    to { opacity: 1; transform: translate(-50%, 0); }
+    from {
+      opacity: 0;
+      transform: translate(-50%, 10px);
+    }
+    to {
+      opacity: 1;
+      transform: translate(-50%, 0);
+    }
   }
 
   .btn-ai {
-    background: linear-gradient(135deg, rgba(16, 185, 129, 0.15), rgba(6, 78, 59, 0.35));
+    background: linear-gradient(
+      135deg,
+      rgba(16, 185, 129, 0.15),
+      rgba(6, 78, 59, 0.35)
+    );
     border-color: rgba(16, 185, 129, 0.4);
     color: #34d399;
   }
 
   .btn-ai:hover {
-    background: linear-gradient(135deg, rgba(16, 185, 129, 0.25), rgba(6, 78, 59, 0.45));
+    background: linear-gradient(
+      135deg,
+      rgba(16, 185, 129, 0.25),
+      rgba(6, 78, 59, 0.45)
+    );
     border-color: #10b981;
     color: #ffffff;
   }
@@ -2354,8 +2579,14 @@
   }
 
   @keyframes fadeInHud {
-    from { opacity: 0; transform: translate(-50%, -10px); }
-    to { opacity: 1; transform: translate(-50%, 0); }
+    from {
+      opacity: 0;
+      transform: translate(-50%, -10px);
+    }
+    to {
+      opacity: 1;
+      transform: translate(-50%, 0);
+    }
   }
 
   .hud-badge-live {
@@ -2380,8 +2611,13 @@
   }
 
   @keyframes hudBlink {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.3; }
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.3;
+    }
   }
 
   .hud-countdown-ring {
@@ -2821,5 +3057,116 @@
     .info-note {
       display: none;
     }
+  }
+
+  .zoom-stage {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .telestrator-canvas.sampling {
+    cursor: cell;
+  }
+
+  .chroma-controls-box {
+    background: #07101e;
+    border: 1px solid #1a355d;
+    border-radius: 6px;
+    padding: 7px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .chroma-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .btn-chroma-sample,
+  .btn-chroma-cutout {
+    flex: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    background: #0f2444;
+    border: 1px solid #1e4d7e;
+    color: #93c5fd;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 5px 7px;
+    border-radius: 5px;
+    cursor: pointer;
+  }
+
+  .btn-chroma-sample.active,
+  .btn-chroma-sample:hover,
+  .btn-chroma-cutout:hover:not(:disabled) {
+    border-color: #38bdf8;
+    color: #ffffff;
+    background: #14335e;
+  }
+
+  .chroma-swatch {
+    width: 22px;
+    height: 22px;
+    border-radius: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.45);
+    flex-shrink: 0;
+  }
+
+  .chroma-slider-row {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 9.5px;
+    color: #94a3b8;
+  }
+
+  .prop-check-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10px;
+    font-weight: 600;
+    color: #cbd5e1;
+    cursor: pointer;
+  }
+
+  .prop-zoom-hdr {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .multipoint-box {
+    background: #07101e;
+    border: 1px solid #1b365f;
+    border-radius: 6px;
+    padding: 7px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .mp-bind-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    font-size: 9.5px;
+    color: #94a3b8;
+  }
+
+  .mp-bind-row .preset-select {
+    flex: 1;
+    min-width: 0;
   }
 </style>

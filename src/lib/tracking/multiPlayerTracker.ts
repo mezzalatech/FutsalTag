@@ -2,7 +2,15 @@
 // Computes real player trajectories, jersey team clustering, and team compactness hulls
 
 import { invoke } from '@tauri-apps/api/core';
-import type { AiModelStatus, MultiPlayerTrack, Point2D } from '$lib/types';
+import type {
+  AiModelStatus,
+  DetectedPlayerBox,
+  DrawingElement,
+  MultiPlayerTrack,
+  Point2D,
+  TrackingKeyframe,
+} from '$lib/types';
+import { getInterpolatedPosition } from '$lib/tracking/playerTracker';
 
 export interface MultiTrackResult {
   tracks: MultiPlayerTrack[];
@@ -121,4 +129,75 @@ export function computeConvexHull(points: Point2D[]): Point2D[] {
   lower.pop();
   upper.pop();
   return lower.concat(upper);
+}
+
+export async function detectPlayersInFrameOnnx(
+  inputPath: string | null,
+  timeSec: number
+): Promise<DetectedPlayerBox[]> {
+  if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) {
+    return [];
+  }
+  if (!inputPath || (!inputPath.startsWith('/') && !/^[A-Za-z]:[\\/]/.test(inputPath))) {
+    return [];
+  }
+  try {
+    return await invoke<DetectedPlayerBox[]>('detect_players_in_frame_onnx', {
+      inputPath,
+      timeSec: Math.max(0, timeSec),
+    });
+  } catch {
+    return [];
+  }
+}
+
+export function findNearestTrackAtTime(
+  tracks: MultiPlayerTrack[],
+  pt: Point2D,
+  time: number,
+  maxDist: number = 0.15,
+  excludeTrackIds?: Set<string>
+): MultiPlayerTrack | null {
+  let best: MultiPlayerTrack | null = null;
+  let bestDist = maxDist;
+  for (const tr of tracks) {
+    if (excludeTrackIds && excludeTrackIds.has(tr.id)) continue;
+    const pos = getInterpolatedPosition(tr.keyframes, time) ?? tr.keyframes[0];
+    if (!pos) continue;
+    const d = Math.hypot(pos.x - pt.x, pos.y - pt.y);
+    if (d <= bestDist) {
+      bestDist = d;
+      best = tr;
+    }
+  }
+  return best;
+}
+
+export function bindElementPointsToTracks(
+  el: DrawingElement,
+  tracks: MultiPlayerTrack[],
+  time: number
+): {
+  pointTracks: Record<number, TrackingKeyframe[]>;
+  pointTrackIds: Record<number, string>;
+  boundCount: number;
+} {
+  const pointTracks: Record<number, TrackingKeyframe[]> = {};
+  const pointTrackIds: Record<number, string> = {};
+  const used = new Set<string>();
+  let boundCount = 0;
+
+  for (let i = 0; i < el.points.length; i++) {
+    const tr =
+      findNearestTrackAtTime(tracks, el.points[i], time, 0.18, used) ??
+      findNearestTrackAtTime(tracks, el.points[i], time, 0.28);
+    if (tr && tr.keyframes.length > 0) {
+      used.add(tr.id);
+      pointTracks[i] = [...tr.keyframes];
+      pointTrackIds[i] = tr.id;
+      boundCount += 1;
+    }
+  }
+
+  return { pointTracks, pointTrackIds, boundCount };
 }

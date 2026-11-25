@@ -219,6 +219,27 @@ fn target_dimensions(target_height: Option<u32>) -> (u32, u32) {
     }
 }
 
+fn build_camera_zoom_vf(out_w: u32, out_h: u32, camera_zoom: Option<[f64; 3]>) -> String {
+    let Some([cx, cy, scale]) = camera_zoom else {
+        return String::new();
+    };
+    if !scale.is_finite() || scale <= 1.02 {
+        return String::new();
+    }
+    let s = scale.clamp(1.05, 2.5);
+    let cw = (((out_w as f64 / s).round() as u32) / 2 * 2).max(64).min(out_w);
+    let ch = (((out_h as f64 / s).round() as u32) / 2 * 2).max(64).min(out_h);
+    let max_x = out_w.saturating_sub(cw) as f64;
+    let max_y = out_h.saturating_sub(ch) as f64;
+    let x = ((cx.clamp(0.0, 1.0) * out_w as f64) - (cw as f64 / 2.0))
+        .clamp(0.0, max_x)
+        .round() as u32;
+    let y = ((cy.clamp(0.0, 1.0) * out_h as f64) - (ch as f64 / 2.0))
+        .clamp(0.0, max_y)
+        .round() as u32;
+    format!(",crop={}:{}:{}:{},scale={}:{}:flags=lanczos", cw, ch, x, y, out_w, out_h)
+}
+
 fn decode_base64_to_temp(b64: &str, prefix: &str, ext: &str) -> Result<PathBuf, String> {
     let clean = if let Some(idx) = b64.find("base64,") {
         &b64[idx + 7..]
@@ -451,6 +472,7 @@ pub fn burn_telestration_clip_ffmpeg(
     overlay_base64: Option<String>,
     voiceover_base64: Option<String>,
     target_height: Option<u32>,
+    camera_zoom: Option<[f64; 3]>,
 ) -> Result<String, String> {
     if !Path::new(&input_path).exists() {
         return Err(format!("File video input tidak ditemukan: {}", input_path));
@@ -524,11 +546,14 @@ pub fn burn_telestration_clip_ffmpeg(
             input_path.clone(),
         ];
 
+        let zoom_vf = build_camera_zoom_vf(out_w, out_h, camera_zoom);
+
         if let Some(ref op) = overlay_path {
             let fc = format!(
-                "[0:v]scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,tpad=stop_mode=clone:stop_duration={pd:.3}[bg];[1:v]scale={w}:{h}[fg];[bg][fg]overlay=0:0:shortest=1,fps=30,format=yuv420p[v]",
+                "[0:v]scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1{zoom},tpad=stop_mode=clone:stop_duration={pd:.3}[bg];[1:v]scale={w}:{h}[fg];[bg][fg]overlay=0:0:shortest=1,fps=30,format=yuv420p[v]",
                 w = out_w,
                 h = out_h,
+                zoom = zoom_vf,
                 pd = pause_duration
             );
             args.extend([
@@ -549,9 +574,10 @@ pub fn burn_telestration_clip_ffmpeg(
             ]);
         } else {
             let vf = format!(
-                "scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,tpad=stop_mode=clone:stop_duration={pd:.3},fps=30,format=yuv420p",
+                "scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1{zoom},tpad=stop_mode=clone:stop_duration={pd:.3},fps=30,format=yuv420p",
                 w = out_w,
                 h = out_h,
+                zoom = zoom_vf,
                 pd = pause_duration
             );
             args.extend([
@@ -698,6 +724,7 @@ pub fn export_whatsapp_clip_ffmpeg(
             overlay_base64,
             voiceover_base64,
             Some(720),
+            None,
         );
     }
 
@@ -754,6 +781,302 @@ pub fn export_whatsapp_clip_ffmpeg(
     ]);
 
     run_ffmpeg(&args)?;
+    Ok(output_path)
+}
+
+#[tauri::command]
+pub fn save_overlay_frame_png(
+    dir_path: String,
+    frame_index: u32,
+    png_base64: String,
+) -> Result<String, String> {
+    fs::create_dir_all(&dir_path)
+        .map_err(|e| format!("Gagal membuat folder overlay '{}': {}", dir_path, e))?;
+    let clean = if let Some(idx) = png_base64.find("base64,") {
+        &png_base64[idx + 7..]
+    } else {
+        png_base64.as_str()
+    };
+    let bytes = BASE64_STANDARD
+        .decode(clean.trim())
+        .map_err(|e| format!("Gagal decode PNG frame {}: {}", frame_index, e))?;
+    let frame_path = Path::new(&dir_path).join(format!("frame_{:05}.png", frame_index));
+    fs::write(&frame_path, bytes)
+        .map_err(|e| format!("Gagal menulis frame {}: {}", frame_path.display(), e))?;
+    Ok(frame_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn cleanup_temp_dir(dir_path: String) -> Result<(), String> {
+    let target = PathBuf::from(&dir_path);
+    let sys_tmp = std::env::temp_dir();
+    if target.starts_with(&sys_tmp) && target.exists() {
+        fs::remove_dir_all(&target)
+            .map_err(|e| format!("Gagal membersihkan folder temp '{}': {}", dir_path, e))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn burn_animated_telestration_clip_ffmpeg(
+    input_path: String,
+    output_path: String,
+    start_sec: f64,
+    duration_sec: f64,
+    overlay_frames_dir: String,
+    overlay_fps: f64,
+    freeze_sec: Option<f64>,
+    pause_duration: Option<f64>,
+    freeze_overlay_base64: Option<String>,
+    camera_zoom: Option<[f64; 3]>,
+    voiceover_base64: Option<String>,
+    target_height: Option<u32>,
+) -> Result<String, String> {
+    if !Path::new(&input_path).exists() {
+        return Err(format!("File video input tidak ditemukan: {}", input_path));
+    }
+    if !Path::new(&overlay_frames_dir).exists() {
+        return Err(format!("Folder sequence overlay tidak ditemukan: {}", overlay_frames_dir));
+    }
+    ensure_parent_dir(&output_path)?;
+
+    let info = probe_video_info(&input_path)?;
+    let (out_w, out_h) = target_dimensions(target_height);
+    let (vcodec, vflags) = detect_video_encoder();
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let temp_dir = std::env::temp_dir();
+    let mut cleanup = TempCleanup(Vec::new());
+
+    let dur_total = duration_sec.max(0.2);
+    let fps_val = overlay_fps.clamp(2.0, 30.0);
+    let seq_pattern = format!("{}/frame_%05d.png", overlay_frames_dir.replace('\\', "/"));
+
+    let moving_burned = temp_dir.join(format!("futsaltag_anim_moving_{}.mp4", now));
+    cleanup.0.push(moving_burned.clone());
+    let moving_str = moving_burned.to_string_lossy().to_string();
+
+    let mut anim_args = vec![
+        "-y".into(),
+        "-ss".into(),
+        format!("{:.3}", start_sec.max(0.0)),
+        "-t".into(),
+        format!("{:.3}", dur_total),
+        "-i".into(),
+        input_path.clone(),
+        "-framerate".into(),
+        format!("{:.3}", fps_val),
+        "-i".into(),
+        seq_pattern,
+    ];
+    if !info.has_audio {
+        anim_args.extend([
+            "-f".into(),
+            "lavfi".into(),
+            "-i".into(),
+            "anullsrc=channel_layout=stereo:sample_rate=44100".into(),
+        ]);
+    }
+    let anim_fc = format!(
+        "[0:v]scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30[bg];[1:v]scale={w}:{h},fps=30,format=rgba[fg];[bg][fg]overlay=0:0:eof_action=pass,format=yuv420p[v]",
+        w = out_w,
+        h = out_h
+    );
+    anim_args.extend(["-filter_complex".into(), anim_fc, "-map".into(), "[v]".into()]);
+    if info.has_audio {
+        anim_args.extend(["-map".into(), "0:a:0".into()]);
+    } else {
+        anim_args.extend(["-map".into(), "2:a:0".into()]);
+    }
+    anim_args.extend(["-t".into(), format!("{:.3}", dur_total), "-c:v".into(), vcodec.into()]);
+    for f in &vflags {
+        anim_args.push((*f).into());
+    }
+    anim_args.extend([
+        "-c:a".into(),
+        "aac".into(),
+        "-ar".into(),
+        "44100".into(),
+        "-ac".into(),
+        "2".into(),
+        "-b:a".into(),
+        "128k".into(),
+        "-movflags".into(),
+        "+faststart".into(),
+        moving_str.clone(),
+    ]);
+    run_ffmpeg(&anim_args)?;
+
+    let voiceover_path = match voiceover_base64 {
+        Some(ref vo) if !vo.trim().is_empty() => {
+            let p = decode_base64_to_temp(vo, "futsaltag_anim_vo", "webm")?;
+            cleanup.0.push(p.clone());
+            Some(p)
+        }
+        _ => None,
+    };
+
+    let pause_dur = pause_duration.unwrap_or(0.0);
+    let base_out = if voiceover_path.is_some() {
+        let pre = temp_dir.join(format!("futsaltag_anim_premix_{}.mp4", now));
+        cleanup.0.push(pre.clone());
+        pre.to_string_lossy().to_string()
+    } else {
+        output_path.clone()
+    };
+
+    if pause_dur > 0.2 {
+        let actual_freeze = freeze_sec
+            .unwrap_or(start_sec + dur_total * 0.5)
+            .clamp(start_sec, start_sec + dur_total);
+        let freeze_offset = (actual_freeze - start_sec).clamp(0.0, dur_total);
+        let dur_after = (dur_total - freeze_offset).max(0.0);
+        let mut parts: Vec<String> = Vec::new();
+
+        if freeze_offset > 0.08 {
+            let p1 = temp_dir.join(format!("futsaltag_anim_p1_{}.mp4", now));
+            cleanup.0.push(p1.clone());
+            let p1_str = p1.to_string_lossy().to_string();
+            let args = build_norm_segment_args(&moving_str, &p1_str, 0.0, freeze_offset, out_w, out_h, true);
+            run_ffmpeg(&args)?;
+            parts.push(p1_str);
+        }
+
+        let freeze_overlay_path = match freeze_overlay_base64 {
+            Some(ref b64) if !b64.trim().is_empty() => {
+                let p = decode_base64_to_temp(b64, "futsaltag_anim_freeze_ov", "png")?;
+                cleanup.0.push(p.clone());
+                Some(p)
+            }
+            _ => None,
+        };
+
+        let pf = temp_dir.join(format!("futsaltag_anim_freeze_{}.mp4", now));
+        cleanup.0.push(pf.clone());
+        let pf_str = pf.to_string_lossy().to_string();
+        let zoom_vf = build_camera_zoom_vf(out_w, out_h, camera_zoom);
+
+        let mut f_args = vec![
+            "-y".into(),
+            "-ss".into(),
+            format!("{:.3}", actual_freeze),
+            "-i".into(),
+            input_path.clone(),
+        ];
+        if let Some(ref op) = freeze_overlay_path {
+            let fc = format!(
+                "[0:v]scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1{zoom},tpad=stop_mode=clone:stop_duration={pd:.3}[bg];[1:v]scale={w}:{h}[fg];[bg][fg]overlay=0:0:shortest=1,fps=30,format=yuv420p[v]",
+                w = out_w,
+                h = out_h,
+                zoom = zoom_vf,
+                pd = pause_dur
+            );
+            f_args.extend([
+                "-loop".into(),
+                "1".into(),
+                "-i".into(),
+                op.to_string_lossy().to_string(),
+                "-f".into(),
+                "lavfi".into(),
+                "-i".into(),
+                "anullsrc=channel_layout=stereo:sample_rate=44100".into(),
+                "-filter_complex".into(),
+                fc,
+                "-map".into(),
+                "[v]".into(),
+                "-map".into(),
+                "2:a:0".into(),
+            ]);
+        } else {
+            let vf = format!(
+                "scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1{zoom},tpad=stop_mode=clone:stop_duration={pd:.3},fps=30,format=yuv420p",
+                w = out_w,
+                h = out_h,
+                zoom = zoom_vf,
+                pd = pause_dur
+            );
+            f_args.extend([
+                "-f".into(),
+                "lavfi".into(),
+                "-i".into(),
+                "anullsrc=channel_layout=stereo:sample_rate=44100".into(),
+                "-vf".into(),
+                vf,
+                "-map".into(),
+                "0:v:0".into(),
+                "-map".into(),
+                "1:a:0".into(),
+            ]);
+        }
+        f_args.extend(["-t".into(), format!("{:.3}", pause_dur), "-c:v".into(), vcodec.into()]);
+        for f in &vflags {
+            f_args.push((*f).into());
+        }
+        f_args.extend([
+            "-c:a".into(),
+            "aac".into(),
+            "-ar".into(),
+            "44100".into(),
+            "-ac".into(),
+            "2".into(),
+            "-b:a".into(),
+            "128k".into(),
+            pf_str.clone(),
+        ]);
+        run_ffmpeg(&f_args)?;
+        parts.push(pf_str);
+
+        if dur_after > 0.08 {
+            let p3 = temp_dir.join(format!("futsaltag_anim_p3_{}.mp4", now));
+            cleanup.0.push(p3.clone());
+            let p3_str = p3.to_string_lossy().to_string();
+            let args = build_norm_segment_args(&moving_str, &p3_str, freeze_offset, dur_after, out_w, out_h, true);
+            run_ffmpeg(&args)?;
+            parts.push(p3_str);
+        }
+
+        if parts.len() == 1 {
+            fs::copy(&parts[0], &base_out)
+                .map_err(|e| format!("Gagal menyalin segmen animasi: {}", e))?;
+        } else {
+            concat_playlist_ffmpeg(parts, base_out.clone(), Some(false))?;
+        }
+    } else {
+        fs::copy(&moving_str, &base_out)
+            .map_err(|e| format!("Gagal menyalin video animasi: {}", e))?;
+    }
+
+    if let Some(ref vp) = voiceover_path {
+        let mix_args = vec![
+            "-y".into(),
+            "-i".into(),
+            base_out,
+            "-i".into(),
+            vp.to_string_lossy().to_string(),
+            "-filter_complex".into(),
+            "[0:a][1:a]amix=inputs=2:duration=first:dropout_transition=2:weights=1.2 4.0[aout]".into(),
+            "-map".into(),
+            "0:v:0".into(),
+            "-map".into(),
+            "[aout]".into(),
+            "-c:v".into(),
+            "copy".into(),
+            "-c:a".into(),
+            "aac".into(),
+            "-ar".into(),
+            "44100".into(),
+            "-ac".into(),
+            "2".into(),
+            "-movflags".into(),
+            "+faststart".into(),
+            output_path.clone(),
+        ];
+        run_ffmpeg(&mix_args)?;
+    }
+
     Ok(output_path)
 }
 
@@ -884,6 +1207,7 @@ mod tests {
             Some(tiny_png_b64.to_string()),
             None,
             Some(720),
+            None,
         );
         assert!(res.is_ok(), "burn_telestration_clip_ffmpeg failed: {:?}", res);
 

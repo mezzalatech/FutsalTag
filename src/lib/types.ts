@@ -69,6 +69,21 @@ export interface MultiPlayerTrack {
   keyframes: TrackingKeyframe[];
 }
 
+export type BroadcastAnimationStyle = 'none' | 'fade' | 'draw-on' | 'pulse';
+
+export interface CameraZoomTarget {
+  x: number;     // normalized 0..1
+  y: number;     // normalized 0..1
+  scale: number; // e.g. 1.15..2.2
+}
+
+export interface ChromaFloorConfig {
+  enabled: boolean;
+  targetRgb: [number, number, number]; // sampled court floor RGB
+  tolerance: number;                   // 10..80 (HSV/RGB distance threshold)
+  feather: number;                     // 2..30 (soft edge transition)
+}
+
 export interface DrawingElement {
   id: string;
   type: DrawingToolType;
@@ -90,6 +105,10 @@ export interface DrawingElement {
   isChromaFloor?: boolean; // Floor blending mode
   pulseEffect?: boolean;   // Radar / beacon pulse
   zoomScale?: number;     // For magnifier lens (e.g. 1.8x)
+  animationStyle?: BroadcastAnimationStyle;
+  cameraZoomTarget?: CameraZoomTarget;
+  pointTracks?: Record<number, TrackingKeyframe[]>; // Multi-point binding (index -> keyframes)
+  pointTrackIds?: Record<number, string>;           // Track IDs bound per point index
 }
 
 export interface TacticalStep {
@@ -225,6 +244,44 @@ export interface RosterPlayer {
   role: string;
   color: string;
   isOpponent?: boolean;
+}
+
+export type FutsalPositionRole = 'GK' | 'Anchor' | 'Flank' | 'Pivot' | 'Universal';
+export type DominantFoot = 'Kanan' | 'Kiri' | 'Keduanya';
+
+export interface ClubPlayerProfile {
+  id: string;
+  num: string;
+  name: string;
+  role: FutsalPositionRole;
+  dominantFoot: DominantFoot;
+  color?: string;
+}
+
+export interface ClubProfile {
+  id: string;
+  name: string;
+  shortName?: string;
+  isOwnTeam: boolean;
+  jerseyColor: string;
+  gkColor: string;
+  players: ClubPlayerProfile[];
+  updatedAt: string;
+}
+
+export interface PeriodKickoff {
+  period: 1 | 2 | 3;
+  videoTime: number; // seconds in video file
+  label: string;     // 'Babak 1' | 'Babak 2' | 'Extra'
+}
+
+export interface SubstitutionEvent {
+  id: string;
+  atTime: number;          // seconds in video file
+  period: 1 | 2 | 3;
+  playerOut: string;       // RosterPlayer.id
+  playerIn: string;        // RosterPlayer.id
+  teamSide: 'home' | 'away';
 }
 
 export interface AiModelStatus {

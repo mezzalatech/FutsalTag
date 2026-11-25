@@ -8,6 +8,10 @@ import type {
   Point2D,
   TaggingBoard,
   TaggingButton,
+  PeriodKickoff,
+  SubstitutionEvent,
+  ChromaFloorConfig,
+  ClubProfile,
 } from '$lib/types';
 import {
   BUILTIN_TAGGING_BOARDS,
@@ -22,6 +26,43 @@ export const DEFAULT_FUTSAL_ROSTER: RosterPlayer[] = [
   { id: 'r-fr', num: '#11', name: 'Flank Kanan', role: 'Right Wing', color: '#f59e0b' },
   { id: 'r-piv', num: '#9', name: 'Pivot', role: 'Target Man / Striker', color: '#8b5cf6' },
   { id: 'r-opp', num: 'OPP', name: 'Tim Lawan', role: 'Opponent Action', color: '#ef4444', isOpponent: true },
+];
+
+export const DEFAULT_CLUB_LIBRARY: ClubProfile[] = [
+  {
+    id: 'club-own-1',
+    name: 'FutsalTag Pro FC',
+    shortName: 'FTP',
+    isOwnTeam: true,
+    jerseyColor: '#0284c7',
+    gkColor: '#f59e0b',
+    updatedAt: '2026-11-25T00:00:00.000Z',
+    players: [
+      { id: 'cp-1', num: '#1', name: 'Kiper Utama', role: 'GK', dominantFoot: 'Kanan', color: '#f59e0b' },
+      { id: 'cp-4', num: '#4', name: 'Anchor', role: 'Anchor', dominantFoot: 'Kanan', color: '#38bdf8' },
+      { id: 'cp-7', num: '#7', name: 'Flank Kiri', role: 'Flank', dominantFoot: 'Kiri', color: '#10b981' },
+      { id: 'cp-11', num: '#11', name: 'Flank Kanan', role: 'Flank', dominantFoot: 'Kanan', color: '#f59e0b' },
+      { id: 'cp-9', num: '#9', name: 'Pivot', role: 'Pivot', dominantFoot: 'Keduanya', color: '#8b5cf6' },
+      { id: 'cp-6', num: '#6', name: 'Anchor 2', role: 'Anchor', dominantFoot: 'Kanan', color: '#0ea5e9' },
+      { id: 'cp-10', num: '#10', name: 'Universal', role: 'Universal', dominantFoot: 'Keduanya', color: '#14b8a6' },
+    ],
+  },
+  {
+    id: 'club-opp-1',
+    name: 'Blacksteel FC',
+    shortName: 'BSL',
+    isOwnTeam: false,
+    jerseyColor: '#ef4444',
+    gkColor: '#10b981',
+    updatedAt: '2026-11-25T00:00:00.000Z',
+    players: [
+      { id: 'opp-1', num: '#1', name: 'GK Blacksteel', role: 'GK', dominantFoot: 'Kanan' },
+      { id: 'opp-5', num: '#5', name: 'Anchor Lawan', role: 'Anchor', dominantFoot: 'Kanan' },
+      { id: 'opp-8', num: '#8', name: 'Flank Lawan 1', role: 'Flank', dominantFoot: 'Kiri' },
+      { id: 'opp-12', num: '#12', name: 'Flank Lawan 2', role: 'Flank', dominantFoot: 'Kanan' },
+      { id: 'opp-14', num: '#14', name: 'Pivot Lawan', role: 'Pivot', dominantFoot: 'Kanan' },
+    ],
+  },
 ];
 
 export function isTauriDesktop(): boolean {
@@ -48,6 +89,33 @@ class ProjectStore {
   // Selected clip for Stage 3 Telestrator
   activeClipForDrawing = $state<VideoTagEvent | null>(null);
 
+  // Match Clock Kick-offs & Futsal Rotation / Substitution Engine
+  periodKickoffs = $state<PeriodKickoff[]>([]);
+  useMatchClock = $state<boolean>(false);
+  startingLineupIds = $state<string[]>(
+    DEFAULT_FUTSAL_ROSTER.filter((p) => !p.isOpponent)
+      .slice(0, 5)
+      .map((p) => p.id)
+  );
+  substitutions = $state<SubstitutionEvent[]>([]);
+
+  // Broadcast Chroma-Key Court Masking Config
+  chromaFloorConfig = $state<ChromaFloorConfig>({
+    enabled: false,
+    targetRgb: [34, 98, 152],
+    tolerance: 32,
+    feather: 10,
+  });
+
+  // Persistent Club & Roster Library (AppData / localStorage)
+  clubLibrary = $state<ClubProfile[]>(
+    DEFAULT_CLUB_LIBRARY.map((c) => ({
+      ...c,
+      players: c.players.map((p) => ({ ...p })),
+    }))
+  );
+  clubLibraryLoaded = $state<boolean>(false);
+
   // Momen + Once Sport Tagging Boards
   boards = $state<TaggingBoard[]>(BUILTIN_TAGGING_BOARDS.map(cloneBoard));
   activeBoardId = $state<string>(BUILTIN_TAGGING_BOARDS[0].id);
@@ -64,6 +132,227 @@ class ProjectStore {
   ]);
 
   constructor() {}
+
+  // --- MATCH CLOCK & KICK-OFF SYNCHRONIZATION ---
+  setPeriodKickoff(period: 1 | 2 | 3, videoTime: number) {
+    const label = period === 1 ? 'Babak 1' : period === 2 ? 'Babak 2' : 'Extra';
+    const cleanTime = Number(Math.max(0, videoTime).toFixed(2));
+    const idx = this.periodKickoffs.findIndex((k) => k.period === period);
+    const entry: PeriodKickoff = { period, videoTime: cleanTime, label };
+    if (idx !== -1) {
+      this.periodKickoffs[idx] = entry;
+    } else {
+      this.periodKickoffs.push(entry);
+    }
+    this.periodKickoffs = [...this.periodKickoffs].sort((a, b) => a.videoTime - b.videoTime);
+    this.useMatchClock = true;
+  }
+
+  clearPeriodKickoff(period?: 1 | 2 | 3) {
+    if (period !== undefined) {
+      this.periodKickoffs = this.periodKickoffs.filter((k) => k.period !== period);
+    } else {
+      this.periodKickoffs = [];
+    }
+    if (this.periodKickoffs.length === 0) {
+      this.useMatchClock = false;
+    }
+  }
+
+  getPeriodAtTime(videoTime: number): 1 | 2 | 3 {
+    if (this.periodKickoffs.length === 0) return 1;
+    const sorted = [...this.periodKickoffs].sort((a, b) => a.videoTime - b.videoTime);
+    let currentPeriod: 1 | 2 | 3 = sorted[0].period;
+    for (const k of sorted) {
+      if (k.videoTime <= videoTime + 0.001) {
+        currentPeriod = k.period;
+      }
+    }
+    return currentPeriod;
+  }
+
+  formatMatchClock(videoTime: number, includeDecimals = false): string {
+    const formatSec = (sec: number) => {
+      const safe = Math.max(0, Number.isFinite(sec) ? sec : 0);
+      const m = Math.floor(safe / 60);
+      const s = Math.floor(safe % 60);
+      const base = `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+      if (!includeDecimals) return base;
+      const d = Math.floor((safe % 1) * 10);
+      return `${base}.${d}`;
+    };
+
+    if (this.periodKickoffs.length === 0) {
+      return formatSec(videoTime);
+    }
+
+    const sorted = [...this.periodKickoffs].sort((a, b) => a.videoTime - b.videoTime);
+    let matched: PeriodKickoff | null = null;
+    for (const k of sorted) {
+      if (k.videoTime <= videoTime + 0.001) {
+        matched = k;
+      }
+    }
+
+    if (!matched) {
+      return `PRE -${formatSec(sorted[0].videoTime - videoTime)}`;
+    }
+
+    const elapsed = Math.max(0, videoTime - matched.videoTime);
+    const prefix = matched.period === 1 ? 'B1' : matched.period === 2 ? 'B2' : 'ET';
+    return `${prefix} ${formatSec(elapsed)}`;
+  }
+
+  // --- FUTSAL ROTATION & SUBSTITUTION ENGINE ---
+  getRosterPlayerById(id: string): RosterPlayer | undefined {
+    return this.roster.find((p) => p.id === id);
+  }
+
+  isGoalkeeper(p: RosterPlayer): boolean {
+    return /kiper|goalkeeper|\bgk\b/i.test(p.role) || /kiper/i.test(p.name) || p.num === '#1';
+  }
+
+  getActiveLineupIdsAt(videoTime: number): string[] {
+    let lineup = [...this.startingLineupIds];
+    const sortedSubs = [...this.substitutions].sort((a, b) => a.atTime - b.atTime);
+    for (const sub of sortedSubs) {
+      if (sub.atTime > videoTime + 0.001) break;
+      const outIdx = lineup.indexOf(sub.playerOut);
+      if (outIdx !== -1) {
+        if (!lineup.includes(sub.playerIn)) {
+          lineup[outIdx] = sub.playerIn;
+        } else {
+          lineup = lineup.filter((id) => id !== sub.playerOut);
+        }
+      } else if (!lineup.includes(sub.playerIn)) {
+        lineup.push(sub.playerIn);
+      }
+    }
+    return lineup;
+  }
+
+  get activeLineupIds(): string[] {
+    return this.getActiveLineupIdsAt(this.currentTime);
+  }
+
+  setStartingLineup(ids: string[]) {
+    this.startingLineupIds = Array.from(new Set(ids)).slice(0, 5);
+  }
+
+  recordSubstitution(
+    playerOutId: string,
+    playerInId: string,
+    atTime: number,
+    teamSide: 'home' | 'away' = 'home'
+  ): SubstitutionEvent | null {
+    if (!playerOutId || !playerInId || playerOutId === playerInId) return null;
+    const cleanTime = Number(Math.max(0, atTime).toFixed(2));
+    const event: SubstitutionEvent = {
+      id: `sub-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      atTime: cleanTime,
+      period: this.getPeriodAtTime(cleanTime),
+      playerOut: playerOutId,
+      playerIn: playerInId,
+      teamSide,
+    };
+    this.substitutions = [...this.substitutions, event].sort((a, b) => a.atTime - b.atTime);
+    return event;
+  }
+
+  deleteSubstitution(id: string) {
+    this.substitutions = this.substitutions.filter((s) => s.id !== id);
+  }
+
+  // --- PERSISTENT CLUB & ROSTER LIBRARY ---
+  async loadClubLibrary() {
+    try {
+      let raw: string | null = null;
+      if (isTauriDesktop()) {
+        raw = await invoke<string | null>('load_club_library');
+      } else if (typeof window !== 'undefined' && window.localStorage) {
+        raw = window.localStorage.getItem('futsaltag_club_library_v1');
+      }
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          this.clubLibrary = parsed;
+        }
+      }
+    } catch (err) {
+      console.error('Gagal memuat library klub:', err);
+    } finally {
+      this.clubLibraryLoaded = true;
+    }
+  }
+
+  async saveClubLibrary(): Promise<string> {
+    const content = JSON.stringify(this.clubLibrary, null, 2);
+    if (isTauriDesktop()) {
+      return invoke<string>('save_club_library', { content });
+    }
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem('futsaltag_club_library_v1', content);
+    }
+    return 'localStorage';
+  }
+
+  async upsertClubProfile(club: ClubProfile): Promise<string> {
+    const clean: ClubProfile = {
+      ...club,
+      updatedAt: new Date().toISOString(),
+      players: club.players.map((p) => ({ ...p })),
+    };
+    const idx = this.clubLibrary.findIndex((c) => c.id === clean.id);
+    if (idx !== -1) {
+      this.clubLibrary[idx] = clean;
+    } else {
+      this.clubLibrary = [...this.clubLibrary, clean];
+    }
+    return this.saveClubLibrary();
+  }
+
+  async deleteClubProfile(clubId: string): Promise<string> {
+    this.clubLibrary = this.clubLibrary.filter((c) => c.id !== clubId);
+    return this.saveClubLibrary();
+  }
+
+  applyClubsToMatchRoster(homeClubId: string | null, awayClubId: string | null) {
+    const homeClub = homeClubId ? this.clubLibrary.find((c) => c.id === homeClubId) : undefined;
+    const awayClub = awayClubId ? this.clubLibrary.find((c) => c.id === awayClubId) : undefined;
+
+    if (homeClub && homeClub.players.length > 0) {
+      const nextRoster: RosterPlayer[] = homeClub.players.map((p) => ({
+        id: p.id,
+        num: p.num.startsWith('#') ? p.num : `#${p.num}`,
+        name: p.name,
+        role: p.role === 'GK' ? 'Goalkeeper' : p.role,
+        color: p.role === 'GK' ? homeClub.gkColor : p.color || homeClub.jerseyColor,
+      }));
+      nextRoster.push({
+        id: 'r-opp',
+        num: 'OPP',
+        name: 'Tim Lawan',
+        role: awayClub ? awayClub.name : 'Opponent Action',
+        color: awayClub?.jerseyColor || '#ef4444',
+        isOpponent: true,
+      });
+      this.roster = nextRoster;
+
+      const gk = nextRoster.find((p) => !p.isOpponent && this.isGoalkeeper(p));
+      const outfield = nextRoster.filter((p) => !p.isOpponent && p.id !== gk?.id);
+      const s5 = gk ? [gk.id, ...outfield.slice(0, 4).map((p) => p.id)] : outfield.slice(0, 5).map((p) => p.id);
+      this.startingLineupIds = s5;
+    } else if (awayClub) {
+      const oppIdx = this.roster.findIndex((p) => p.isOpponent || p.name === 'Tim Lawan');
+      if (oppIdx !== -1) {
+        this.roster[oppIdx] = {
+          ...this.roster[oppIdx],
+          role: awayClub.name,
+          color: awayClub.jerseyColor,
+        };
+      }
+    }
+  }
 
   get activeBoard(): TaggingBoard {
     return this.boards.find((b) => b.id === this.activeBoardId) || this.boards[0];
@@ -235,6 +524,14 @@ class ProjectStore {
 
     this.tags = [];
     this.activeClipForDrawing = null;
+    this.periodKickoffs = [];
+    this.useMatchClock = false;
+    this.substitutions = [];
+    this.chromaFloorConfig = { ...this.chromaFloorConfig, enabled: false };
+    this.startingLineupIds = this.roster
+      .filter((p) => !p.isOpponent)
+      .slice(0, 5)
+      .map((p) => p.id);
     this.playlists = [
       {
         id: 'pl-default',
@@ -254,6 +551,33 @@ class ProjectStore {
     this.videoTitle = 'Sampel Demo: Pendekar United vs Blacksteel (Babak 1)';
     this.duration = 120;
     this.currentTime = 0;
+
+    this.roster = [
+      ...DEFAULT_FUTSAL_ROSTER.map((p) => ({ ...p })),
+      { id: 'r-sub-1', num: '#6', name: 'Anchor 2', role: 'Defender / Rotation', color: '#0ea5e9' },
+      { id: 'r-sub-2', num: '#10', name: 'Flank 2', role: 'Winger / Rotation', color: '#14b8a6' },
+    ];
+    this.periodKickoffs = [{ period: 1, videoTime: 5.0, label: 'Babak 1' }];
+    this.useMatchClock = true;
+    this.startingLineupIds = ['r-gk', 'r-anc', 'r-fl', 'r-fr', 'r-piv'];
+    this.substitutions = [
+      {
+        id: 'sub-demo-1',
+        atTime: 48.0,
+        period: 1,
+        playerOut: 'r-anc',
+        playerIn: 'r-sub-1',
+        teamSide: 'home',
+      },
+      {
+        id: 'sub-demo-2',
+        atTime: 52.0,
+        period: 1,
+        playerOut: 'r-fl',
+        playerIn: 'r-sub-2',
+        teamSide: 'home',
+      },
+    ];
 
     this.tags = [
       {
@@ -470,7 +794,7 @@ class ProjectStore {
   exportProjectJson(): string {
     const projectData = {
       format: 'futsaltag-project',
-      version: '1.1',
+      version: '1.2',
       exportedAt: new Date().toISOString(),
       matchInfo: {
         title: this.videoTitle,
@@ -479,6 +803,11 @@ class ProjectStore {
       },
       roster: this.roster,
       calibrationPoints: this.calibrationPoints,
+      chromaFloorConfig: this.chromaFloorConfig,
+      periodKickoffs: this.periodKickoffs,
+      useMatchClock: this.useMatchClock,
+      startingLineupIds: this.startingLineupIds,
+      substitutions: this.substitutions,
       boards: this.boards,
       activeBoardId: this.activeBoardId,
       tags: this.tags,
@@ -553,6 +882,16 @@ class ProjectStore {
       if (data.calibrationPoints) {
         this.calibrationPoints = data.calibrationPoints;
       }
+      if (data.chromaFloorConfig) {
+        this.chromaFloorConfig = {
+          enabled: Boolean(data.chromaFloorConfig.enabled),
+          targetRgb: Array.isArray(data.chromaFloorConfig.targetRgb)
+            ? data.chromaFloorConfig.targetRgb
+            : [34, 98, 152],
+          tolerance: Number(data.chromaFloorConfig.tolerance) || 32,
+          feather: Number(data.chromaFloorConfig.feather) || 10,
+        };
+      }
       if (Array.isArray(data.boards) && data.boards.length > 0) {
         this.boards = data.boards.map(cloneBoard);
       }
@@ -565,6 +904,17 @@ class ProjectStore {
       if (Array.isArray(data.playlists) && data.playlists.length > 0) {
         this.playlists = data.playlists;
       }
+      this.periodKickoffs = Array.isArray(data.periodKickoffs) ? data.periodKickoffs : [];
+      this.useMatchClock = Boolean(data.useMatchClock && this.periodKickoffs.length > 0);
+      if (Array.isArray(data.startingLineupIds) && data.startingLineupIds.length > 0) {
+        this.startingLineupIds = data.startingLineupIds;
+      } else {
+        this.startingLineupIds = this.roster
+          .filter((p) => !p.isOpponent)
+          .slice(0, 5)
+          .map((p) => p.id);
+      }
+      this.substitutions = Array.isArray(data.substitutions) ? data.substitutions : [];
       this.stage = 'tagging';
       return true;
     } catch (err) {
@@ -581,6 +931,14 @@ class ProjectStore {
     this.calibrationPoints = null;
     this.tags = [];
     this.activeClipForDrawing = null;
+    this.periodKickoffs = [];
+    this.useMatchClock = false;
+    this.substitutions = [];
+    this.chromaFloorConfig = { ...this.chromaFloorConfig, enabled: false };
+    this.startingLineupIds = this.roster
+      .filter((p) => !p.isOpponent)
+      .slice(0, 5)
+      .map((p) => p.id);
     this.playlists = [
       {
         id: 'pl-default',

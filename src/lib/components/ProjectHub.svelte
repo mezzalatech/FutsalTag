@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { convertFileSrc } from '@tauri-apps/api/core';
   import { projectStore, isTauriDesktop } from '$lib/stores/projectStore.svelte';
   import {
@@ -16,7 +17,15 @@
     Trophy,
     CheckCircle2,
     Calendar,
+    BarChart3,
   } from 'lucide-svelte';
+
+  interface Props {
+    onOpenTeamDatabase?: () => void;
+    onOpenSeasonAnalytics?: () => void;
+  }
+
+  let { onOpenTeamDatabase, onOpenSeasonAnalytics }: Props = $props();
 
   let homeTeam = $state('Tim Kami (Futsal Pro)');
   let awayTeam = $state('Tim Lawan');
@@ -24,10 +33,36 @@
   let matchHalf = $state<'Babak 1' | 'Babak 2' | 'Full Time'>('Babak 1');
   let homeColor = $state('#0284c7');
   let awayColor = $state('#ef4444');
+  let selectedHomeClubId = $state<string>('');
+  let selectedAwayClubId = $state<string>('');
   let isDragging = $state(false);
   let fullVideoInputEl: HTMLInputElement | undefined = $state();
   let projectFileInputEl: HTMLInputElement | undefined = $state();
   let quickVideoInputEl: HTMLInputElement | undefined = $state();
+
+  onMount(() => {
+    if (!projectStore.clubLibraryLoaded) {
+      projectStore.loadClubLibrary();
+    }
+  });
+
+  function handleSelectHomeClub(clubId: string) {
+    selectedHomeClubId = clubId;
+    const club = projectStore.clubLibrary.find((c) => c.id === clubId);
+    if (club) {
+      homeTeam = club.name;
+      homeColor = club.jerseyColor;
+    }
+  }
+
+  function handleSelectAwayClub(clubId: string) {
+    selectedAwayClubId = clubId;
+    const club = projectStore.clubLibrary.find((c) => c.id === clubId);
+    if (club) {
+      awayTeam = club.name;
+      awayColor = club.jerseyColor;
+    }
+  }
 
   const TEAM_COLORS = ['#0284c7', '#ef4444', '#10b981', '#f59e0b', '#ffffff', '#1e293b'];
 
@@ -73,6 +108,9 @@
           `${homeTeam} vs ${awayTeam} (${matchHalf})`,
           180
         );
+        if (selectedHomeClubId || selectedAwayClubId) {
+          projectStore.applyClubsToMatchRoster(selectedHomeClubId || null, selectedAwayClubId || null);
+        }
         projectStore.setStage('tagging');
       }
     } catch (err: any) {
@@ -118,6 +156,9 @@
       `${homeTeam} vs ${awayTeam} (${matchHalf})`,
       180
     );
+    if (selectedHomeClubId || selectedAwayClubId) {
+      projectStore.applyClubsToMatchRoster(selectedHomeClubId || null, selectedAwayClubId || null);
+    }
     projectStore.setStage('tagging');
   }
 
@@ -221,6 +262,32 @@
             placeholder="Nama Turnamen / Latihan"
             bind:value={tournamentName}
           />
+        </div>
+
+        <!-- Club Library Dropdowns -->
+        <div class="club-select-row">
+          <select
+            class="club-select"
+            value={selectedHomeClubId}
+            onchange={(e) => handleSelectHomeClub((e.currentTarget as HTMLSelectElement).value)}
+            title="Pilih Klub Home dari Library (otomatis isi roster)"
+          >
+            <option value="">-- Klub Home (Library) --</option>
+            {#each projectStore.clubLibrary as c (c.id)}
+              <option value={c.id}>{c.name} ({c.players.length} pemain)</option>
+            {/each}
+          </select>
+          <select
+            class="club-select"
+            value={selectedAwayClubId}
+            onchange={(e) => handleSelectAwayClub((e.currentTarget as HTMLSelectElement).value)}
+            title="Pilih Profil Lawan dari Library"
+          >
+            <option value="">-- Klub Away (Library) --</option>
+            {#each projectStore.clubLibrary as c (c.id)}
+              <option value={c.id}>{c.name}</option>
+            {/each}
+          </select>
         </div>
 
         <!-- Teams row with jersey color pills -->
@@ -376,6 +443,18 @@
         <span class="chip-name">Pendekar United vs Blacksteel</span>
         <span class="chip-meta">(Babak 1 • 3 Klip Taktis)</span>
       </button>
+      {#if onOpenTeamDatabase}
+        <button type="button" class="recent-chip" onclick={onOpenTeamDatabase}>
+          <Shield size={12} class="text-sky-400" />
+          <span class="chip-name">Library Klub ({projectStore.clubLibrary.length})</span>
+        </button>
+      {/if}
+      {#if onOpenSeasonAnalytics}
+        <button type="button" class="recent-chip" onclick={onOpenSeasonAnalytics}>
+          <BarChart3 size={12} class="text-emerald-400" />
+          <span class="chip-name">Season Analytics Hub</span>
+        </button>
+      {/if}
       <div class="workflow-breadcrumbs">
         <span class="crumb-text">Alur 4 Tahap:</span>
         <span class="crumb active">1. Hub</span>
@@ -913,5 +992,23 @@
 
   .crumb-arrow {
     color: #1a355d;
+  }
+
+  .club-select-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+
+  .club-select {
+    background: #060e1d;
+    border: 1px solid #1a355d;
+    color: #93c5fd;
+    font-size: 9.5px;
+    font-weight: 700;
+    padding: 4px 6px;
+    border-radius: 5px;
+    outline: none;
+    min-width: 0;
   }
 </style>

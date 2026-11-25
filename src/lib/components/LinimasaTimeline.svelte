@@ -3,6 +3,7 @@
   import { ZoomIn, ZoomOut } from 'lucide-svelte';
   import type {
     ActiveContinuousTag,
+    PeriodKickoff,
     TaggingBoard,
     TaggingButton,
     VideoTagEvent,
@@ -19,10 +20,20 @@
     lagTimeSeconds: number;
     selectedClipId: string | null;
     activeLoopClipId: string | null;
+    periodKickoffs?: PeriodKickoff[];
+    useMatchClock?: boolean;
+    formatMatchClock?: (sec: number) => string;
     onSeek: (time: number) => void;
     onSelectClip: (tag: VideoTagEvent) => void;
     onEditClip: (tag: VideoTagEvent) => void;
     onTrimClip: (tagId: string, newStart: number, newEnd: number) => void;
+    onMoveClip: (tagId: string, newStart: number, newEnd: number) => void;
+    onReassignClipCategory: (
+      tagId: string,
+      targetCategory: string,
+      targetColor: string,
+      targetButtonId?: string
+    ) => void;
     onChangeLead: (sec: number) => void;
     onChangeLag: (sec: number) => void;
   }
@@ -38,10 +49,15 @@
     lagTimeSeconds,
     selectedClipId,
     activeLoopClipId,
+    periodKickoffs = [],
+    useMatchClock = false,
+    formatMatchClock,
     onSeek,
     onSelectClip,
     onEditClip,
     onTrimClip,
+    onMoveClip,
+    onReassignClipCategory,
     onChangeLead,
     onChangeLag,
   }: Props = $props();
@@ -126,6 +142,7 @@
 
   interface TimelineLane {
     id: string;
+    buttonId?: string;
     category: string;
     hotkey: string | null;
     color: string;
@@ -142,6 +159,7 @@
       if (!map.has(btn.name)) {
         map.set(btn.name, {
           id: btn.id,
+          buttonId: btn.id,
           category: btn.name,
           hotkey: btn.hotkey,
           color: btn.color,
@@ -195,10 +213,25 @@
     for (let t = first; t <= viewEnd + 0.001; t += step) {
       const pct = ((t - viewStart) / windowDur) * 100;
       if (pct >= 0 && pct <= 100) {
-        ticks.push({ time: t, leftPct: pct, label: formatTime(t) });
+        const lbl =
+          useMatchClock && periodKickoffs.length > 0 && formatMatchClock
+            ? formatMatchClock(t)
+            : formatTime(t);
+        ticks.push({ time: t, leftPct: pct, label: lbl });
       }
     }
     return ticks;
+  });
+
+  const kickoffMarkers = $derived.by(() => {
+    return periodKickoffs
+      .map((k) => {
+        const leftPct = ((k.videoTime - viewStart) / windowDur) * 100;
+        const shortLabel = k.period === 1 ? 'KO B1' : k.period === 2 ? 'KO B2' : 'KO ET';
+        const color = k.period === 1 ? '#10b981' : k.period === 2 ? '#f59e0b' : '#a855f7';
+        return { ...k, leftPct, shortLabel, color };
+      })
+      .filter((k) => k.leftPct >= 0 && k.leftPct <= 100);
   });
 
   const playheadPct = $derived(((currentTime - viewStart) / windowDur) * 100);
@@ -208,10 +241,113 @@
     inPoint !== null ? ((inPoint - viewStart) / windowDur) * 100 : null
   );
 
+  // Auto-scroll lane container when selectedClipId changes
+  let lanesWrapEl = $state<HTMLDivElement | null>(null);
+  let lastScrolledClipId = $state<string | null>(null);
+  $effect(() => {
+    const id = selectedClipId;
+    if (!id || id === lastScrolledClipId) return;
+    lastScrolledClipId = id;
+    const targetTag = tags.find((t) => t.id === id);
+    if (!targetTag || !lanesWrapEl) return;
+    const laneIdx = allCategoryLanes.findIndex((l) => l.category === targetTag.category);
+    if (laneIdx === -1) return;
+    const rows = lanesWrapEl.querySelectorAll<HTMLElement>('.linimasa-lane-row');
+    rows[laneIdx]?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  });
+
   // Clip trim dragging state
   let trimmingTagId = $state<string | null>(null);
   let trimPreviewStart = $state<number>(0);
   let trimPreviewEnd = $state<number>(0);
+
+  // Clip middle drag (horizontal move + vertical lane reassign)
+  let draggingTagId = $state<string | null>(null);
+  let dragPreviewStart = $state<number>(0);
+  let dragPreviewEnd = $state<number>(0);
+  let dragOriginalCategory = $state<string | null>(null);
+  let dragHoverLane = $state<{ category: string; color: string; buttonId?: string } | null>(null);
+  let suppressNextClick = false;
+
+  function startClipDrag(
+    e: PointerEvent,
+    tag: VideoTagEvent,
+    trackEl: HTMLElement
+  ) {
+    if (e.button !== 0) return;
+    if ((e.target as HTMLElement)?.closest('.trim-handle')) return;
+    const rect = trackEl.getBoundingClientRect();
+    if (rect.width <= 0) return;
+
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const clipDur = Math.max(0.4, tag.endTime - tag.startTime);
+    let moved = false;
+
+    function onMove(ev: PointerEvent) {
+      if (!moved && Math.hypot(ev.clientX - startX, ev.clientY - startY) < 4) {
+        return;
+      }
+      if (!moved) {
+        moved = true;
+        draggingTagId = tag.id;
+        dragOriginalCategory = tag.category;
+      }
+
+      const deltaSec = ((ev.clientX - startX) / rect.width) * windowDur;
+      const snappedStart = Math.round((tag.startTime + deltaSec) * 10) / 10;
+      const clampedStart = Math.max(0, Math.min(Math.max(0, safeDuration - clipDur), snappedStart));
+      dragPreviewStart = Number(clampedStart.toFixed(2));
+      dragPreviewEnd = Number((clampedStart + clipDur).toFixed(2));
+
+      if (lanesWrapEl) {
+        const rows = lanesWrapEl.querySelectorAll<HTMLElement>('.linimasa-lane-row');
+        let matched: { category: string; color: string; buttonId?: string } | null = null;
+        for (const row of rows) {
+          const r = row.getBoundingClientRect();
+          if (ev.clientY >= r.top && ev.clientY <= r.bottom) {
+            const cat = row.dataset.laneCategory;
+            const col = row.dataset.laneColor || tag.color;
+            const btnId = row.dataset.laneButtonId || undefined;
+            if (cat) {
+              matched = { category: cat, color: col, buttonId: btnId };
+            }
+            break;
+          }
+        }
+        dragHoverLane = matched;
+      }
+    }
+
+    function onUp() {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      if (moved) {
+        suppressNextClick = true;
+        setTimeout(() => {
+          suppressNextClick = false;
+        }, 60);
+
+        const finalStart = dragPreviewStart;
+        const finalEnd = dragPreviewEnd;
+        const targetLane = dragHoverLane;
+
+        draggingTagId = null;
+        dragOriginalCategory = null;
+        dragHoverLane = null;
+
+        if (targetLane && targetLane.category !== tag.category) {
+          onReassignClipCategory(tag.id, targetLane.category, targetLane.color, targetLane.buttonId);
+        }
+        if (Math.abs(finalStart - tag.startTime) >= 0.05 || Math.abs(finalEnd - tag.endTime) >= 0.05) {
+          onMoveClip(tag.id, finalStart, finalEnd);
+        }
+      }
+    }
+
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  }
 
   function startClipTrim(
     e: PointerEvent,
@@ -292,7 +428,7 @@
     <div class="lh-left">
       <span class="lh-title">Linimasa</span>
       <span class="lh-hint">
-        I & O menandai rentang · Klik klip untuk putar · Klik 2x edit label · Seret tepi klip untuk pangkas
+        I & O / Alt+U buat klip · Seret tengah klip: geser / pindah baris · Seret tepi: pangkas
       </span>
     </div>
 
@@ -313,7 +449,11 @@
 
       <span class="lh-sep"></span>
 
-      <span class="lh-cur-badge">{formatPreciseTime(currentTime)}</span>
+      <span class="lh-cur-badge">
+        {useMatchClock && periodKickoffs.length > 0 && formatMatchClock
+          ? formatMatchClock(currentTime)
+          : formatPreciseTime(currentTime)}
+      </span>
 
       <div class="zoom-controls">
         <button
@@ -369,18 +509,36 @@
           </div>
         {/each}
 
+        {#each kickoffMarkers as ko (ko.period)}
+          <div
+            class="kickoff-badge"
+            style="left: {ko.leftPct}%; background-color: {ko.color};"
+            title="{ko.label} Kick-off ({formatTime(ko.videoTime)})"
+          >
+            {ko.shortLabel}
+          </div>
+        {/each}
+
         {#if playheadVisible}
           <div class="ruler-playhead-badge" style="left: {playheadPct}%;">
-            {formatPreciseTime(currentTime)}
+            {useMatchClock && periodKickoffs.length > 0 && formatMatchClock
+              ? formatMatchClock(currentTime)
+              : formatPreciseTime(currentTime)}
           </div>
         {/if}
       </div>
     </div>
 
     <!-- CATEGORY TRACK LANES + VERTICAL PLAYHEAD OVERLAY -->
-    <div class="lanes-scroll-wrap">
+    <div class="lanes-scroll-wrap" bind:this={lanesWrapEl}>
       <div class="lanes-content">
         <div class="linimasa-playhead-layer" style="left: {HEADER_W}px;">
+          {#each kickoffMarkers as ko (ko.period)}
+            <div
+              class="kickoff-needle"
+              style="left: {ko.leftPct}%; border-left-color: {ko.color};"
+            ></div>
+          {/each}
           {#if playheadVisible}
             <div class="playhead-needle" style="left: {playheadPct}%;"></div>
           {/if}
@@ -390,7 +548,17 @@
         </div>
 
         {#each allCategoryLanes as lane (lane.id + lane.category)}
-          <div class="linimasa-lane-row">
+          {@const isDropTarget =
+            draggingTagId !== null &&
+            dragHoverLane?.category === lane.category &&
+            dragHoverLane.category !== dragOriginalCategory}
+          <div
+            class="linimasa-lane-row"
+            class:drop-target={isDropTarget}
+            data-lane-category={lane.category}
+            data-lane-color={lane.color}
+            data-lane-button-id={lane.buttonId || ''}
+          >
             <div class="lane-header" style="width: {HEADER_W}px;" title={lane.category}>
               <span class="lane-color-bar" style="background-color: {lane.color};"></span>
               <span class="lane-count-num">{lane.tags.length + lane.live.length}</span>
@@ -428,10 +596,12 @@
                 {/if}
               {/each}
 
-              <!-- COMPLETED CLIPS WITH EDGE TRIM HANDLES -->
+              <!-- COMPLETED CLIPS WITH EDGE TRIM & MIDDLE DRAG HANDLES -->
               {#each lane.tags as tag (tag.id)}
-                {@const effStart = trimmingTagId === tag.id ? trimPreviewStart : tag.startTime}
-                {@const effEnd = trimmingTagId === tag.id ? trimPreviewEnd : tag.endTime}
+                {@const isTrimming = trimmingTagId === tag.id}
+                {@const isDragging = draggingTagId === tag.id}
+                {@const effStart = isTrimming ? trimPreviewStart : isDragging ? dragPreviewStart : tag.startTime}
+                {@const effEnd = isTrimming ? trimPreviewEnd : isDragging ? dragPreviewEnd : tag.endTime}
                 {@const clampedS = Math.max(viewStart, effStart)}
                 {@const clampedE = Math.min(viewEnd, effEnd)}
                 {#if clampedE >= viewStart && clampedS <= viewEnd && effEnd >= viewStart && effStart <= viewEnd}
@@ -442,10 +612,13 @@
                   <div
                     class="clip-block"
                     class:selected={isSelected}
-                    class:trimming={trimmingTagId === tag.id}
+                    class:trimming={isTrimming}
+                    class:dragging-clip={isDragging}
                     style="left: {lPct}%; width: {wPct}%; background-color: {tag.color || lane.color};"
+                    onpointerdown={(e) => startClipDrag(e, tag, e.currentTarget.parentElement!)}
                     onclick={(e) => {
                       e.stopPropagation();
+                      if (suppressNextClick) return;
                       onSelectClip(tag);
                     }}
                     ondblclick={(e) => {
@@ -454,7 +627,7 @@
                     }}
                     role="button"
                     tabindex="0"
-                    title="{tag.title} ({formatPreciseTime(effStart)} - {formatPreciseTime(effEnd)}) · Klik: Putar · 2x Klik: Edit · Seret tepi: Pangkas"
+                    title="{tag.title} ({formatPreciseTime(effStart)} - {formatPreciseTime(effEnd)}) · Seret tengah: geser/pindah baris · 2x Klik: Edit · Seret tepi: Pangkas"
                   >
                     <div
                       class="trim-handle trim-handle-l"
@@ -465,9 +638,13 @@
                       title="Seret untuk memangkas titik awal klip"
                     ></div>
                     <span class="clip-block-label">
-                      {trimmingTagId === tag.id
-                        ? `${(effEnd - effStart).toFixed(1)}s`
-                        : tag.playerLabel || tag.category}
+                      {#if isTrimming}
+                        {(effEnd - effStart).toFixed(1)}s
+                      {:else if isDragging}
+                        {formatPreciseTime(effStart)}{dragHoverLane && dragHoverLane.category !== dragOriginalCategory ? ` → ${dragHoverLane.category}` : ''}
+                      {:else}
+                        {tag.playerLabel || tag.category}
+                      {/if}
                     </span>
                     <div
                       class="trim-handle trim-handle-r"
@@ -788,12 +965,42 @@
     background: #10b981;
   }
 
+  .kickoff-badge {
+    position: absolute;
+    top: 2px;
+    transform: translateX(-50%);
+    color: #04101d;
+    font-family: 'Fira Code', monospace;
+    font-size: 7.5px;
+    font-weight: 900;
+    padding: 1px 4px;
+    border-radius: 3px;
+    pointer-events: none;
+    z-index: 9;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
+  }
+
+  .kickoff-needle {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 0;
+    border-left: 1.5px dashed #10b981;
+    opacity: 0.78;
+  }
+
   .linimasa-lane-row {
     display: flex;
     align-items: stretch;
     height: 22px;
     min-height: 22px;
     border-bottom: 1px solid #0e1e38;
+    transition: background-color 0.1s ease, box-shadow 0.1s ease;
+  }
+
+  .linimasa-lane-row.drop-target {
+    background: rgba(16, 185, 129, 0.16);
+    box-shadow: inset 0 0 0 1.5px #10b981;
   }
 
   .lane-header {
@@ -869,7 +1076,7 @@
     padding: 0 5px;
     box-sizing: border-box;
     overflow: hidden;
-    cursor: pointer;
+    cursor: grab;
     z-index: 6;
   }
 
@@ -879,9 +1086,16 @@
   }
 
   .clip-block.selected,
-  .clip-block.trimming {
+  .clip-block.trimming,
+  .clip-block.dragging-clip {
     outline: 1.5px solid #ffffff;
     z-index: 15;
+  }
+
+  .clip-block.dragging-clip {
+    cursor: grabbing;
+    opacity: 0.92;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.7);
   }
 
   .clip-block-live {

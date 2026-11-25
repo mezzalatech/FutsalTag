@@ -47,6 +47,7 @@ pub fn resolve_bin(name: &str) -> String {
                 dir.join(format!("{}.exe", name)),
                 dir.join("resources").join("bin").join(name),
                 dir.join("resources").join("bin").join(format!("{}.exe", name)),
+                dir.join("resources").join("bin-macos").join(name),
                 dir.join("bin").join(name),
                 dir.join("bin").join(format!("{}.exe", name)),
             ] {
@@ -54,15 +55,27 @@ pub fn resolve_bin(name: &str) -> String {
                     return candidate.to_string_lossy().to_string();
                 }
             }
+            if let Some(contents_dir) = dir.parent() {
+                let mac_res = contents_dir.join("Resources");
+                for candidate in [
+                    mac_res.join("resources").join("bin-macos").join(name),
+                    mac_res.join("resources").join("bin").join(name),
+                    mac_res.join("bin-macos").join(name),
+                    mac_res.join("bin").join(name),
+                ] {
+                    if candidate.exists() {
+                        return candidate.to_string_lossy().to_string();
+                    }
+                }
+            }
         }
     }
 
-    let manifest_bin = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("resources")
-        .join("bin");
+    let manifest_res = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources");
     for candidate in [
-        manifest_bin.join(name),
-        manifest_bin.join(format!("{}.exe", name)),
+        manifest_res.join("bin").join(name),
+        manifest_res.join("bin").join(format!("{}.exe", name)),
+        manifest_res.join("bin-macos").join(name),
     ] {
         if candidate.exists() {
             return candidate.to_string_lossy().to_string();

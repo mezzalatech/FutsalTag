@@ -44,13 +44,15 @@ pub fn resolve_whisper_cli_path(app: Option<&tauri::AppHandle>) -> Option<PathBu
     let bin_names = if cfg!(target_os = "windows") {
         vec!["whisper-cli.exe", "main.exe"]
     } else {
-        vec!["whisper-cli", "main"]
+        vec!["whisper-cli", "whisper-cpp", "main"]
     };
 
     if let Some(handle) = app {
         if let Ok(res_dir) = handle.path().resource_dir() {
             for name in &bin_names {
                 for rel in [
+                    format!("resources/whisper-macos/{}", name),
+                    format!("whisper-macos/{}", name),
                     format!("resources/whisper/{}", name),
                     format!("whisper/{}", name),
                     name.to_string(),
@@ -67,13 +69,27 @@ pub fn resolve_whisper_cli_path(app: Option<&tauri::AppHandle>) -> Option<PathBu
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             for name in &bin_names {
-                let p = dir.join(name);
-                if p.exists() {
-                    return Some(p);
+                for p in [
+                    dir.join(name),
+                    dir.join("whisper").join(name),
+                    dir.join("whisper-macos").join(name),
+                ] {
+                    if p.exists() {
+                        return Some(p);
+                    }
                 }
-                let sub = dir.join("whisper").join(name);
-                if sub.exists() {
-                    return Some(sub);
+                if let Some(contents_dir) = dir.parent() {
+                    let mac_res = contents_dir.join("Resources");
+                    for p in [
+                        mac_res.join("resources").join("whisper-macos").join(name),
+                        mac_res.join("whisper-macos").join(name),
+                        mac_res.join("resources").join("whisper").join(name),
+                        mac_res.join("whisper").join(name),
+                    ] {
+                        if p.exists() {
+                            return Some(p);
+                        }
+                    }
                 }
             }
         }
@@ -82,12 +98,25 @@ pub fn resolve_whisper_cli_path(app: Option<&tauri::AppHandle>) -> Option<PathBu
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     for name in &bin_names {
         for p in [
+            manifest_dir.join(format!("resources/whisper-macos/{}", name)),
             manifest_dir.join(format!("resources/whisper/{}", name)),
+            PathBuf::from(format!("src-tauri/resources/whisper-macos/{}", name)),
             PathBuf::from(format!("src-tauri/resources/whisper/{}", name)),
             PathBuf::from(format!("resources/whisper/{}", name)),
         ] {
             if p.exists() {
                 return Some(p);
+            }
+        }
+    }
+
+    if !cfg!(target_os = "windows") {
+        for name in &bin_names {
+            for prefix in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"] {
+                let p = Path::new(prefix).join(name);
+                if p.exists() {
+                    return Some(p);
+                }
             }
         }
     }
@@ -218,6 +247,16 @@ pub fn transcribe_wav_file(
     let mut cmd = Command::new(cli_path);
     if let Some(parent) = cli_path.parent() {
         cmd.current_dir(parent);
+        #[cfg(target_os = "macos")]
+        {
+            let prev = std::env::var("DYLD_LIBRARY_PATH").unwrap_or_default();
+            let next = if prev.is_empty() {
+                parent.to_string_lossy().to_string()
+            } else {
+                format!("{}:{}", parent.to_string_lossy(), prev)
+            };
+            cmd.env("DYLD_LIBRARY_PATH", next);
+        }
     }
     #[cfg(target_os = "windows")]
     {

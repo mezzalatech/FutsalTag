@@ -1,0 +1,12 @@
+{
+  "bundle": {
+    "resources": [
+      "resources/models/*",
+      "resources/whisper-macos/*",
+      "resources/bin-macos/*"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "11.0"
+    }
+  }
+}

@@ -33,9 +33,7 @@
     "active": true,
     "targets": "all",
     "resources": [
-      "resources/models/*",
-      "resources/whisper/*",
-      "resources/bin/*"
+      "resources/models/*"
     ],
     "fileAssociations": [
       {

@@ -17,4 +17,8 @@ src-tauri/gen/schemas/
 !src-tauri/resources/whisper/whisper-cli.exe
 src-tauri/resources/bin/ffmpeg.exe
 src-tauri/resources/bin/ffprobe.exe
+src-tauri/resources/bin-macos/ffmpeg
+src-tauri/resources/bin-macos/ffprobe
+src-tauri/resources/whisper-macos/whisper-cli
+src-tauri/resources/whisper-macos/*.dylib
 

@@ -1,0 +1,9 @@
+{
+  "bundle": {
+    "resources": [
+      "resources/models/*",
+      "resources/whisper/*",
+      "resources/bin/*"
+    ]
+  }
+}

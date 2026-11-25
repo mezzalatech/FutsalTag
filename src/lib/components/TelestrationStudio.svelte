@@ -3169,4 +3169,73 @@
     flex: 1;
     min-width: 0;
   }
+
+  @media (max-width: 1180px) {
+    .tools-sidebar,
+    .elements-sidebar {
+      width: 192px;
+      padding: 10px;
+    }
+  }
+
+  @media (max-width: 960px) {
+    .telestration-studio {
+      overflow-y: auto;
+      height: auto;
+      min-height: 100%;
+    }
+
+    .studio-header,
+    .studio-scrubber-bar {
+      flex-wrap: wrap;
+      height: auto;
+      padding: 8px 10px;
+      gap: 6px;
+    }
+
+    .studio-body {
+      flex-direction: column;
+      overflow: visible;
+    }
+
+    .canvas-viewer-container {
+      order: 1;
+      width: 100%;
+      min-height: 300px;
+      aspect-ratio: 16 / 9;
+      flex: none;
+    }
+
+    .tools-sidebar {
+      order: 2;
+      width: 100%;
+      border-right: none;
+      border-top: 1px solid #1a355d;
+      max-height: none;
+    }
+
+    .tools-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(145px, 1fr));
+      gap: 8px;
+    }
+
+    .elements-sidebar {
+      order: 3;
+      width: 100%;
+      border-left: none;
+      border-top: 1px solid #1a355d;
+      max-height: 360px;
+    }
+  }
+
+  @media (max-width: 600px) {
+    .tools-list {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .pause-slider {
+      width: 110px;
+    }
+  }
 </style>

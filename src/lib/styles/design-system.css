@@ -1,0 +1,72 @@
+/* FutsalTag Pro — UI/UX Pro Max Design System (OLED Dark Mode Broadcast) */
+
+:root {
+  --ft-bg-oled: #060b14;
+  --ft-surface-1: #0b172a;
+  --ft-surface-2: #0d1e38;
+  --ft-border: #1a355d;
+  --ft-primary: #38bdf8;
+  --ft-secondary: #1e40af;
+  --ft-cta: #f59e0b;
+  --ft-emerald: #10b981;
+  --ft-text: #f0f6fc;
+  --ft-text-muted: #94a3b8;
+  --ft-font-sans: Inter, 'Fira Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --ft-font-mono: 'Fira Code', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --ft-radius-sm: 6px;
+  --ft-radius-md: 10px;
+  --ft-radius-lg: 14px;
+  --ft-transition: 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+button,
+[role='button'],
+a,
+select {
+  cursor: pointer;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--ft-primary);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--ft-bg-oled);
+}
+
+::-webkit-scrollbar-thumb {
+  background: #1e3a5f;
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #2b548a;
+}

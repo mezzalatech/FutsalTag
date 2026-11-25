@@ -1,16 +1,11 @@
 <script lang="ts">
-  import { projectStore } from '$lib/stores/projectStore.svelte';
-  import ProjectHub from '$lib/components/ProjectHub.svelte';
-  import MatchTaggingWorkspace from '$lib/components/MatchTaggingWorkspace.svelte';
-  import TelestrationStudio from '$lib/components/TelestrationStudio.svelte';
-  import PlaylistExportHub from '$lib/components/PlaylistExportHub.svelte';
-  import TacticalBoard from '$lib/components/TacticalBoard.svelte';
-  import LockerRoomChalkboardModal from '$lib/components/LockerRoomChalkboardModal.svelte';
-  import FutsalHeatmapModal from '$lib/components/FutsalHeatmapModal.svelte';
-  import WhatsAppPlayerExporterModal from '$lib/components/WhatsAppPlayerExporterModal.svelte';
-  import PresentationStudioModal from '$lib/components/PresentationStudioModal.svelte';
-  import TeamDatabaseModal from '$lib/components/TeamDatabaseModal.svelte';
-  import SeasonAnalyticsModal from '$lib/components/SeasonAnalyticsModal.svelte';
+  import { onMount } from "svelte";
+  import "$lib/styles/design-system.css";
+  import { projectStore } from "$lib/stores/projectStore.svelte";
+  import ProjectHub from "$lib/components/ProjectHub.svelte";
+  import MatchTaggingWorkspace from "$lib/components/MatchTaggingWorkspace.svelte";
+  import TelestrationStudio from "$lib/components/TelestrationStudio.svelte";
+  import PlaylistExportHub from "$lib/components/PlaylistExportHub.svelte";
   import {
     FolderOpen,
     Scissors,
@@ -24,7 +19,7 @@
     MonitorPlay,
     Shield,
     BarChart3,
-  } from 'lucide-svelte';
+  } from "lucide-svelte";
 
   let isChalkboardOpen = $state(false);
   let isHeatmapOpen = $state(false);
@@ -33,6 +28,14 @@
   let isTeamDbOpen = $state(false);
   let isSeasonAnalyticsOpen = $state(false);
   let openProjectInputEl: HTMLInputElement | undefined = $state();
+
+  onMount(() => {
+    projectStore.checkAutoSaveRecovery();
+    const timer = setInterval(() => {
+      projectStore.runAutoSave();
+    }, 60_000);
+    return () => clearInterval(timer);
+  });
 
   async function handleSaveProject() {
     try {
@@ -46,7 +49,7 @@
   }
 
   async function handleOpenProjectClick() {
-    if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
+    if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
       try {
         const ok = await projectStore.openProjectFromDisk();
         if (ok) {
@@ -72,7 +75,7 @@
           if (ok) {
             alert(`Berkas proyek "${file.name}" berhasil dimuat!`);
           } else {
-            alert('Format berkas proyek tidak valid.');
+            alert("Format berkas proyek tidak valid.");
           }
         }
       };
@@ -82,15 +85,41 @@
 </script>
 
 <svelte:head>
-  <title>FutsalTag Pro - Futsal Video Analyser, Telestrator & Coach Board</title>
+  <title>FutsalTag Pro - Futsal Video Analyser, Telestrator & Coach Board</title
+  >
 </svelte:head>
 
 <div class="app-container">
   <!-- PRIMARY APP HEADER BAR -->
   <header class="app-header">
-    <button type="button" class="brand" onclick={() => projectStore.setStage('hub')} title="Kembali ke Hub Proyek">
-      <div class="brand-badge-circle">
-        <span class="brand-icon">⚽</span>
+    <button
+      type="button"
+      class="brand"
+      onclick={() => projectStore.setStage("hub")}
+      title="Kembali ke Hub Proyek"
+    >
+      <div class="brand-badge-circle" aria-hidden="true">
+        <svg
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="#e0f2fe"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <circle cx="12" cy="12" r="9.5" />
+          <polygon
+            points="12,7 16.5,10.2 14.8,15.5 9.2,15.5 7.5,10.2"
+            fill="rgba(56,189,248,0.28)"
+          />
+          <line x1="12" y1="2.5" x2="12" y2="7" />
+          <line x1="21" y1="9" x2="16.5" y2="10.2" />
+          <line x1="17.5" y1="19.5" x2="14.8" y2="15.5" />
+          <line x1="6.5" y1="19.5" x2="9.2" y2="15.5" />
+          <line x1="3" y1="9" x2="7.5" y2="10.2" />
+        </svg>
       </div>
       <div class="brand-text">
         <div class="brand-title-wrap">
@@ -102,7 +131,12 @@
 
     <!-- ACTIVE MATCH PILL -->
     {#if projectStore.videoTitle}
-      <button type="button" class="active-match-pill" onclick={() => projectStore.setStage('tagging')} title={projectStore.videoTitle}>
+      <button
+        type="button"
+        class="active-match-pill"
+        onclick={() => projectStore.setStage("tagging")}
+        title={projectStore.videoTitle}
+      >
         <span class="live-indicator"></span>
         <span class="match-name">{projectStore.videoTitle}</span>
         <span class="clips-count">{projectStore.tags.length} Klip</span>
@@ -115,8 +149,8 @@
       <button
         type="button"
         class="step-btn"
-        class:active={projectStore.stage === 'hub'}
-        onclick={() => projectStore.setStage('hub')}
+        class:active={projectStore.stage === "hub"}
+        onclick={() => projectStore.setStage("hub")}
         title="Hub Proyek"
       >
         <FolderOpen size={14} />
@@ -128,8 +162,8 @@
       <button
         type="button"
         class="step-btn"
-        class:active={projectStore.stage === 'tagging'}
-        onclick={() => projectStore.setStage('tagging')}
+        class:active={projectStore.stage === "tagging"}
+        onclick={() => projectStore.setStage("tagging")}
         title="Tagging & Klip Pertandingan"
       >
         <Scissors size={14} />
@@ -144,8 +178,8 @@
       <button
         type="button"
         class="step-btn"
-        class:active={projectStore.stage === 'telestrator'}
-        onclick={() => projectStore.setStage('telestrator')}
+        class:active={projectStore.stage === "telestrator"}
+        onclick={() => projectStore.setStage("telestrator")}
         title="Studio Telestrasi & AI Tracking"
       >
         <Sparkles size={14} />
@@ -157,8 +191,8 @@
       <button
         type="button"
         class="step-btn"
-        class:active={projectStore.stage === 'playlist_export'}
-        onclick={() => projectStore.setStage('playlist_export')}
+        class:active={projectStore.stage === "playlist_export"}
+        onclick={() => projectStore.setStage("playlist_export")}
         title="Playlist & Ekspor Video"
       >
         <Film size={14} />
@@ -172,8 +206,8 @@
       <button
         type="button"
         class="step-btn coachboard-tab"
-        class:active={projectStore.stage === 'coachboard'}
-        onclick={() => projectStore.setStage('coachboard')}
+        class:active={projectStore.stage === "coachboard"}
+        onclick={() => projectStore.setStage("coachboard")}
         title="Papan Taktik 2D FIFA Futsal (40m x 20m)"
       >
         <LayoutGrid size={14} />
@@ -248,6 +282,11 @@
 
       <!-- PROJECT FILE IO -->
       <div class="header-badges">
+        {#if projectStore.lastAutoSaveAt}
+          <span class="autosave-pill" title="Cadangan otomatis proyek disimpan setiap 60 detik">
+            Auto-save {projectStore.lastAutoSaveAt}
+          </span>
+        {/if}
         <button
           type="button"
           class="btn-header-io"
@@ -279,52 +318,80 @@
 
   <!-- WORKSPACE VIEWPORT -->
   <main class="app-workspace">
-    {#if projectStore.stage === 'hub'}
+    {#if projectStore.stage === "hub"}
       <ProjectHub
         onOpenTeamDatabase={() => (isTeamDbOpen = true)}
         onOpenSeasonAnalytics={() => (isSeasonAnalyticsOpen = true)}
       />
-    {:else if projectStore.stage === 'tagging'}
+    {:else if projectStore.stage === "tagging"}
       <MatchTaggingWorkspace />
-    {:else if projectStore.stage === 'telestrator'}
+    {:else if projectStore.stage === "telestrator"}
       <TelestrationStudio />
-    {:else if projectStore.stage === 'playlist_export'}
-      <PlaylistExportHub onOpenPresentation={() => (isPresentationOpen = true)} />
-    {:else if projectStore.stage === 'coachboard'}
-      <TacticalBoard />
+    {:else if projectStore.stage === "playlist_export"}
+      <PlaylistExportHub
+        onOpenPresentation={() => (isPresentationOpen = true)}
+      />
+    {:else if projectStore.stage === "coachboard"}
+      {#await import("$lib/components/TacticalBoard.svelte") then { default: TacticalBoard }}
+        <TacticalBoard />
+      {/await}
     {/if}
   </main>
 
-  <!-- MODAL DIALOGS FOR KILLER FEATURES -->
-  <LockerRoomChalkboardModal
-    isOpen={isChalkboardOpen}
-    onClose={() => (isChalkboardOpen = false)}
-  />
+  <!-- MODAL DIALOGS FOR KILLER FEATURES (LAZY-LOADED) -->
+  {#if isChalkboardOpen}
+    {#await import("$lib/components/LockerRoomChalkboardModal.svelte") then { default: LockerRoomChalkboardModal }}
+      <LockerRoomChalkboardModal
+        isOpen={isChalkboardOpen}
+        onClose={() => (isChalkboardOpen = false)}
+      />
+    {/await}
+  {/if}
 
-  <FutsalHeatmapModal
-    isOpen={isHeatmapOpen}
-    onClose={() => (isHeatmapOpen = false)}
-  />
+  {#if isHeatmapOpen}
+    {#await import("$lib/components/FutsalHeatmapModal.svelte") then { default: FutsalHeatmapModal }}
+      <FutsalHeatmapModal
+        isOpen={isHeatmapOpen}
+        onClose={() => (isHeatmapOpen = false)}
+      />
+    {/await}
+  {/if}
 
-  <WhatsAppPlayerExporterModal
-    isOpen={isWhatsAppOpen}
-    onClose={() => (isWhatsAppOpen = false)}
-  />
+  {#if isWhatsAppOpen}
+    {#await import("$lib/components/WhatsAppPlayerExporterModal.svelte") then { default: WhatsAppPlayerExporterModal }}
+      <WhatsAppPlayerExporterModal
+        isOpen={isWhatsAppOpen}
+        onClose={() => (isWhatsAppOpen = false)}
+      />
+    {/await}
+  {/if}
 
-  <PresentationStudioModal
-    isOpen={isPresentationOpen}
-    onClose={() => (isPresentationOpen = false)}
-  />
+  {#if isPresentationOpen}
+    {#await import("$lib/components/PresentationStudioModal.svelte") then { default: PresentationStudioModal }}
+      <PresentationStudioModal
+        isOpen={isPresentationOpen}
+        onClose={() => (isPresentationOpen = false)}
+      />
+    {/await}
+  {/if}
 
-  <TeamDatabaseModal
-    isOpen={isTeamDbOpen}
-    onClose={() => (isTeamDbOpen = false)}
-  />
+  {#if isTeamDbOpen}
+    {#await import("$lib/components/TeamDatabaseModal.svelte") then { default: TeamDatabaseModal }}
+      <TeamDatabaseModal
+        isOpen={isTeamDbOpen}
+        onClose={() => (isTeamDbOpen = false)}
+      />
+    {/await}
+  {/if}
 
-  <SeasonAnalyticsModal
-    isOpen={isSeasonAnalyticsOpen}
-    onClose={() => (isSeasonAnalyticsOpen = false)}
-  />
+  {#if isSeasonAnalyticsOpen}
+    {#await import("$lib/components/SeasonAnalyticsModal.svelte") then { default: SeasonAnalyticsModal }}
+      <SeasonAnalyticsModal
+        isOpen={isSeasonAnalyticsOpen}
+        onClose={() => (isSeasonAnalyticsOpen = false)}
+      />
+    {/await}
+  {/if}
 </div>
 
 <style>
@@ -335,7 +402,14 @@
     height: 100%;
     overflow: hidden;
     background-color: #060b14;
-    font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-family:
+      Inter,
+      system-ui,
+      -apple-system,
+      BlinkMacSystemFont,
+      "Segoe UI",
+      Roboto,
+      sans-serif;
   }
 
   .app-container {
@@ -345,9 +419,16 @@
     height: 100vh;
     overflow: hidden;
     background-color: #060b14;
-    background-image: 
-      radial-gradient(ellipse 80% 50% at 50% -20%, rgba(14, 165, 233, 0.08), transparent 70%),
-      radial-gradient(ellipse 50% 50% at 90% 100%, rgba(37, 99, 235, 0.05), transparent 70%);
+    background-image: radial-gradient(
+        ellipse 80% 50% at 50% -20%,
+        rgba(14, 165, 233, 0.08),
+        transparent 70%
+      ),
+      radial-gradient(
+        ellipse 50% 50% at 90% 100%,
+        rgba(37, 99, 235, 0.05),
+        transparent 70%
+      );
   }
 
   /* HEADER (DEEP SAPPHIRE BROADCAST) */
@@ -396,11 +477,6 @@
     justify-content: center;
     box-shadow: 0 0 12px rgba(56, 189, 248, 0.35);
     flex-shrink: 0;
-  }
-
-  .brand-icon {
-    font-size: 15px;
-    line-height: 1;
   }
 
   .brand-text {
@@ -465,9 +541,18 @@
   }
 
   @keyframes pulse {
-    0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
-    70% { transform: scale(1); box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
-    100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+    0% {
+      transform: scale(0.95);
+      box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+    }
+    70% {
+      transform: scale(1);
+      box-shadow: 0 0 0 6px rgba(16, 185, 129, 0);
+    }
+    100% {
+      transform: scale(0.95);
+      box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+    }
   }
 
   .match-name {
@@ -539,7 +624,11 @@
   }
 
   .step-btn.active {
-    background: linear-gradient(135deg, rgba(2, 132, 199, 0.35), rgba(37, 99, 235, 0.45));
+    background: linear-gradient(
+      135deg,
+      rgba(2, 132, 199, 0.35),
+      rgba(37, 99, 235, 0.45)
+    );
     border: 1px solid #38bdf8;
     color: #ffffff;
     box-shadow: 0 0 14px rgba(56, 189, 248, 0.3);
@@ -585,7 +674,11 @@
   }
 
   .coachboard-tab.active {
-    background: linear-gradient(135deg, rgba(16, 185, 129, 0.3), rgba(6, 78, 59, 0.5));
+    background: linear-gradient(
+      135deg,
+      rgba(16, 185, 129, 0.3),
+      rgba(6, 78, 59, 0.5)
+    );
     border-color: #34d399;
     color: #ffffff;
     box-shadow: 0 0 14px rgba(52, 211, 153, 0.3);
@@ -633,7 +726,11 @@
   }
 
   .btn-io-save {
-    background: linear-gradient(135deg, rgba(2, 132, 199, 0.25), rgba(30, 64, 175, 0.25));
+    background: linear-gradient(
+      135deg,
+      rgba(2, 132, 199, 0.25),
+      rgba(30, 64, 175, 0.25)
+    );
     border-color: rgba(56, 189, 248, 0.4);
     color: #38bdf8;
   }
@@ -687,6 +784,72 @@
 
     .btn-pro-tool {
       padding: 6px 8px;
+    }
+  }
+
+  @media (max-width: 1024px) {
+    .app-header {
+      height: auto;
+      min-height: 50px;
+      flex-wrap: wrap;
+      padding: 6px 10px;
+      row-gap: 6px;
+      overflow: visible;
+    }
+
+    .workflow-stepper {
+      max-width: 100%;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+
+    .workflow-stepper::-webkit-scrollbar {
+      display: none;
+    }
+
+    .header-right-group {
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+  }
+
+  @media (max-width: 768px) {
+    .app-container {
+      height: auto;
+      min-height: 100vh;
+      overflow-y: auto;
+      overflow-x: hidden;
+    }
+
+    .app-workspace {
+      overflow-y: auto;
+      overflow-x: hidden;
+    }
+
+    .step-btn,
+    .btn-pro-tool,
+    .btn-header-io {
+      min-height: 36px;
+    }
+
+    .pro-tools-bar,
+    .header-badges {
+      gap: 8px;
+    }
+  }
+
+  @media (max-width: 640px) {
+    .brand-title {
+      display: none;
+    }
+
+    .btn-header-io span {
+      display: none;
+    }
+
+    .header-right-group {
+      width: 100%;
+      justify-content: space-between;
     }
   }
 
@@ -762,6 +925,24 @@
     border-color: #10b981;
     box-shadow: 0 0 12px rgba(16, 185, 129, 0.35);
     transform: translateY(-1px);
+  }
+
+  .autosave-pill {
+    font-family: var(--ft-font-mono);
+    font-size: 9.5px;
+    font-weight: 700;
+    color: #34d399;
+    background: rgba(16, 185, 129, 0.14);
+    border: 1px solid rgba(16, 185, 129, 0.35);
+    padding: 3px 7px;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+
+  @media (max-width: 1120px) {
+    .autosave-pill {
+      display: none;
+    }
   }
 
   /* WORKSPACE */

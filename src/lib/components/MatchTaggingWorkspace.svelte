@@ -2302,30 +2302,30 @@
 
               <!-- Posisi Pemain Futsal FIFA -->
               <!-- Kiper -->
-              <div class="player-marker kiper-pos" onclick={() => { filterPlayer = '#1 Kiper'; workspaceSubTab = 'tagging'; }}>
+              <button type="button" class="player-marker kiper-pos" onclick={() => { filterPlayer = '#1 Kiper'; workspaceSubTab = 'tagging'; }}>
                 <span class="pos-badge">#1</span>
                 <span class="pos-name">Kiper</span>
-              </div>
+              </button>
               <!-- Anchor -->
-              <div class="player-marker anchor-pos" onclick={() => { filterPlayer = '#4 Anchor'; workspaceSubTab = 'tagging'; }}>
+              <button type="button" class="player-marker anchor-pos" onclick={() => { filterPlayer = '#4 Anchor'; workspaceSubTab = 'tagging'; }}>
                 <span class="pos-badge">#4</span>
                 <span class="pos-name">Anchor</span>
-              </div>
+              </button>
               <!-- Flank Kiri -->
-              <div class="player-marker flank-l-pos" onclick={() => { filterPlayer = '#7 Flank Kiri'; workspaceSubTab = 'tagging'; }}>
+              <button type="button" class="player-marker flank-l-pos" onclick={() => { filterPlayer = '#7 Flank Kiri'; workspaceSubTab = 'tagging'; }}>
                 <span class="pos-badge">#7</span>
                 <span class="pos-name">Flank Kiri</span>
-              </div>
+              </button>
               <!-- Flank Kanan -->
-              <div class="player-marker flank-r-pos" onclick={() => { filterPlayer = '#11 Flank Kanan'; workspaceSubTab = 'tagging'; }}>
+              <button type="button" class="player-marker flank-r-pos" onclick={() => { filterPlayer = '#11 Flank Kanan'; workspaceSubTab = 'tagging'; }}>
                 <span class="pos-badge">#11</span>
                 <span class="pos-name">Flank Kanan</span>
-              </div>
+              </button>
               <!-- Pivot -->
-              <div class="player-marker pivot-pos" onclick={() => { filterPlayer = '#9 Pivot'; workspaceSubTab = 'tagging'; }}>
+              <button type="button" class="player-marker pivot-pos" onclick={() => { filterPlayer = '#9 Pivot'; workspaceSubTab = 'tagging'; }}>
                 <span class="pos-badge">#9</span>
                 <span class="pos-name">Pivot</span>
-              </div>
+              </button>
             </div>
           </div>
 
@@ -3300,14 +3300,6 @@
     filter: brightness(1.1);
   }
 
-  .curr-time-hero {
-    font-family: 'Fira Code', monospace;
-    font-size: 13px;
-    font-weight: 900;
-    color: #ffffff;
-    min-width: 48px;
-  }
-
   .play-status-pill {
     font-size: 9px;
     font-weight: 800;
@@ -4147,6 +4139,10 @@
     flex-direction: column;
     align-items: center;
     gap: 2px;
+    background: transparent;
+    border: none;
+    padding: 0;
+    font-family: inherit;
     cursor: pointer;
     transition: transform 0.15s;
   }
@@ -4492,6 +4488,87 @@
     .btn-draw-quick span,
     .btn-canvas-toggle span {
       display: none;
+    }
+  }
+
+  @media (max-width: 1024px) {
+    .tagging-workspace {
+      overflow-y: auto;
+      height: auto;
+      min-height: 100%;
+    }
+
+    .tagging-header {
+      height: auto;
+      flex-wrap: wrap;
+      padding: 6px 10px;
+      gap: 6px;
+    }
+
+    .workspace-main,
+    .tagging-two-tier {
+      overflow: visible;
+      height: auto;
+    }
+
+    .tagging-top-tier {
+      grid-template-columns: 1fr 1fr;
+      grid-template-rows: auto minmax(260px, 1fr);
+      overflow: visible;
+    }
+
+    .player-column {
+      grid-column: 1 / -1;
+      order: -1;
+      min-height: 280px;
+    }
+
+    .left-momen-sidebar,
+    .panel-column.right-clips-sidebar {
+      max-height: 360px;
+    }
+
+    .momen-transport-bar {
+      flex-wrap: wrap;
+      height: auto;
+      padding: 6px 8px;
+      gap: 6px;
+    }
+
+    .lineup-grid-layout {
+      grid-template-columns: 1fr;
+    }
+
+    .pitch-court {
+      width: 100%;
+      max-width: 400px;
+      margin: 0 auto;
+    }
+
+    .kickoff-popover {
+      left: 16px;
+      bottom: 80px;
+    }
+  }
+
+  @media (max-width: 720px) {
+    .tagging-top-tier {
+      grid-template-columns: 1fr;
+    }
+
+    .mtb-left,
+    .mtb-right {
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .btn-momen-play,
+    .btn-ctrl-sm,
+    .btn-inout,
+    .speed-pill,
+    .btn-draw-quick,
+    .btn-canvas-toggle {
+      min-height: 36px;
     }
   }
 </style>

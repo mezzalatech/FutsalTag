@@ -1217,4 +1217,60 @@
   .btn-step-action.btn-danger:hover {
     background-color: #ef4444;
   }
+
+  @media (max-width: 1024px) {
+    .tactical-board-root {
+      overflow-y: auto;
+      height: auto;
+      min-height: 100%;
+    }
+
+    .workspace-body {
+      flex-direction: column;
+      overflow: visible;
+    }
+
+    .left-toolbar {
+      width: 100%;
+      flex-direction: row;
+      flex-wrap: wrap;
+      border-right: none;
+      border-bottom: 1px solid #1a355d;
+      padding: 8px;
+      gap: 8px;
+    }
+
+    .tool-group {
+      flex-direction: row;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .canvas-container {
+      min-height: 360px;
+      width: 100%;
+    }
+
+    .right-panel {
+      width: 100%;
+      border-left: none;
+      border-top: 1px solid #334155;
+    }
+
+    .step-card-overlay {
+      width: min(260px, calc(100% - 24px));
+    }
+  }
+
+  @media (max-width: 640px) {
+    .top-bar {
+      padding: 8px 10px;
+    }
+
+    .formation-presets,
+    .export-actions {
+      flex-wrap: wrap;
+      white-space: normal;
+    }
+  }
 </style>

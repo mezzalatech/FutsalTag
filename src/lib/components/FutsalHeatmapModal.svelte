@@ -412,7 +412,7 @@
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div class="modal-backdrop" onclick={onClose} role="button" tabindex="0">
     <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <div class="modal-card" onclick={(e) => e.stopPropagation()} role="dialog">
+    <div class="modal-card" onclick={(e) => e.stopPropagation()} role="dialog" tabindex="-1">
       <!-- HEADER -->
       <div class="modal-header">
         <div class="header-left">
@@ -538,8 +538,8 @@
     border: 1px solid #1a355d;
     box-shadow: 0 0 32px rgba(2, 132, 199, 0.35);
     border-radius: 14px;
-    width: 980px;
-    max-width: 96vw;
+    width: min(980px, 95vw);
+    max-height: 92vh;
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -751,5 +751,28 @@
 
   .text-amber {
     color: #f59e0b;
+  }
+
+  @media (max-width: 768px) {
+    .modal-header,
+    .controls-bar,
+    .metrics-footer {
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 10px 14px;
+    }
+
+    .filters-group {
+      flex-wrap: wrap;
+      width: 100%;
+    }
+
+    .canvas-viewport-wrap {
+      padding: 12px;
+    }
+
+    .metric-pill {
+      flex: 1 1 160px;
+    }
   }
 </style>

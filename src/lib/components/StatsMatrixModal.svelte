@@ -672,8 +672,7 @@
   }
 
   .modal-card {
-    width: 1060px;
-    max-width: 96vw;
+    width: min(1060px, 96vw);
     max-height: 92vh;
     background: radial-gradient(circle at 50% 0%, #0d1e38 0%, #07101e 100%);
     border: 1px solid #1e3b68;
@@ -1150,5 +1149,19 @@
   .grand-total-btn:hover {
     text-shadow: 0 0 12px #ffffff;
     transform: scale(1.1);
+  }
+
+  @media (max-width: 768px) {
+    .modal-header,
+    .filter-bar {
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 12px 14px;
+    }
+
+    .view-mode-switch {
+      border-right: none;
+      padding-right: 0;
+    }
   }
 </style>

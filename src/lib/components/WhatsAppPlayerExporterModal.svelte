@@ -132,7 +132,7 @@
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div class="modal-backdrop" onclick={onClose} role="button" tabindex="0">
     <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <div class="modal-card" onclick={(e) => e.stopPropagation()} role="dialog">
+    <div class="modal-card" onclick={(e) => e.stopPropagation()} role="dialog" tabindex="-1">
       <!-- HEADER -->
       <div class="modal-header">
         <div class="header-left">
@@ -598,5 +598,22 @@
   .btn-export-wa:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+  }
+
+  @media (max-width: 560px) {
+    .modal-header,
+    .modal-footer {
+      flex-wrap: wrap;
+      padding: 12px 14px;
+    }
+
+    .telemetry-box {
+      grid-template-columns: 1fr;
+    }
+
+    .btn-export-wa {
+      width: 100%;
+      justify-content: center;
+    }
   }
 </style>

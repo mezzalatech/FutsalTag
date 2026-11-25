@@ -885,4 +885,32 @@
     font-size: 11px;
     color: #94a3b8;
   }
+
+  @media (max-width: 900px) {
+    .chalkboard-header,
+    .chalkboard-footer {
+      flex-wrap: wrap;
+      height: auto;
+      padding: 8px 10px;
+      gap: 8px;
+    }
+
+    .chalkboard-body {
+      flex-direction: column;
+      overflow-y: auto;
+    }
+
+    .theater-screen-container {
+      min-height: 280px;
+      aspect-ratio: 16 / 9;
+      flex: none;
+    }
+
+    .clips-drawer {
+      width: 100%;
+      border-left: none;
+      border-top: 1px solid #1a355d;
+      max-height: 220px;
+    }
+  }
 </style>

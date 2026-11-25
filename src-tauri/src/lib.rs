@@ -1,6 +1,7 @@
 mod ai_tracker;
 mod ffmpeg;
 
+use base64::prelude::*;
 use std::fs;
 use std::path::Path;
 use tauri::Manager;
@@ -77,6 +78,66 @@ fn load_club_library(app: tauri::AppHandle) -> Result<Option<String>, String> {
     Ok(Some(data))
 }
 
+#[tauri::command]
+fn save_autosave_project(app: tauri::AppHandle, content: String) -> Result<String, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Gagal mengakses AppData: {}", e))?;
+    fs::create_dir_all(&dir).map_err(|e| format!("Gagal membuat folder AppData: {}", e))?;
+    let file_path = dir.join("autosave_project.futsal");
+    fs::write(&file_path, content).map_err(|e| format!("Gagal menyimpan auto-save: {}", e))?;
+    Ok(file_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn load_autosave_project(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Gagal mengakses AppData: {}", e))?;
+    let file_path = dir.join("autosave_project.futsal");
+    if !file_path.exists() {
+        return Ok(None);
+    }
+    let data = fs::read_to_string(&file_path)
+        .map_err(|e| format!("Gagal membaca auto-save: {}", e))?;
+    Ok(Some(data))
+}
+
+#[tauri::command]
+fn clear_autosave_project(app: tauri::AppHandle) -> Result<(), String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Gagal mengakses AppData: {}", e))?;
+    let file_path = dir.join("autosave_project.futsal");
+    if file_path.exists() {
+        fs::remove_file(&file_path).map_err(|e| format!("Gagal menghapus auto-save: {}", e))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn save_binary_file(file_path: String, base64_content: String) -> Result<String, String> {
+    if let Some(parent) = Path::new(&file_path).parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Gagal membuat folder output: {}", e))?;
+        }
+    }
+    let clean = if let Some(idx) = base64_content.find("base64,") {
+        &base64_content[idx + 7..]
+    } else {
+        base64_content.as_str()
+    };
+    let bytes = BASE64_STANDARD
+        .decode(clean.trim())
+        .map_err(|e| format!("Gagal decode base64 file biner: {}", e))?;
+    fs::write(&file_path, bytes).map_err(|e| format!("Gagal menyimpan file biner: {}", e))?;
+    Ok(file_path)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -84,6 +145,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {
+                let _ = window.center();
                 let _ = window.show();
                 let _ = window.unminimize();
                 let _ = window.set_focus();
@@ -99,6 +161,10 @@ pub fn run() {
             load_project_file,
             save_club_library,
             load_club_library,
+            save_autosave_project,
+            load_autosave_project,
+            clear_autosave_project,
+            save_binary_file,
             ffmpeg::render_video_clip_ffmpeg,
             ffmpeg::concat_playlist_ffmpeg,
             ffmpeg::burn_telestration_clip_ffmpeg,

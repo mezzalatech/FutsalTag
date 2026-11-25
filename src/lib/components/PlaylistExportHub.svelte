@@ -291,6 +291,30 @@
     document.body.removeChild(link);
   }
 
+  async function handleExportMatchPdf() {
+    if (projectStore.tags.length === 0) {
+      exportStatusMessage = 'Belum ada klip momen untuk dicetak ke Laporan PDF.';
+      return;
+    }
+    try {
+      const { exportExecutiveMatchPdfReport } = await import('$lib/export/matchPdfReport');
+      const saved = await exportExecutiveMatchPdfReport({
+        matchTitle: projectStore.videoTitle,
+        durationSec: projectStore.duration,
+        tags: projectStore.tags,
+        roster: projectStore.roster,
+        formatMatchClock: (s) => projectStore.formatMatchClock(s),
+        getPlayerDisplayLabel: (p) => projectStore.getPlayerDisplayLabel(p),
+      });
+      if (saved) {
+        exportSuccessPath = saved;
+        exportStatusMessage = `Laporan Pertandingan PDF 1-Klik disimpan ke: ${saved}`;
+      }
+    } catch (err: any) {
+      exportStatusMessage = `Gagal ekspor PDF: ${err?.message || err}`;
+    }
+  }
+
   async function handleExportSportsCodeXml() {
     if (projectStore.tags.length === 0) {
       exportStatusMessage = 'Belum ada klip untuk diekspor ke XML.';
@@ -418,6 +442,10 @@
         <FileSpreadsheet size={15} />
         <span>Ekspor Rekap CSV</span>
       </button>
+      <button class="btn-csv" onclick={handleExportMatchPdf} title="Cetak Laporan Pertandingan PDF 1-Klik (A4 Landscape)">
+        <Download size={15} />
+        <span>Laporan PDF</span>
+      </button>
       <button class="btn-primary-export" onclick={triggerExport} disabled={isExporting}>
         <Download size={15} />
         <span>{isExporting ? 'Sedang Merender...' : 'Mulai Ekspor Video'}</span>
@@ -535,11 +563,14 @@
                 </div>
 
                 <!-- REORDER & DELETE ACTIONS -->
-                <div class="item-actions" onclick={(e) => e.stopPropagation()}>
+                <div class="item-actions">
                   <button
                     class="btn-order"
                     disabled={idx === 0}
-                    onclick={() => moveItem(idx, 'up')}
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      moveItem(idx, 'up');
+                    }}
                     title="Pindahkan ke atas"
                   >
                     <MoveUp size={13} />
@@ -547,14 +578,20 @@
                   <button
                     class="btn-order"
                     disabled={idx === currentPlaylist.items.length - 1}
-                    onclick={() => moveItem(idx, 'down')}
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      moveItem(idx, 'down');
+                    }}
                     title="Pindahkan ke bawah"
                   >
                     <MoveDown size={13} />
                   </button>
                   <button
                     class="btn-del"
-                    onclick={() => removeItem(idx)}
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      removeItem(idx);
+                    }}
                     title="Hapus dari playlist"
                   >
                     <Trash2 size={13} />
@@ -691,6 +728,10 @@
           <button type="button" class="btn-interop btn-interop-excel" onclick={handleExportExcelWorkbook}>
             <FileSpreadsheet size={13} />
             <span>Laporan Excel (4 Sheet)</span>
+          </button>
+          <button type="button" class="btn-interop btn-interop-pdf" onclick={handleExportMatchPdf}>
+            <Download size={13} />
+            <span>Laporan PDF 1-Klik (A4)</span>
           </button>
         </div>
       </div>
@@ -1195,6 +1236,18 @@
     border-color: #10b981;
   }
 
+  .btn-interop-pdf {
+    grid-column: 1 / -1;
+    background: rgba(56, 189, 248, 0.15);
+    border-color: rgba(56, 189, 248, 0.45);
+    color: #38bdf8;
+  }
+
+  .btn-interop-pdf:hover {
+    background: rgba(56, 189, 248, 0.28);
+    border-color: #38bdf8;
+  }
+
   .export-config-card {
     background: #091322;
     border: 1px solid #1a355d;
@@ -1403,5 +1456,54 @@
   .btn-render-action:disabled {
     opacity: 0.6;
     cursor: not-allowed;
+  }
+
+  @media (max-width: 1024px) {
+    .playlist-export-hub {
+      overflow-y: auto;
+      height: auto;
+      min-height: 100%;
+    }
+
+    .hub-header {
+      flex-wrap: wrap;
+      height: auto;
+      padding: 10px 12px;
+      gap: 8px;
+    }
+
+    .hub-grid {
+      grid-template-columns: 1fr;
+      overflow: visible;
+      padding: 12px;
+    }
+
+    .playlist-column,
+    .playlist-items-card,
+    .export-column {
+      overflow: visible;
+    }
+
+    .video-frame {
+      height: auto;
+      aspect-ratio: 16 / 9;
+      max-height: 320px;
+    }
+  }
+
+  @media (max-width: 640px) {
+    .interop-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .playlist-item-row {
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .res-row {
+      flex-wrap: wrap;
+      gap: 8px;
+    }
   }
 </style>

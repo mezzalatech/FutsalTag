@@ -98,6 +98,8 @@ class ProjectStore {
       .map((p) => p.id)
   );
   substitutions = $state<SubstitutionEvent[]>([]);
+  lastAutoSaveAt = $state<string | null>(null);
+  autoSaveMeta = $state<{ title: string; tagCount: number; savedAt: string } | null>(null);
 
   // Broadcast Chroma-Key Court Masking Config
   chromaFloorConfig = $state<ChromaFloorConfig>({
@@ -920,6 +922,77 @@ class ProjectStore {
     } catch (err) {
       console.error('Gagal memuat berkas proyek:', err);
       return false;
+    }
+  }
+
+  async runAutoSave(): Promise<boolean> {
+    if (this.tags.length === 0 && !this.videoSrc) return false;
+    try {
+      const json = this.exportProjectJson();
+      if (isTauriDesktop()) {
+        await invoke<string>('save_autosave_project', { content: json });
+      } else if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('futsaltag_autosave_v1', json);
+      }
+      const d = new Date();
+      this.lastAutoSaveAt = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async checkAutoSaveRecovery(): Promise<void> {
+    try {
+      let raw: string | null = null;
+      if (isTauriDesktop()) {
+        raw = await invoke<string | null>('load_autosave_project');
+      } else if (typeof localStorage !== 'undefined') {
+        raw = localStorage.getItem('futsaltag_autosave_v1');
+      }
+      if (!raw) return;
+      const data = JSON.parse(raw);
+      if (Array.isArray(data?.tags) && data.tags.length > 0) {
+        this.autoSaveMeta = {
+          title: data.matchInfo?.title || 'Proyek Futsal',
+          tagCount: data.tags.length,
+          savedAt: data.exportedAt || '',
+        };
+      }
+    } catch {
+      // Ignore corrupt autosave
+    }
+  }
+
+  async restoreAutoSave(): Promise<boolean> {
+    try {
+      let raw: string | null = null;
+      if (isTauriDesktop()) {
+        raw = await invoke<string | null>('load_autosave_project');
+      } else if (typeof localStorage !== 'undefined') {
+        raw = localStorage.getItem('futsaltag_autosave_v1');
+      }
+      if (!raw) return false;
+      const ok = this.importProjectJson(raw);
+      if (ok) {
+        this.autoSaveMeta = null;
+      }
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+
+  async clearAutoSave(): Promise<void> {
+    this.autoSaveMeta = null;
+    try {
+      if (isTauriDesktop()) {
+        await invoke('clear_autosave_project');
+      } else if (typeof localStorage !== 'undefined') {
+        localStorage.removeItem('futsaltag_autosave_v1');
+      }
+    } catch {
+      // Ignore cleanup errors
     }
   }
 

@@ -63,13 +63,23 @@ pub fn resolve_bin(name: &str) -> String {
     name.to_string()
 }
 
+fn silent_command(program: &str) -> Command {
+    let mut cmd = Command::new(program);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    cmd
+}
+
 static ENCODER_CACHE: OnceLock<(&'static str, Vec<&'static str>)> = OnceLock::new();
 
 pub fn detect_video_encoder() -> (&'static str, Vec<&'static str>) {
     ENCODER_CACHE
         .get_or_init(|| {
             let ffmpeg = resolve_bin("ffmpeg");
-            let encoders_out = Command::new(&ffmpeg)
+            let encoders_out = silent_command(&ffmpeg)
                 .args(["-hide_banner", "-encoders"])
                 .output();
             let list_txt = match encoders_out {
@@ -95,7 +105,7 @@ pub fn detect_video_encoder() -> (&'static str, Vec<&'static str>) {
 }
 
 fn test_encoder(ffmpeg: &str, codec: &str) -> bool {
-    Command::new(ffmpeg)
+    silent_command(ffmpeg)
         .args([
             "-v",
             "error",
@@ -128,7 +138,7 @@ fn ensure_parent_dir(path: &str) -> Result<(), String> {
 
 pub fn run_ffmpeg(args: &[String]) -> Result<(), String> {
     let ffmpeg = resolve_bin("ffmpeg");
-    let out = Command::new(&ffmpeg)
+    let out = silent_command(&ffmpeg)
         .args(args)
         .output()
         .map_err(|e| format!("Gagal menjalankan FFmpeg ({}): {}", ffmpeg, e))?;
@@ -145,7 +155,7 @@ pub fn run_ffmpeg(args: &[String]) -> Result<(), String> {
 
 pub fn probe_video_info(input_path: &str) -> Result<VideoInfo, String> {
     let ffprobe = resolve_bin("ffprobe");
-    let out = Command::new(&ffprobe)
+    let out = silent_command(&ffprobe)
         .args([
             "-v",
             "error",
@@ -1096,7 +1106,7 @@ pub fn extract_rgb_frames(
     let frame_bytes = (out_w * out_h * 3) as usize;
     let ffmpeg = resolve_bin("ffmpeg");
 
-    let mut child = Command::new(&ffmpeg)
+    let mut child = silent_command(&ffmpeg)
         .args([
             "-v",
             "error",
@@ -1215,5 +1225,202 @@ mod tests {
         assert_eq!(out_info.width, 1280);
         assert_eq!(out_info.height, 720);
         assert!(out_info.duration >= 2.5, "output duration should include 1s freeze");
+    }
+
+    #[test]
+    fn test_full_e2e_export_workflows_windows() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let tmp = std::env::temp_dir();
+
+        let src_mp4 = tmp.join(format!("futsaltag_e2e_src_{}.mp4", now));
+        let vo_webm = tmp.join(format!("futsaltag_e2e_vo_{}.webm", now));
+        let clip_copy_mp4 = tmp.join(format!("futsaltag_e2e_copy_{}.mp4", now));
+        let clip_norm_mp4 = tmp.join(format!("futsaltag_e2e_norm_{}.mp4", now));
+        let tel_mp4 = tmp.join(format!("futsaltag_e2e_tel_{}.mp4", now));
+        let anim_mp4 = tmp.join(format!("futsaltag_e2e_anim_{}.mp4", now));
+        let merged_mp4 = tmp.join(format!("futsaltag_e2e_merged_{}.mp4", now));
+        let wa_plain_mp4 = tmp.join(format!("futsaltag_e2e_wa_plain_{}.mp4", now));
+        let wa_rich_mp4 = tmp.join(format!("futsaltag_e2e_wa_rich_{}.mp4", now));
+        let anim_frames_dir = tmp.join(format!("futsaltag_e2e_frames_{}", now));
+
+        let _cleanup = TempCleanup(vec![
+            src_mp4.clone(),
+            vo_webm.clone(),
+            clip_copy_mp4.clone(),
+            clip_norm_mp4.clone(),
+            tel_mp4.clone(),
+            anim_mp4.clone(),
+            merged_mp4.clone(),
+            wa_plain_mp4.clone(),
+            wa_rich_mp4.clone(),
+        ]);
+
+        // 1. Generate synthetic 6s 1280x720 MP4 + 2s WebM (libopus) voiceover
+        let gen_video_args = vec![
+            "-y".into(),
+            "-f".into(),
+            "lavfi".into(),
+            "-i".into(),
+            "testsrc2=size=1280x720:rate=30:duration=6".into(),
+            "-f".into(),
+            "lavfi".into(),
+            "-i".into(),
+            "sine=frequency=440:sample_rate=44100:duration=6".into(),
+            "-c:v".into(),
+            "libx264".into(),
+            "-preset".into(),
+            "ultrafast".into(),
+            "-pix_fmt".into(),
+            "yuv420p".into(),
+            "-c:a".into(),
+            "aac".into(),
+            src_mp4.to_string_lossy().to_string(),
+        ];
+        run_ffmpeg(&gen_video_args).expect("failed generating 6s synthetic test mp4");
+
+        let gen_vo_args = vec![
+            "-y".into(),
+            "-f".into(),
+            "lavfi".into(),
+            "-i".into(),
+            "sine=frequency=880:sample_rate=48000:duration=2".into(),
+            "-c:a".into(),
+            "libopus".into(),
+            "-b:a".into(),
+            "64k".into(),
+            vo_webm.to_string_lossy().to_string(),
+        ];
+        run_ffmpeg(&gen_vo_args).expect("failed generating 2s synthetic webm voiceover");
+
+        let vo_bytes = fs::read(&vo_webm).expect("failed reading synthetic webm voiceover");
+        let vo_b64 = format!("data:audio/webm;base64,{}", BASE64_STANDARD.encode(&vo_bytes));
+        let tiny_png_b64 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
+        // 2. Verify probe_video_info
+        let info = probe_video_info(&src_mp4.to_string_lossy()).expect("probe_video_info failed");
+        assert_eq!(info.width, 1280);
+        assert_eq!(info.height, 720);
+        assert!(info.has_audio);
+        assert!(info.duration >= 5.5, "expected duration >= 5.5, got {}", info.duration);
+
+        // 3. Verify render_video_clip_ffmpeg (fast_copy = true & fast_copy = false 720p)
+        render_video_clip_ffmpeg(
+            src_mp4.to_string_lossy().to_string(),
+            clip_copy_mp4.to_string_lossy().to_string(),
+            0.5,
+            2.0,
+            Some(true),
+            None,
+        )
+        .expect("render_video_clip_ffmpeg (fast_copy=true) failed");
+        let copy_info = probe_video_info(&clip_copy_mp4.to_string_lossy()).expect("probe copy clip failed");
+        assert!(copy_info.duration >= 1.5, "copy clip duration too short: {}", copy_info.duration);
+
+        render_video_clip_ffmpeg(
+            src_mp4.to_string_lossy().to_string(),
+            clip_norm_mp4.to_string_lossy().to_string(),
+            0.5,
+            2.0,
+            Some(false),
+            Some(720),
+        )
+        .expect("render_video_clip_ffmpeg (fast_copy=false, 720p) failed");
+        let norm_info = probe_video_info(&clip_norm_mp4.to_string_lossy()).expect("probe norm clip failed");
+        assert!(norm_info.duration >= 1.5, "norm clip duration too short: {}", norm_info.duration);
+
+        // 4. Verify burn_telestration_clip_ffmpeg with PNG overlay + WebM voiceover + freeze + camera zoom
+        burn_telestration_clip_ffmpeg(
+            src_mp4.to_string_lossy().to_string(),
+            tel_mp4.to_string_lossy().to_string(),
+            2.0,
+            2.5,
+            3.2,
+            1.5,
+            Some(tiny_png_b64.to_string()),
+            Some(vo_b64.clone()),
+            Some(720),
+            Some([0.5, 0.5, 1.35]),
+        )
+        .expect("burn_telestration_clip_ffmpeg with voiceover+zoom failed");
+        let tel_info = probe_video_info(&tel_mp4.to_string_lossy()).expect("probe tel clip failed");
+        assert!(tel_info.has_audio, "telestrated clip must have audio");
+        assert!(tel_info.duration >= 3.0, "telestrated clip duration too short: {}", tel_info.duration);
+
+        // 5. Verify animated keyframe sequence burn-in + cleanup_temp_dir
+        let anim_dir_str = anim_frames_dir.to_string_lossy().to_string();
+        for idx in 0..6u32 {
+            save_overlay_frame_png(anim_dir_str.clone(), idx, tiny_png_b64.to_string())
+                .expect("save_overlay_frame_png failed");
+        }
+        burn_animated_telestration_clip_ffmpeg(
+            src_mp4.to_string_lossy().to_string(),
+            anim_mp4.to_string_lossy().to_string(),
+            1.0,
+            2.0,
+            anim_dir_str.clone(),
+            6.0,
+            Some(2.0),
+            Some(1.0),
+            Some(tiny_png_b64.to_string()),
+            Some([0.45, 0.55, 1.25]),
+            Some(vo_b64.clone()),
+            Some(720),
+        )
+        .expect("burn_animated_telestration_clip_ffmpeg failed");
+        cleanup_temp_dir(anim_dir_str).expect("cleanup_temp_dir failed");
+        assert!(!anim_frames_dir.exists(), "temp overlay frames dir should be removed");
+        let anim_info = probe_video_info(&anim_mp4.to_string_lossy()).expect("probe anim clip failed");
+        assert!(anim_info.duration >= 2.5, "animated clip duration too short: {}", anim_info.duration);
+
+        // 6. Verify concat_playlist_ffmpeg merging Clip 1 + Telestrated Clip 2
+        concat_playlist_ffmpeg(
+            vec![
+                clip_norm_mp4.to_string_lossy().to_string(),
+                tel_mp4.to_string_lossy().to_string(),
+            ],
+            merged_mp4.to_string_lossy().to_string(),
+            Some(false),
+        )
+        .expect("concat_playlist_ffmpeg failed");
+        let merged_info = probe_video_info(&merged_mp4.to_string_lossy()).expect("probe merged clip failed");
+        assert!(merged_info.duration >= 4.5, "merged duration too short: {}", merged_info.duration);
+
+        // 7. Verify export_whatsapp_clip_ffmpeg (plain 720p and overlay+voiceover 720p)
+        export_whatsapp_clip_ffmpeg(
+            src_mp4.to_string_lossy().to_string(),
+            wa_plain_mp4.to_string_lossy().to_string(),
+            1.0,
+            2.5,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("export_whatsapp_clip_ffmpeg (plain) failed");
+        let wa_plain_info = probe_video_info(&wa_plain_mp4.to_string_lossy()).expect("probe wa plain failed");
+        let wa_plain_size = fs::metadata(&wa_plain_mp4).expect("stat wa plain failed").len();
+        assert_eq!(wa_plain_info.height, 720);
+        assert!(wa_plain_info.has_audio);
+        assert!(wa_plain_size < 5_000_000, "wa plain file too large: {}", wa_plain_size);
+
+        export_whatsapp_clip_ffmpeg(
+            src_mp4.to_string_lossy().to_string(),
+            wa_rich_mp4.to_string_lossy().to_string(),
+            1.0,
+            2.5,
+            Some(2.2),
+            Some(1.0),
+            Some(tiny_png_b64.to_string()),
+            Some(vo_b64),
+        )
+        .expect("export_whatsapp_clip_ffmpeg (rich) failed");
+        let wa_rich_info = probe_video_info(&wa_rich_mp4.to_string_lossy()).expect("probe wa rich failed");
+        let wa_rich_size = fs::metadata(&wa_rich_mp4).expect("stat wa rich failed").len();
+        assert_eq!(wa_rich_info.height, 720);
+        assert!(wa_rich_info.has_audio);
+        assert!(wa_rich_size < 5_000_000, "wa rich file too large: {}", wa_rich_size);
     }
 }

@@ -398,10 +398,8 @@
   }
 
   .modal-card {
-    width: 960px;
-    max-width: 96vw;
-    height: 620px;
-    max-height: 90vh;
+    width: min(960px, 96vw);
+    height: min(640px, 92vh);
     background: #07101f;
     border: 1px solid #1e3b68;
     border-radius: 14px;
@@ -794,5 +792,41 @@
   .btn-danger:disabled {
     opacity: 0.35;
     cursor: not-allowed;
+  }
+
+  @media (max-width: 820px) {
+    .modal-card {
+      height: auto;
+      max-height: 92vh;
+    }
+
+    .modal-body {
+      grid-template-columns: 1fr;
+      overflow-y: auto;
+    }
+
+    .clubs-sidebar {
+      border-right: none;
+      border-bottom: 1px solid #1a355d;
+      max-height: 180px;
+    }
+
+    .club-editor {
+      overflow: visible;
+    }
+
+    .club-form-grid {
+      grid-template-columns: 1fr 1fr;
+    }
+  }
+
+  @media (max-width: 560px) {
+    .club-form-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .modal-header {
+      flex-wrap: wrap;
+    }
   }
 </style>

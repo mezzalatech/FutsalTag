@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { convertFileSrc } from '@tauri-apps/api/core';
+  import { onMount, onDestroy } from 'svelte';
+  import { convertFileSrc, invoke } from '@tauri-apps/api/core';
   import { projectStore, isTauriDesktop } from '$lib/stores/projectStore.svelte';
   import {
     Video,
@@ -40,9 +40,63 @@
   let projectFileInputEl: HTMLInputElement | undefined = $state();
   let quickVideoInputEl: HTMLInputElement | undefined = $state();
 
-  onMount(() => {
+  let unlistenTauriDrop: (() => void) | null = null;
+
+  onMount(async () => {
     if (!projectStore.clubLibraryLoaded) {
       projectStore.loadClubLibrary();
+    }
+    if (isTauriDesktop()) {
+      try {
+        const { getCurrentWebview } = await import('@tauri-apps/api/webview');
+        unlistenTauriDrop = await getCurrentWebview().onDragDropEvent(async (event) => {
+          if (event.payload.type === 'enter' || event.payload.type === 'over') {
+            isDragging = true;
+          } else if (event.payload.type === 'leave') {
+            isDragging = false;
+          } else if (event.payload.type === 'drop') {
+            isDragging = false;
+            const droppedPath = event.payload.paths?.[0];
+            if (!droppedPath) return;
+
+            if (/\.(futsal|json)$/i.test(droppedPath)) {
+              try {
+                const content = await invoke<string>('load_project_file', { filePath: droppedPath });
+                const ok = projectStore.importProjectJson(content);
+                if (!ok) {
+                  alert('Format berkas proyek tidak valid.');
+                }
+              } catch (err: any) {
+                alert(`Gagal membuka berkas proyek: ${err?.message || err}`);
+              }
+              return;
+            }
+
+            if (/\.(mp4|mov|mkv|webm|avi|m4v)$/i.test(droppedPath)) {
+              const assetUrl = convertFileSrc(droppedPath);
+              projectStore.loadVideo(
+                assetUrl,
+                droppedPath,
+                `${homeTeam} vs ${awayTeam} (${matchHalf})`,
+                180
+              );
+              if (selectedHomeClubId || selectedAwayClubId) {
+                projectStore.applyClubsToMatchRoster(selectedHomeClubId || null, selectedAwayClubId || null);
+              }
+              projectStore.setStage('tagging');
+            }
+          }
+        });
+      } catch {
+        // Fallback ke HTML5 drag-drop biasa
+      }
+    }
+  });
+
+  onDestroy(() => {
+    if (unlistenTauriDrop) {
+      unlistenTauriDrop();
+      unlistenTauriDrop = null;
     }
   });
 
@@ -143,6 +197,7 @@
   function handleDrop(e: DragEvent) {
     e.preventDefault();
     isDragging = false;
+    if (isTauriDesktop()) return;
     if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       processSelectedFile(e.dataTransfer.files[0]);
     }
@@ -229,6 +284,26 @@
       Platform analisis video futsal profesional, auto pre/post roll tagging, telestrasi siaran TV, dan papan taktik standar FIFA (40m x 20m).
     </p>
   </div>
+
+  {#if projectStore.autoSaveMeta}
+    <div class="autosave-recovery-banner" role="status">
+      <div class="rec-info">
+        <Clock size={16} />
+        <div>
+          <strong>Cadangan Sesi Terakhir Tersedia:</strong>
+          <span>{projectStore.autoSaveMeta.title} ({projectStore.autoSaveMeta.tagCount} klip)</span>
+        </div>
+      </div>
+      <div class="rec-actions">
+        <button type="button" class="btn-rec-restore" onclick={() => projectStore.restoreAutoSave()}>
+          Pulihkan Cadangan
+        </button>
+        <button type="button" class="btn-rec-dismiss" onclick={() => projectStore.clearAutoSave()}>
+          Abaikan
+        </button>
+      </div>
+    </div>
+  {/if}
 
   <!-- WORKFLOW ENTRY CARDS -->
   <div class="cards-grid">
@@ -509,7 +584,7 @@
   }
 
   .hero-title {
-    font-size: 32px;
+    font-size: clamp(22px, 3vw, 34px);
     font-weight: 900;
     letter-spacing: -0.02em;
     margin: 0 0 8px 0;
@@ -519,8 +594,60 @@
   .highlight {
     background: linear-gradient(135deg, #38bdf8 0%, #60a5fa 50%, #93c5fd 100%);
     -webkit-background-clip: text;
+    background-clip: text;
     -webkit-text-fill-color: transparent;
     filter: drop-shadow(0 0 20px rgba(56, 189, 248, 0.4));
+  }
+
+  .autosave-recovery-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px;
+    max-width: 1200px;
+    width: 100%;
+    margin: 0 auto;
+    padding: 10px 14px;
+    background: linear-gradient(90deg, rgba(2, 132, 199, 0.16), rgba(16, 185, 129, 0.12));
+    border: 1px solid rgba(56, 189, 248, 0.45);
+    border-radius: 10px;
+  }
+
+  .rec-info {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11.5px;
+    color: #e0f2fe;
+  }
+
+  .rec-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .btn-rec-restore {
+    background: #0284c7;
+    border: 1px solid #38bdf8;
+    color: #ffffff;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 6px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  .btn-rec-dismiss {
+    background: transparent;
+    border: 1px solid #1e3b68;
+    color: #94a3b8;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 6px 10px;
+    border-radius: 6px;
+    cursor: pointer;
   }
 
   .hero-desc {
@@ -553,13 +680,41 @@
     box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.7), 0 0 15px rgba(14, 165, 233, 0.06);
   }
 
-  @media (max-width: 1040px) {
+  @media (max-width: 1160px) {
+    .cards-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @media (max-width: 768px) {
     .project-hub-container {
-      padding: 16px 20px;
+      padding: 14px 14px 28px;
     }
 
     .cards-grid {
       grid-template-columns: 1fr;
+    }
+
+    .btn-primary-action,
+    .btn-sample-action,
+    .btn-load-project {
+      min-height: 40px;
+    }
+  }
+
+  @media (max-width: 560px) {
+    .club-select-row {
+      grid-template-columns: 1fr;
+    }
+
+    .teams-setup-row {
+      flex-direction: column;
+      align-items: stretch;
+    }
+
+    .half-select {
+      flex-wrap: wrap;
+      gap: 8px;
     }
   }
 

@@ -1010,10 +1010,8 @@
   }
 
   .modal-card {
-    width: 1040px;
-    max-width: 96vw;
-    height: 660px;
-    max-height: 92vh;
+    width: min(1040px, 96vw);
+    height: min(680px, 92vh);
     background: #07101f;
     border: 1px solid #1e3b68;
     border-radius: 14px;
@@ -1346,5 +1344,26 @@
     max-width: 100%;
     height: auto;
     border-radius: 6px;
+  }
+
+  @media (max-width: 960px) {
+    .kpi-strip {
+      grid-template-columns: repeat(3, 1fr);
+    }
+
+    .modal-header {
+      flex-wrap: wrap;
+    }
+  }
+
+  @media (max-width: 560px) {
+    .kpi-strip {
+      grid-template-columns: repeat(2, 1fr);
+    }
+
+    .empty-btns {
+      flex-wrap: wrap;
+      justify-content: center;
+    }
   }
 </style>

@@ -17,6 +17,7 @@
     BroadcastAnimationStyle,
     TemporalCalibrationFrame,
     SubtitleCue,
+    FreezeStop,
   } from "$lib/types";
   import {
     runMultiPlayerAutoTracking,
@@ -102,8 +103,18 @@
   let activeColor = $state("#00f0ff");
   let drawings = $state<DrawingElement[]>([]);
   let inProgressDrawing = $state<DrawingElement | null>(null);
-  let pauseDuration = $state(3.0); // freeze duration in seconds
-  let freezeTime = $state(0); // timestamp when freeze occurs
+  let pauseDuration = $state(3.0); // default freeze duration in seconds
+  let freezeTime = $state(0); // legacy single freeze timestamp
+  let freezeStops = $state<FreezeStop[]>([]);
+  let selectedFreezeStopId = $state<string | null>(null);
+  let appendCleanReplay = $state<boolean>(false);
+  const selectedFreezeStop = $derived(
+    freezeStops.find((s) => s.id === selectedFreezeStopId) ?? null,
+  );
+  const sliderDur = $derived(
+    selectedFreezeStop ? selectedFreezeStop.duration : pauseDuration,
+  );
+  const previewStops = $derived(getEffectiveFreezeStops());
 
   // Once Sport Pro Features:
   let isFloorBlend = $state(false); // ChromaKey floor blend mode
@@ -179,7 +190,11 @@
 
   // Broadcast Freeze-Frame Preview HUD State
   let isFreezeActive = $state(false);
+  let isReplayPass = $state(false);
   let freezeRemaining = $state(3.0);
+  let activeFreezeDuration = $state(3.0);
+  let activeFreezeLabel = $state("ANALISIS FREEZE-FRAME");
+  let triggeredStopIds = new Set<string>();
   let freezeInterval: any = null;
   let rafId: number | null = null;
 
@@ -354,6 +369,13 @@
     burnSubtitle = clip.burnSubtitle ?? Boolean(clip.voiceoverTranscript);
     currentTime = clip.startTime;
     freezeTime = clip.freezeTimestamp ?? (clip.startTime + clip.endTime) / 2;
+    freezeStops = clip.freezeStops
+      ? JSON.parse(JSON.stringify(clip.freezeStops))
+      : [];
+    selectedFreezeStopId = freezeStops[0]?.id ?? null;
+    appendCleanReplay = Boolean(clip.appendCleanReplay);
+    isReplayPass = false;
+    triggeredStopIds.clear();
     selectedElementId = null;
     inProgressDrawing = null;
     isPlayerPickMode = false;
@@ -449,13 +471,15 @@
         !isTyping &&
         !e.ctrlKey &&
         !e.metaKey &&
-        !e.altKey &&
-        selectedElement
+        !e.altKey
       ) {
-        if (e.key === "i" || e.key === "I") {
+        if (e.key === "f" || e.key === "F") {
+          e.preventDefault();
+          addFreezeStopAtPlayhead();
+        } else if (selectedElement && (e.key === "i" || e.key === "I")) {
           e.preventDefault();
           setSelectedElementInAtPlayhead();
-        } else if (e.key === "o" || e.key === "O") {
+        } else if (selectedElement && (e.key === "o" || e.key === "O")) {
           e.preventDefault();
           setSelectedElementOutAtPlayhead();
         }
@@ -523,32 +547,119 @@
     canvasEl.style.height = `${renderH}px`;
   }
 
+  function getEffectiveFreezeStops(): FreezeStop[] {
+    if (freezeStops.length > 0) {
+      return [...freezeStops]
+        .filter((s) => s.duration >= 0.2)
+        .sort((a, b) => a.time - b.time);
+    }
+    if (pauseDuration >= 0.2) {
+      return [
+        {
+          id: "legacy-freeze",
+          time: freezeTime || (activeClip ? (activeClip.startTime + activeClip.endTime) / 2 : 0),
+          duration: pauseDuration,
+          label: "Jeda Freeze",
+        },
+      ];
+    }
+    return [];
+  }
+
+  function addFreezeStopAtPlayhead() {
+    const { start, end } = getEffectiveClipRange();
+    const clamped = Number(
+      Math.max(start + 0.08, Math.min(end - 0.08, currentTime)).toFixed(2),
+    );
+    const existing = freezeStops.find((s) => Math.abs(s.time - clamped) <= 0.25);
+    if (existing) {
+      selectedFreezeStopId = existing.id;
+      exportNotice = `Jeda sudah ada di ${ (existing.time - start).toFixed(1) }s (dipilih untuk diedit).`;
+      setTimeout(() => (exportNotice = null), 2200);
+      return;
+    }
+    const newStop: FreezeStop = {
+      id: `fs_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+      time: clamped,
+      duration: Math.max(0.5, pauseDuration || 3.0),
+      label: `Jeda #${freezeStops.length + 1}`,
+    };
+    freezeStops = [...freezeStops, newStop].sort((a, b) => a.time - b.time);
+    selectedFreezeStopId = newStop.id;
+    freezeTime = clamped;
+    exportNotice = `Titik Jeda ditambahkan pada ${(clamped - start).toFixed(1)}s (${newStop.duration.toFixed(1)}s).`;
+    setTimeout(() => (exportNotice = null), 2400);
+  }
+
+  function moveFreezeStop(id: string, time: number) {
+    const { start, end } = getEffectiveClipRange();
+    const clamped = Number(Math.max(start + 0.05, Math.min(end - 0.05, time)).toFixed(2));
+    freezeStops = freezeStops
+      .map((s) => (s.id === id ? { ...s, time: clamped } : s))
+      .sort((a, b) => a.time - b.time);
+    freezeTime = clamped;
+  }
+
+  function deleteFreezeStop(id: string) {
+    freezeStops = freezeStops.filter((s) => s.id !== id);
+    if (selectedFreezeStopId === id) {
+      selectedFreezeStopId = freezeStops[0]?.id ?? null;
+    }
+  }
+
+  function updateActivePauseDuration(nextDur: number) {
+    pauseDuration = nextDur;
+    if (selectedFreezeStopId) {
+      freezeStops = freezeStops.map((s) =>
+        s.id === selectedFreezeStopId ? { ...s, duration: nextDur } : s,
+      );
+    }
+  }
+
   function renderLoop() {
     if (videoEl && !videoEl.paused) {
       currentTime = videoEl.currentTime;
 
-      // In Preview Mode: check for freeze midpoint trigger (only if freeze >= 0.2s)
-      if (isPreviewing && !isFreezeActive && pauseDuration >= 0.2) {
-        if (currentTime >= freezeTime && currentTime < freezeTime + 0.3) {
-          triggerFreezeCountdown();
+      // Multi Freeze-Frame Stop trigger during Broadcast Preview (skipped in clean replay pass)
+      if (isPreviewing && !isFreezeActive && !isReplayPass) {
+        const stops = getEffectiveFreezeStops();
+        const hit = stops.find(
+          (s) =>
+            !triggeredStopIds.has(s.id) &&
+            currentTime >= s.time &&
+            currentTime < s.time + 0.35,
+        );
+        if (hit) {
+          triggeredStopIds.add(hit.id);
+          videoEl.currentTime = hit.time;
+          currentTime = hit.time;
+          triggerFreezeCountdown(hit.duration, hit.label || "ANALISIS FREEZE-FRAME");
         }
       }
 
       // Restrict playback to active clip during preview or live follow-drag
       if (activeClip && currentTime >= activeClip.endTime) {
-        videoEl.pause();
-        videoEl.playbackRate = 1.0;
-        isPlaying = false;
-        isPreviewing = false;
-        isFreezeActive = false;
-        if (isHoldingLiveFollow) {
-          isHoldingLiveFollow = false;
-          isLiveFollowDrag = false;
-          exportNotice = `Live Follow selesai (${selectedElement?.keyframes?.length ?? 0} keyframe halus Catmull-Rom)!`;
-          setTimeout(() => (exportNotice = null), 4000);
+        if (isPreviewing && appendCleanReplay && !isReplayPass) {
+          isReplayPass = true;
+          videoEl.currentTime = activeClip.startTime;
+          currentTime = activeClip.startTime;
+        } else {
+          videoEl.pause();
+          videoEl.playbackRate = 1.0;
+          isPlaying = false;
+          isPreviewing = false;
+          isFreezeActive = false;
+          isReplayPass = false;
+          triggeredStopIds.clear();
+          if (isHoldingLiveFollow) {
+            isHoldingLiveFollow = false;
+            isLiveFollowDrag = false;
+            exportNotice = `Live Follow selesai (${selectedElement?.keyframes?.length ?? 0} keyframe halus Catmull-Rom)!`;
+            setTimeout(() => (exportNotice = null), 4000);
+          }
+          videoEl.currentTime = activeClip.startTime;
+          currentTime = activeClip.startTime;
         }
-        videoEl.currentTime = activeClip.startTime;
-        currentTime = activeClip.startTime;
       }
     }
 
@@ -557,12 +668,15 @@
   }
 
   // Freeze Countdown logic
-  function triggerFreezeCountdown() {
+  function triggerFreezeCountdown(dur?: number, label?: string) {
     if (!videoEl) return;
+    const freezeDur = Math.max(0.2, dur ?? pauseDuration);
     videoEl.pause();
     isPlaying = false;
     isFreezeActive = true;
-    freezeRemaining = pauseDuration;
+    activeFreezeDuration = freezeDur;
+    activeFreezeLabel = label || "ANALISIS FREEZE-FRAME";
+    freezeRemaining = freezeDur;
 
     if (freezeInterval) clearInterval(freezeInterval);
     freezeInterval = setInterval(() => {
@@ -652,6 +766,10 @@
     const dpr = window.devicePixelRatio || 1;
     ctx.save();
     ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+    if (isPreviewing && isReplayPass) {
+      ctx.restore();
+      return;
+    }
     ctx.scale(dpr, dpr);
 
     const w = canvasEl.width / dpr;
@@ -1872,9 +1990,13 @@
         cues: subtitleCues,
         burnSubtitle,
       },
+      {
+        freezeStops,
+        appendCleanReplay,
+      },
     );
     if (!silent) {
-      exportNotice = "Telestrasi, subtitle & posisi freeze-frame disimpan!";
+      exportNotice = "Telestrasi, subtitle & titik freeze-frame disimpan!";
       setTimeout(() => (exportNotice = null), 2500);
     }
   }
@@ -1892,6 +2014,10 @@
         cues: subtitleCues,
         burnSubtitle,
       },
+      {
+        freezeStops,
+        appendCleanReplay,
+      },
     );
     if (projectStore.activeClipForDrawing) {
       loadClipState(projectStore.activeClipForDrawing, true);
@@ -1905,6 +2031,8 @@
 
   function triggerPreview() {
     if (!videoEl || !activeClip) return;
+    triggeredStopIds.clear();
+    isReplayPass = false;
     isPreviewing = true;
     isFreezeActive = false;
     videoEl.currentTime = activeClip.startTime;
@@ -2226,8 +2354,11 @@
       if (!outPath) return;
 
       isExportingClip = true;
+      const effectiveStops = getEffectiveFreezeStops();
       const freezeSec =
-        freezeTime || (activeClip.startTime + activeClip.endTime) / 2;
+        effectiveStops[0]?.time ||
+        freezeTime ||
+        (activeClip.startTime + activeClip.endTime) / 2;
       const zoomObj =
         drawings.find((d) => d.cameraZoomTarget)?.cameraZoomTarget || null;
       const cameraZoomTuple = zoomObj
@@ -2240,7 +2371,7 @@
           activeClip.endTime,
         ) ||
         (burnSubtitle && subtitleCues.length > 1) ||
-        (drawings.length > 0 && pauseDuration < 0.2);
+        (drawings.length > 0 && effectiveStops.length === 0);
 
       const useAiSilhouetteExport =
         projectStore.chromaFloorConfig.enabled &&
@@ -2365,39 +2496,48 @@
           });
         }
 
-        if (needsVideoPixels && videoEl) {
-          await seekVideoElementSafe(videoEl, freezeSec);
-        }
-        const freezeHomography = isPitchCalibrated
-          ? temporalCalibrationFrames.length > 0
-            ? calculatePitchCalibration(
-                interpolateCalibrationAtTime(
-                  temporalCalibrationFrames,
-                  freezeSec,
-                  calibrationPoints,
-                ),
-              )
-            : homographyResult
-          : null;
-        const freezeOverlayBase64 = renderDrawingsToDataUrl(
-          drawings,
-          1280,
-          720,
-          freezeSec,
-          {
+        const freezeStopsPayload: {
+          time: number;
+          duration: number;
+          overlay_base64: string | null;
+        }[] = [];
+
+        for (let si = 0; si < effectiveStops.length; si++) {
+          const st = effectiveStops[si];
+          exportNotice = `Merender overlay jeda #${si + 1}/${effectiveStops.length}...`;
+          if (needsVideoPixels && videoEl) {
+            await seekVideoElementSafe(videoEl, st.time);
+          }
+          const stopHomography = isPitchCalibrated
+            ? temporalCalibrationFrames.length > 0
+              ? calculatePitchCalibration(
+                  interpolateCalibrationAtTime(
+                    temporalCalibrationFrames,
+                    st.time,
+                    calibrationPoints,
+                  ),
+                )
+              : homographyResult
+            : null;
+          const stopOverlay = renderDrawingsToDataUrl(drawings, 1280, 720, st.time, {
             videoEl,
-            homographyResult: freezeHomography,
+            homographyResult: stopHomography,
             chromaConfig: projectStore.chromaFloorConfig,
-            detectedBoxes: findClosestBoxes(freezeSec),
-            silhouetteMask: findClosestMask(freezeSec),
+            detectedBoxes: findClosestBoxes(st.time),
+            silhouetteMask: findClosestMask(st.time),
             clipStartTime: activeClip.startTime,
             clipEndTime: activeClip.endTime,
             subtitleText: voiceoverTranscript,
             subtitleCues,
             burnSubtitle,
             animElapsedSec: 1.0,
-          },
-        );
+          });
+          freezeStopsPayload.push({
+            time: st.time,
+            duration: st.duration,
+            overlay_base64: stopOverlay || null,
+          });
+        }
 
         exportNotice =
           "Menggabungkan sequence animasi dengan FFmpeg hardware encoder...";
@@ -2409,54 +2549,87 @@
           overlayFramesDir: seqDir,
           overlayFps,
           freezeSec,
-          pauseDuration: pauseDuration ?? 0,
-          freezeOverlayBase64,
+          pauseDuration: effectiveStops[0]?.duration ?? pauseDuration ?? 0,
+          freezeOverlayBase64: freezeStopsPayload[0]?.overlay_base64 ?? null,
           cameraZoom: cameraZoomTuple,
           voiceoverBase64: voiceoverAudio || null,
           targetHeight: 720,
+          freezeStops: freezeStopsPayload.length > 0 ? freezeStopsPayload : null,
+          appendCleanReplay,
         });
       } else {
-        let freezeMask: PlayerSilhouetteMask | null = liveSilhouetteMask;
-        if (useAiSilhouetteExport) {
-          exportNotice = "Memproses AI Siluet Pemain (U2NetP ONNX)...";
-          freezeMask =
-            (await segmentPlayersInFrameOnnx(
-              projectStore.videoFilePath,
-              freezeSec,
-            )) ?? liveSilhouetteMask;
-        }
-        exportNotice = "Merender klip telestrasi broadcast dengan FFmpeg...";
-        const overlayBase64 = renderDrawingsToDataUrl(
-          drawings,
-          1920,
-          1080,
-          freezeSec,
-          {
-            videoEl,
-            homographyResult: isPitchCalibrated ? homographyResult : null,
-            chromaConfig: projectStore.chromaFloorConfig,
-            detectedBoxes: freezeMask?.boxes ?? liveDetectedBoxes,
-            silhouetteMask: freezeMask,
-            clipStartTime: activeClip.startTime,
-            clipEndTime: activeClip.endTime,
-            subtitleText: voiceoverTranscript,
-            subtitleCues,
-            burnSubtitle,
-            animElapsedSec: 1.0,
-          },
-        );
+        const freezeStopsPayload: {
+          time: number;
+          duration: number;
+          overlay_base64: string | null;
+        }[] = [];
 
+        for (let si = 0; si < effectiveStops.length; si++) {
+          const st = effectiveStops[si];
+          if (videoEl) {
+            await seekVideoElementSafe(videoEl, st.time);
+          }
+          let freezeMask: PlayerSilhouetteMask | null = liveSilhouetteMask;
+          if (useAiSilhouetteExport) {
+            exportNotice = `Memproses AI Siluet Jeda #${si + 1}/${effectiveStops.length} (U2NetP ONNX)...`;
+            freezeMask =
+              (await segmentPlayersInFrameOnnx(
+                projectStore.videoFilePath,
+                st.time,
+              )) ?? liveSilhouetteMask;
+          }
+          const stopHomography = isPitchCalibrated
+            ? temporalCalibrationFrames.length > 0
+              ? calculatePitchCalibration(
+                  interpolateCalibrationAtTime(
+                    temporalCalibrationFrames,
+                    st.time,
+                    calibrationPoints,
+                  ),
+                )
+              : homographyResult
+            : null;
+          exportNotice = `Merender grafis jeda #${si + 1}/${effectiveStops.length}...`;
+          const overlayBase64 = renderDrawingsToDataUrl(
+            drawings,
+            1920,
+            1080,
+            st.time,
+            {
+              videoEl,
+              homographyResult: stopHomography,
+              chromaConfig: projectStore.chromaFloorConfig,
+              detectedBoxes: freezeMask?.boxes ?? liveDetectedBoxes,
+              silhouetteMask: freezeMask,
+              clipStartTime: activeClip.startTime,
+              clipEndTime: activeClip.endTime,
+              subtitleText: voiceoverTranscript,
+              subtitleCues,
+              burnSubtitle,
+              animElapsedSec: 1.0,
+            },
+          );
+          freezeStopsPayload.push({
+            time: st.time,
+            duration: st.duration,
+            overlay_base64: overlayBase64 || null,
+          });
+        }
+
+        exportNotice = "Merender klip telestrasi broadcast dengan FFmpeg...";
         await invoke<string>("burn_telestration_clip_ffmpeg", {
           inputPath: projectStore.videoFilePath,
           outputPath: outPath,
           startSec: activeClip.startTime,
           durationSec: activeClip.endTime - activeClip.startTime,
           freezeSec,
-          pauseDuration: pauseDuration ?? 0,
-          overlayBase64,
+          pauseDuration: effectiveStops[0]?.duration ?? pauseDuration ?? 0,
+          overlayBase64: freezeStopsPayload[0]?.overlay_base64 ?? null,
           voiceoverBase64: voiceoverAudio || null,
           targetHeight: 1080,
           cameraZoom: cameraZoomTuple,
+          freezeStops: freezeStopsPayload.length > 0 ? freezeStopsPayload : null,
+          appendCleanReplay,
         });
       }
 
@@ -3093,7 +3266,7 @@
                 stroke-dashoffset={188.5 *
                   (1 -
                     Math.max(0, freezeRemaining) /
-                      (pauseDuration > 0 ? pauseDuration : 3.0))}
+                      (activeFreezeDuration > 0 ? activeFreezeDuration : 3.0))}
                 transform="rotate(-90 34 34)"
                 stroke-linecap="round"
               />
@@ -3111,14 +3284,19 @@
           </div>
 
           <div class="hud-info-text">
-            <h4>ANALISIS FREEZE-FRAME</h4>
-            <p>Grafis taktik membeku selama {pauseDuration.toFixed(1)} detik</p>
+            <h4>{activeFreezeLabel}</h4>
+            <p>Grafis taktik membeku selama {activeFreezeDuration.toFixed(1)} detik</p>
           </div>
 
           <button class="btn-skip-freeze" onclick={resumeNow}>
             <span>Lanjut Video</span>
             <ArrowRight size={14} />
           </button>
+        </div>
+      {:else if isPreviewing && isReplayPass}
+        <div class="replay-clean-badge">
+          <Play size={12} />
+          <span>REPLAY BERSIH (1.0x TANPA GRAFIS)</span>
         </div>
       {/if}
     </div>
@@ -3796,13 +3974,15 @@
     </div>
   </div>
 
-  {#if drawings.length > 0 && activeClip}
+  {#if (drawings.length > 0 || freezeStops.length > 0) && activeClip}
     <TelestrationElementTimeline
       {drawings}
       {selectedElementId}
       clipStart={activeClip.startTime}
       clipEnd={activeClip.endTime}
       {currentTime}
+      {freezeStops}
+      {selectedFreezeStopId}
       onSelect={(id) => {
         selectedElementId = id;
         rightPanelTab = "elements";
@@ -3813,6 +3993,12 @@
         currentTime = t;
         if (videoEl) videoEl.currentTime = t;
       }}
+      onAddFreezeStop={addFreezeStopAtPlayhead}
+      onSelectFreezeStop={(id) => {
+        selectedFreezeStopId = id;
+      }}
+      onMoveFreezeStop={moveFreezeStop}
+      onDeleteFreezeStop={deleteFreezeStop}
     />
   {/if}
 
@@ -3822,31 +4008,58 @@
       <button class="btn-preview" onclick={triggerPreview}>
         <Play size={16} />
         <span>
-          {pauseDuration < 0.2
-            ? "Preview Tracking Penuh (Tanpa Freeze)"
-            : `Preview Siaran Broadcast (Jeda ${pauseDuration.toFixed(1)}s)`}
+          {previewStops.length === 0
+            ? appendCleanReplay
+              ? "Preview Tracking + Replay"
+              : "Preview Tracking Penuh (Tanpa Freeze)"
+            : previewStops.length === 1
+              ? `Preview Siaran (Jeda ${previewStops[0].duration.toFixed(1)}s${appendCleanReplay ? " + Replay" : ""})`
+              : `Preview Siaran (${previewStops.length} Jeda${appendCleanReplay ? " + Replay" : ""})`}
         </span>
       </button>
     </div>
 
     <div class="footer-center">
+      <button
+        type="button"
+        class="btn-add-freeze-ft"
+        onclick={addFreezeStopAtPlayhead}
+        title="Tambah titik jeda Freeze-Frame di posisi video saat ini (F)"
+      >
+        <Plus size={13} />
+        <span>Jeda Freeze (F)</span>
+      </button>
+
       <div class="pause-slider-wrap">
         <Clock size={15} />
-        <span class="slider-label">Durasi Jeda Freeze-Frame:</span>
+        <span class="slider-label">
+          {selectedFreezeStop ? `Durasi ${selectedFreezeStop.label || "Jeda"}:` : "Durasi Jeda:"}
+        </span>
         <input
           type="range"
           min="0"
           max="8"
           step="0.5"
-          bind:value={pauseDuration}
+          value={sliderDur}
+          oninput={(e) =>
+            updateActivePauseDuration(Number((e.currentTarget as HTMLInputElement).value))}
           class="pause-slider"
         />
         <span class="slider-val">
-          {pauseDuration < 0.2
-            ? "Tanpa Freeze (Full Gerak)"
-            : `${pauseDuration.toFixed(1)} Detik`}
+          {sliderDur < 0.2
+            ? "Tanpa Freeze"
+            : `${sliderDur.toFixed(1)}s`}
         </span>
       </div>
+
+      <label
+        class="replay-toggle-pill"
+        class:active={appendCleanReplay}
+        title="Tambahkan pemutaran ulang klip utuh tanpa jeda & tanpa grafis di akhir video (Once Sport style)"
+      >
+        <input type="checkbox" bind:checked={appendCleanReplay} />
+        <span>+ Replay Bersih</span>
+      </label>
     </div>
 
     <div class="footer-right">
@@ -4794,12 +5007,31 @@
     background: linear-gradient(180deg, #091528 0%, #0d1e38 100%);
     border-top: 1px solid #1a355d;
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
     padding: 6px 14px;
-    gap: 12px;
+    gap: 10px;
     box-sizing: border-box;
     flex-shrink: 0;
+  }
+
+  .replay-clean-badge {
+    position: absolute;
+    top: 14px;
+    right: 16px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(5, 150, 105, 0.92);
+    border: 1px solid #34d399;
+    color: #ffffff;
+    font-size: 10.5px;
+    font-weight: 800;
+    padding: 5px 10px;
+    border-radius: 999px;
+    z-index: 25;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
   }
 
   .footer-left {
@@ -4832,6 +5064,50 @@
   .footer-center {
     display: flex;
     align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .btn-add-freeze-ft {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: rgba(245, 158, 11, 0.14);
+    border: 1px solid rgba(245, 158, 11, 0.55);
+    color: #fcd34d;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 5px 10px;
+    border-radius: 7px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .btn-add-freeze-ft:hover {
+    background: rgba(245, 158, 11, 0.28);
+    border-color: #f59e0b;
+    color: #ffffff;
+  }
+
+  .replay-toggle-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: #0c1a33;
+    border: 1px solid #1e3b68;
+    color: #cbd5e1;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 5px 10px;
+    border-radius: 7px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .replay-toggle-pill.active {
+    background: rgba(16, 185, 129, 0.2);
+    border-color: #10b981;
+    color: #6ee7b7;
   }
 
   .pause-slider-wrap {

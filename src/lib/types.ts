@@ -223,6 +223,13 @@ export interface SubtitleCue {
   text: string;
 }
 
+export interface FreezeStop {
+  id: string;
+  time: number;     // absolute video timestamp in seconds
+  duration: number; // freeze pause duration in seconds (0.5..8.0)
+  label?: string;   // optional short label e.g. 'Jeda #1'
+}
+
 export interface VideoTagEvent {
   id: string;
   title: string;
@@ -245,6 +252,8 @@ export interface VideoTagEvent {
   drawings?: DrawingElement[];
   pauseDuration?: number;     // duration to freeze keyframe during playback / export (default: 3s)
   freezeTimestamp?: number;   // frame timestamp where drawings apply
+  freezeStops?: FreezeStop[]; // multi freeze-frame stops for Once Sport style Stop-and-Draw
+  appendCleanReplay?: boolean; // append 1x clean full-speed clip replay at the end
   voiceoverAudioBase64?: string; // Recorded coach audio instructions (WebM/WAV)
   voiceoverTranscript?: string;
   subtitleCues?: SubtitleCue[];

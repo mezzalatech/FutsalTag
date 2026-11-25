@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import type { DrawingElement, DrawingToolType } from '$lib/types';
+  import type { DrawingElement, DrawingToolType, FreezeStop } from '$lib/types';
   import { isElementVisibleAtTime } from '$lib/tracking/playerTracker';
-  import { ChevronDown, ChevronUp, RotateCcw, Clock } from 'lucide-svelte';
+  import { ChevronDown, ChevronUp, RotateCcw, Clock, Pause, Plus, X } from 'lucide-svelte';
 
   interface Props {
     drawings: DrawingElement[];
@@ -10,10 +10,16 @@
     clipStart: number;
     clipEnd: number;
     currentTime: number;
+    freezeStops?: FreezeStop[];
+    selectedFreezeStopId?: string | null;
     onSelect: (id: string) => void;
     onChangeLifespan: (id: string, timeStart: number, timeEnd: number) => void;
     onResetLifespan: (id: string) => void;
     onSeek: (time: number) => void;
+    onAddFreezeStop?: () => void;
+    onSelectFreezeStop?: (id: string) => void;
+    onMoveFreezeStop?: (id: string, time: number) => void;
+    onDeleteFreezeStop?: (id: string) => void;
   }
 
   let {
@@ -22,10 +28,16 @@
     clipStart,
     clipEnd,
     currentTime,
+    freezeStops = [],
+    selectedFreezeStopId = null,
     onSelect,
     onChangeLifespan,
     onResetLifespan,
     onSeek,
+    onAddFreezeStop,
+    onSelectFreezeStop,
+    onMoveFreezeStop,
+    onDeleteFreezeStop,
   }: Props = $props();
 
   const MIN_SPAN = 0.15;
@@ -106,7 +118,19 @@
     return `rgba(56, 189, 248, ${alpha})`;
   }
 
+  let activeStopDrag = $state<{
+    freezeStopId: string;
+    laneRect: DOMRect;
+  } | null>(null);
+
   function handleWindowPointerMove(e: PointerEvent) {
+    if (activeStopDrag) {
+      const width = Math.max(20, activeStopDrag.laneRect.width);
+      const ratio = Math.max(0, Math.min(1, (e.clientX - activeStopDrag.laneRect.left) / width));
+      const nextTime = Number((clipStart + ratio * clipDur).toFixed(2));
+      onMoveFreezeStop?.(activeStopDrag.freezeStopId, nextTime);
+      return;
+    }
     if (!activeDrag) return;
     const width = Math.max(20, activeDrag.laneRect.width);
     const deltaSec = ((e.clientX - activeDrag.originX) / width) * clipDur;
@@ -134,6 +158,29 @@
       window.removeEventListener('pointercancel', stopDragListeners);
     }
     activeDrag = null;
+    activeStopDrag = null;
+  }
+
+  function startFreezeStopDrag(e: PointerEvent, stop: FreezeStop) {
+    e.stopPropagation();
+    e.preventDefault();
+    onSelectFreezeStop?.(stop.id);
+    onSeek(stop.time);
+    const target = e.currentTarget as HTMLElement | null;
+    const laneEl = target?.closest('.el-track-lane') as HTMLElement | null;
+    if (!laneEl) return;
+
+    stopDragListeners();
+    activeStopDrag = {
+      freezeStopId: stop.id,
+      laneRect: laneEl.getBoundingClientRect(),
+    };
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('pointermove', handleWindowPointerMove);
+      window.addEventListener('pointerup', stopDragListeners);
+      window.addEventListener('pointercancel', stopDragListeners);
+    }
   }
 
   function startBarDrag(
@@ -215,6 +262,17 @@
     </div>
 
     <div class="tl-actions">
+      {#if onAddFreezeStop}
+        <button
+          type="button"
+          class="tl-btn tl-btn-freeze"
+          onclick={onAddFreezeStop}
+          title="Tambah titik jeda Freeze-Frame pada posisi playhead (Tombol F)"
+        >
+          <Plus size={11} />
+          <span>Jeda Freeze (F)</span>
+        </button>
+      {/if}
       <button
         type="button"
         class="tl-btn"
@@ -248,6 +306,51 @@
 
   {#if !collapsed}
     <div class="tl-tracks-scroll">
+      {#if onAddFreezeStop || freezeStops.length > 0}
+        <div class="el-track-row freeze-track-row">
+          <div class="el-label-col" title="Daftar titik jeda Freeze-Frame dalam klip ini">
+            <Pause size={10} class="text-amber-400 shrink-0" />
+            <span class="el-name freeze-lbl">Jeda Freeze ({freezeStops.length})</span>
+          </div>
+
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div class="el-track-lane freeze-lane" onclick={handleLaneClick}>
+            <div class="el-playhead" style="left: {playheadPct}%"></div>
+            {#if freezeStops.length === 0}
+              <span class="freeze-empty-hint">Klik "+ Jeda Freeze (F)" untuk menambah jeda analisis bertahap</span>
+            {/if}
+            {#each freezeStops as stop, idx (stop.id)}
+              {@const stopPct = Math.max(1, Math.min(99, ((stop.time - clipStart) / clipDur) * 100))}
+              {@const isSelStop = stop.id === selectedFreezeStopId}
+              <div
+                class="freeze-stop-marker"
+                class:selected={isSelStop}
+                style="left: {stopPct}%;"
+                onpointerdown={(ev) => startFreezeStopDrag(ev, stop)}
+                title="{stop.label || `Jeda #${idx + 1}`} @ {(stop.time - clipStart).toFixed(1)}s · Durasi {stop.duration.toFixed(1)}s (seret untuk geser posisi)"
+              >
+                <span class="fs-idx">#{idx + 1}</span>
+                <span class="fs-dur">{stop.duration.toFixed(1)}s</span>
+                {#if onDeleteFreezeStop}
+                  <button
+                    type="button"
+                    class="fs-del"
+                    onclick={(ev) => {
+                      ev.stopPropagation();
+                      onDeleteFreezeStop(stop.id);
+                    }}
+                    title="Hapus jeda ini"
+                  >
+                    <X size={9} />
+                  </button>
+                {/if}
+              </div>
+            {/each}
+          </div>
+        </div>
+      {/if}
+
       {#each drawings as d (d.id)}
         {@const [s, e] = getElSpan(d)}
         {@const leftPct = Math.max(0, Math.min(100, ((s - clipStart) / clipDur) * 100))}
@@ -280,6 +383,10 @@
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div class="el-track-lane" onclick={handleLaneClick}>
             <div class="el-playhead" style="left: {playheadPct}%"></div>
+            {#each freezeStops as stop (stop.id)}
+              {@const gPct = Math.max(0, Math.min(100, ((stop.time - clipStart) / clipDur) * 100))}
+              <div class="el-freeze-guide" style="left: {gPct}%"></div>
+            {/each}
 
             <div
               class="el-duration-bar"
@@ -542,5 +649,100 @@
     background: rgba(255, 255, 255, 0.85);
     transform: translate(-50%, -50%);
     pointer-events: none;
+  }
+
+  .tl-btn-freeze {
+    border-color: rgba(245, 158, 11, 0.55);
+    color: #fcd34d;
+  }
+
+  .tl-btn-freeze:hover {
+    background: rgba(245, 158, 11, 0.16);
+    border-color: #f59e0b;
+    color: #ffffff;
+  }
+
+  .freeze-track-row {
+    background: rgba(245, 158, 11, 0.08);
+    border-color: rgba(245, 158, 11, 0.25);
+  }
+
+  .freeze-lbl {
+    color: #fcd34d;
+  }
+
+  .freeze-lane {
+    overflow: visible;
+  }
+
+  .freeze-empty-hint {
+    position: absolute;
+    left: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 9px;
+    color: #64748b;
+    pointer-events: none;
+  }
+
+  .freeze-stop-marker {
+    position: absolute;
+    top: 1px;
+    bottom: 1px;
+    transform: translateX(-50%);
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 0 5px;
+    border-radius: 999px;
+    background: #1e293b;
+    border: 1px solid #f59e0b;
+    color: #fde68a;
+    font-size: 9px;
+    font-weight: 800;
+    cursor: grab;
+    z-index: 4;
+    white-space: nowrap;
+  }
+
+  .freeze-stop-marker.selected {
+    background: #b45309;
+    border-color: #ffffff;
+    color: #ffffff;
+    box-shadow: 0 0 8px rgba(245, 158, 11, 0.7);
+    z-index: 6;
+  }
+
+  .fs-dur {
+    font-family: monospace;
+    font-size: 8px;
+    opacity: 0.9;
+  }
+
+  .fs-del {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: none;
+    color: inherit;
+    padding: 0;
+    cursor: pointer;
+    opacity: 0.75;
+  }
+
+  .fs-del:hover {
+    opacity: 1;
+    color: #fecaca;
+  }
+
+  .el-freeze-guide {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    border-left: 1px dashed rgba(245, 158, 11, 0.5);
+    pointer-events: none;
+    z-index: 1;
   }
 </style>

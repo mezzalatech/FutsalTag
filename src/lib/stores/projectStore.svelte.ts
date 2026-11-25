@@ -13,6 +13,7 @@ import type {
   ChromaFloorConfig,
   ClubProfile,
   SubtitleCue,
+  FreezeStop,
 } from '$lib/types';
 import {
   BUILTIN_TAGGING_BOARDS,
@@ -747,16 +748,33 @@ class ProjectStore {
       transcript?: string;
       cues?: SubtitleCue[];
       burnSubtitle?: boolean;
+    },
+    freezeMeta?: {
+      freezeStops?: FreezeStop[];
+      appendCleanReplay?: boolean;
     }
   ) {
     const tag = this.tags.find((t) => t.id === clipId);
     if (tag) {
+      const sortedStops = freezeMeta?.freezeStops
+        ? [...freezeMeta.freezeStops]
+            .map((s) => ({ ...s }))
+            .sort((a, b) => a.time - b.time)
+        : undefined;
+      const firstStop = sortedStops && sortedStops.length > 0 ? sortedStops[0] : null;
       const updated: VideoTagEvent = {
         ...tag,
         drawings: JSON.parse(JSON.stringify(drawings)),
-        pauseDuration,
-        freezeTimestamp: freezeTimestamp ?? tag.freezeTimestamp ?? (tag.startTime + tag.endTime) / 2,
+        pauseDuration: firstStop ? firstStop.duration : pauseDuration,
+        freezeTimestamp:
+          firstStop?.time ?? freezeTimestamp ?? tag.freezeTimestamp ?? (tag.startTime + tag.endTime) / 2,
       };
+      if (freezeMeta?.freezeStops !== undefined) {
+        updated.freezeStops = sortedStops;
+      }
+      if (freezeMeta?.appendCleanReplay !== undefined) {
+        updated.appendCleanReplay = freezeMeta.appendCleanReplay;
+      }
       if (voiceoverAudioBase64 !== undefined) {
         updated.voiceoverAudioBase64 = voiceoverAudioBase64;
       }
@@ -779,9 +797,21 @@ class ProjectStore {
       transcript?: string;
       cues?: SubtitleCue[];
       burnSubtitle?: boolean;
+    },
+    freezeMeta?: {
+      freezeStops?: FreezeStop[];
+      appendCleanReplay?: boolean;
     }
   ) {
-    this.saveTelestration(clipId, drawings, pauseDuration, voiceoverAudioBase64, freezeTimestamp, subtitleMeta);
+    this.saveTelestration(
+      clipId,
+      drawings,
+      pauseDuration,
+      voiceoverAudioBase64,
+      freezeTimestamp,
+      subtitleMeta,
+      freezeMeta
+    );
     const currIdx = this.tags.findIndex((t) => t.id === clipId);
     if (currIdx !== -1 && currIdx + 1 < this.tags.length) {
       this.activeClipForDrawing = this.tags[currIdx + 1];

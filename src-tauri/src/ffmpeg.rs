@@ -1436,6 +1436,284 @@ pub fn burn_animated_telestration_clip_ffmpeg(
     Ok(output_path)
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OnlineToolsStatus {
+    pub yt_dlp_available: bool,
+    pub yt_dlp_path: Option<String>,
+    pub yt_dlp_version: Option<String>,
+    pub ffmpeg_available: bool,
+}
+
+pub fn is_direct_stream_url(url: &str) -> bool {
+    let trimmed = url.trim().to_ascii_lowercase();
+    if trimmed.starts_with("rtsp://") || trimmed.starts_with("rtmp://") || trimmed.starts_with("rtmps://") {
+        return true;
+    }
+    let path_only = trimmed.split(['?', '#']).next().unwrap_or("");
+    [".mp4", ".mov", ".m4v", ".webm", ".mkv", ".m3u8", ".ts"]
+        .iter()
+        .any(|ext| path_only.ends_with(ext))
+}
+
+fn validate_online_url(url: &str) -> Result<String, String> {
+    let u = url.trim();
+    if u.is_empty() {
+        return Err("URL video tidak boleh kosong.".to_string());
+    }
+    let low = u.to_ascii_lowercase();
+    if !(low.starts_with("https://")
+        || low.starts_with("http://")
+        || low.starts_with("rtsp://")
+        || low.starts_with("rtmp://")
+        || low.starts_with("rtmps://"))
+    {
+        return Err("URL harus diawali https://, http://, rtsp://, atau rtmp://.".to_string());
+    }
+    Ok(u.to_string())
+}
+
+fn resolve_yt_dlp(app: Option<&tauri::AppHandle>, custom_path: Option<&str>) -> Option<String> {
+    use tauri::Manager;
+    let bin_name = if cfg!(target_os = "windows") {
+        "yt-dlp.exe"
+    } else {
+        "yt-dlp"
+    };
+
+    if let Some(cp) = custom_path {
+        let p = Path::new(cp.trim());
+        if !cp.trim().is_empty() && p.is_file() {
+            return Some(p.to_string_lossy().to_string());
+        }
+    }
+
+    if let Some(app_handle) = app {
+        if let Ok(data_dir) = app_handle.path().app_data_dir() {
+            let p = data_dir.join("tools").join(bin_name);
+            if p.is_file() {
+                return Some(p.to_string_lossy().to_string());
+            }
+        }
+    }
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            for candidate in [
+                dir.join(bin_name),
+                dir.join("resources").join("bin").join(bin_name),
+                dir.join("bin").join(bin_name),
+            ] {
+                if candidate.is_file() {
+                    return Some(candidate.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+
+    if silent_command(bin_name).arg("--version").output().map(|o| o.status.success()).unwrap_or(false) {
+        return Some(bin_name.to_string());
+    }
+    None
+}
+
+#[tauri::command]
+pub fn check_online_tools_status(
+    app: tauri::AppHandle,
+    custom_yt_dlp_path: Option<String>,
+) -> OnlineToolsStatus {
+    let ffmpeg_bin = resolve_bin("ffmpeg");
+    let ffmpeg_available = silent_command(&ffmpeg_bin)
+        .arg("-version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    let yt_path = resolve_yt_dlp(Some(&app), custom_yt_dlp_path.as_deref());
+    let yt_ver = yt_path.as_ref().and_then(|p| {
+        silent_command(p)
+            .arg("--version")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    });
+
+    OnlineToolsStatus {
+        yt_dlp_available: yt_path.is_some(),
+        yt_dlp_path: yt_path,
+        yt_dlp_version: yt_ver,
+        ffmpeg_available,
+    }
+}
+
+#[tauri::command]
+pub async fn install_yt_dlp_tool(app: tauri::AppHandle) -> Result<String, String> {
+    use tauri::Manager;
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Gagal mengakses folder AppData: {}", e))?;
+    let tools_dir = data_dir.join("tools");
+    fs::create_dir_all(&tools_dir)
+        .map_err(|e| format!("Gagal membuat folder tools: {}", e))?;
+
+    let (bin_name, dl_url) = if cfg!(target_os = "windows") {
+        (
+            "yt-dlp.exe",
+            "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe",
+        )
+    } else if cfg!(target_os = "macos") {
+        (
+            "yt-dlp",
+            "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos",
+        )
+    } else {
+        (
+            "yt-dlp",
+            "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp",
+        )
+    };
+
+    let target = tools_dir.join(bin_name);
+    let target_str = target.to_string_lossy().to_string();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let out = silent_command("curl")
+            .args(["-L", "--fail", "--silent", "--show-error", "-o", &target_str, dl_url])
+            .output()
+            .map_err(|e| format!("Gagal menjalankan curl untuk mengunduh yt-dlp: {}", e))?;
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr);
+            return Err(format!("Unduhan yt-dlp gagal: {}", err.trim()));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&target, fs::Permissions::from_mode(0o755));
+        }
+        let ver_ok = silent_command(&target_str)
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !ver_ok {
+            let _ = fs::remove_file(&target);
+            return Err("File yt-dlp yang diunduh tidak valid.".to_string());
+        }
+        Ok(target_str)
+    })
+    .await
+    .map_err(|e| format!("Task instalasi yt-dlp terhenti: {}", e))?
+}
+
+#[tauri::command]
+pub async fn download_online_video_ffmpeg(
+    app: tauri::AppHandle,
+    url: String,
+    output_path: String,
+    custom_yt_dlp_path: Option<String>,
+) -> Result<String, String> {
+    let clean_url = validate_online_url(&url)?;
+    ensure_parent_dir(&output_path)?;
+
+    let yt_path = resolve_yt_dlp(Some(&app), custom_yt_dlp_path.as_deref());
+    let direct_stream = is_direct_stream_url(&clean_url);
+    let ffmpeg_bin = resolve_bin("ffmpeg");
+    let out_clone = output_path.clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        if direct_stream {
+            let copy_args = vec![
+                "-y".into(),
+                "-i".into(),
+                clean_url.clone(),
+                "-c".into(),
+                "copy".into(),
+                "-movflags".into(),
+                "+faststart".into(),
+                out_clone.clone(),
+            ];
+            if run_ffmpeg(&copy_args).is_ok() && Path::new(&out_clone).is_file() {
+                return Ok(out_clone);
+            }
+            let (vcodec, _) = detect_video_encoder();
+            let mut reenc_args = vec![
+                "-y".into(),
+                "-i".into(),
+                clean_url,
+                "-c:v".into(),
+                vcodec.into(),
+            ];
+            if vcodec == "h264_nvenc" {
+                reenc_args.extend(["-preset".into(), "p4".into(), "-cq".into(), "23".into()]);
+            } else if vcodec == "h264_videotoolbox" {
+                reenc_args.extend(["-b:v".into(), "3500k".into(), "-allow_sw".into(), "1".into()]);
+            } else {
+                reenc_args.extend(["-preset".into(), "veryfast".into(), "-crf".into(), "23".into()]);
+            }
+            reenc_args.extend([
+                "-pix_fmt".into(),
+                "yuv420p".into(),
+                "-c:a".into(),
+                "aac".into(),
+                "-ar".into(),
+                "44100".into(),
+                "-ac".into(),
+                "2".into(),
+                "-movflags".into(),
+                "+faststart".into(),
+                out_clone.clone(),
+            ]);
+            run_ffmpeg(&reenc_args)?;
+            return Ok(out_clone);
+        }
+
+        let yt = yt_path.ok_or_else(|| {
+            "yt-dlp belum terpasang. Klik 'Pasang yt-dlp Otomatis' atau pilih Stream Langsung YouTube.".to_string()
+        })?;
+
+        let mut args: Vec<String> = vec![
+            "--no-playlist".into(),
+            "--no-part".into(),
+            "-f".into(),
+            "bv*[vcodec^=avc1][ext=mp4]+ba[ext=m4a]/bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/b".into(),
+            "--merge-output-format".into(),
+            "mp4".into(),
+            "-o".into(),
+            out_clone.clone(),
+        ];
+
+        if let Some(ff_parent) = Path::new(&ffmpeg_bin).parent() {
+            if !ff_parent.as_os_str().is_empty() {
+                args.extend([
+                    "--ffmpeg-location".into(),
+                    ff_parent.to_string_lossy().to_string(),
+                ]);
+            }
+        }
+        args.push(clean_url);
+
+        let out = silent_command(&yt)
+            .args(&args)
+            .output()
+            .map_err(|e| format!("Gagal menjalankan yt-dlp ({}): {}", yt, e))?;
+
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let tail: Vec<&str> = stderr.lines().rev().take(6).collect();
+            let summary = tail.into_iter().rev().collect::<Vec<_>>().join(" | ");
+            return Err(format!("Unduhan yt-dlp gagal: {}", summary));
+        }
+
+        if !Path::new(&out_clone).is_file() {
+            return Err("Unduhan selesai tetapi file MP4 output tidak ditemukan.".to_string());
+        }
+        Ok(out_clone)
+    })
+    .await
+    .map_err(|e| format!("Task unduhan video terhenti: {}", e))?
+}
+
 pub fn extract_rgb_frames(
     input_path: &str,
     start_sec: f64,
@@ -1976,5 +2254,21 @@ mod tests {
 
         let info = probe_video_info(&merged.to_string_lossy()).expect("probe merged source failed");
         assert!(info.duration >= 1.85, "expected merged >= 1.85s, got {:.3}s", info.duration);
+    }
+
+    #[test]
+    fn test_online_url_classification_and_validation() {
+        assert!(is_direct_stream_url("https://cdn.example.com/match_1.mp4?token=abc"));
+        assert!(is_direct_stream_url("https://live.example.com/stream/playlist.m3u8"));
+        assert!(is_direct_stream_url("rtsp://192.168.1.10:554/stream1"));
+        assert!(!is_direct_stream_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ"));
+        assert!(!is_direct_stream_url("https://youtu.be/dQw4w9WgXcQ"));
+
+        assert!(validate_online_url("").is_err());
+        assert!(validate_online_url("ftp://example.com/a.mp4").is_err());
+        assert_eq!(
+            validate_online_url("  https://youtu.be/abc123  ").unwrap(),
+            "https://youtu.be/abc123"
+        );
     }
 }

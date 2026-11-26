@@ -90,10 +90,21 @@ export function isTauriDesktop(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
 
+export function parseYouTubeVideoId(url: string | null | undefined): string | null {
+  if (!url) return null;
+  const trimmed = url.trim();
+  const m = trimmed.match(
+    /(?:youtube\.com\/(?:watch\?v=|embed\/|live\/|shorts\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/
+  );
+  return m ? m[1] : null;
+}
+
 class ProjectStore {
   stage = $state<WorkflowStage>('hub');
   videoSrc = $state<string | null>(null);
   videoFilePath = $state<string | null>(null);
+  onlineVideoUrl = $state<string | null>(null);
+  onlineSourceType = $state<'youtube' | 'stream' | null>(null);
   videoTitle = $state<string>('Pertandingan Futsal');
   duration = $state<number>(120);
   currentTime = $state<number>(0);
@@ -748,6 +759,8 @@ class ProjectStore {
     this.angleViewMode = 'single';
     this.videoSrc = url;
     this.videoFilePath = path;
+    this.onlineVideoUrl = null;
+    this.onlineSourceType = null;
     this.videoTitle = title || 'Video Pertandingan Futsal';
     this.duration = dur;
     this.currentTime = 0;
@@ -781,9 +794,37 @@ class ProjectStore {
     this.loadVideo('', null, title || 'Live Tagging Pertandingan', 2400);
     this.videoSrc = null;
     this.videoFilePath = null;
+    this.onlineVideoUrl = null;
+    this.onlineSourceType = null;
     this.videoMissing = false;
     this.matchKind = kind;
     this.competitionName = competition;
+  }
+
+  loadOnlineVideo(
+    url: string,
+    title: string,
+    kind: MatchKind = 'match',
+    competition = ''
+  ): 'youtube' | 'stream' {
+    const cleanUrl = url.trim();
+    const ytId = parseYouTubeVideoId(cleanUrl);
+    if (ytId) {
+      this.loadVideo('', null, title || 'Analisis YouTube Pertandingan', 5400);
+      this.videoSrc = null;
+      this.videoFilePath = null;
+      this.onlineVideoUrl = cleanUrl;
+      this.onlineSourceType = 'youtube';
+    } else {
+      this.loadVideo(cleanUrl, null, title || 'Analisis Stream Online', 2400);
+      this.videoFilePath = null;
+      this.onlineVideoUrl = cleanUrl;
+      this.onlineSourceType = 'stream';
+    }
+    this.videoMissing = false;
+    this.matchKind = kind;
+    this.competitionName = competition;
+    return this.onlineSourceType;
   }
 
   // Load sample demo match with pre-tagged futsal events (with real courtCoord & passing links)
@@ -1197,6 +1238,8 @@ class ProjectStore {
         title: this.videoTitle,
         duration: this.duration,
         videoFilePath: this.videoFilePath,
+        onlineVideoUrl: this.onlineVideoUrl,
+        onlineSourceType: this.onlineSourceType,
         matchKind: this.matchKind,
         competition: this.competitionName,
         matchDate: this.matchDate,
@@ -1269,9 +1312,9 @@ class ProjectStore {
           ? `${this.matchLibraryFolder}${defaultDirSep}${safeName}.futsal`
           : `${safeName}.futsal`;
         targetPath = await save({
-          title: forceSaveAs ? 'Simpan Proyek Sebagai...' : 'Simpan Proyek FutsalTag Pro',
+          title: forceSaveAs ? 'Simpan Proyek Sebagai...' : 'Simpan Proyek ARF FutsalTag',
           defaultPath,
-          filters: [{ name: 'FutsalTag Project', extensions: ['futsal', 'json'] }],
+          filters: [{ name: 'ARF FutsalTag Project', extensions: ['futsal', 'json'] }],
         });
       }
       if (!targetPath) return null;
@@ -1305,9 +1348,9 @@ class ProjectStore {
     if (!isTauriDesktop()) return false;
     const { open } = await import('@tauri-apps/plugin-dialog');
     const selected = await open({
-      title: 'Buka Proyek FutsalTag Pro',
+      title: 'Buka Proyek ARF FutsalTag',
       multiple: false,
-      filters: [{ name: 'FutsalTag Project', extensions: ['futsal', 'json'] }],
+      filters: [{ name: 'ARF FutsalTag Project', extensions: ['futsal', 'json'] }],
     });
     if (!selected || typeof selected !== 'string') return false;
     return this.openProjectFromPath(selected);
@@ -1334,6 +1377,12 @@ class ProjectStore {
         this.videoTitle = data.matchInfo.title || this.videoTitle;
         this.duration = data.matchInfo.duration || this.duration;
         this.videoFilePath = data.matchInfo.videoFilePath || null;
+        this.onlineVideoUrl =
+          typeof data.matchInfo.onlineVideoUrl === 'string' ? data.matchInfo.onlineVideoUrl : null;
+        this.onlineSourceType =
+          data.matchInfo.onlineSourceType === 'youtube' || data.matchInfo.onlineSourceType === 'stream'
+            ? data.matchInfo.onlineSourceType
+            : null;
         this.matchKind = data.matchInfo.matchKind === 'training' ? 'training' : 'match';
         this.competitionName = typeof data.matchInfo.competition === 'string' ? data.matchInfo.competition : '';
         this.matchDate =
@@ -1355,6 +1404,8 @@ class ProjectStore {
               }
             })
             .catch(() => {});
+        } else if (this.onlineSourceType === 'stream' && this.onlineVideoUrl) {
+          this.videoSrc = this.onlineVideoUrl;
         } else {
           this.videoSrc = null;
         }
@@ -1501,6 +1552,8 @@ class ProjectStore {
     this.currentProjectFilePath = null;
     this.videoSrc = null;
     this.videoFilePath = null;
+    this.onlineVideoUrl = null;
+    this.onlineSourceType = null;
     this.videoTitle = 'Pertandingan Futsal Baru';
     this.roster = DEFAULT_FUTSAL_ROSTER.map((p) => ({ ...p }));
     this.calibrationPoints = null;
@@ -1568,6 +1621,7 @@ class ProjectStore {
     if (!selected || typeof selected !== 'string') return false;
     this.videoFilePath = selected;
     this.videoSrc = convertFileSrc(selected);
+    this.onlineSourceType = null;
     this.videoMissing = false;
     this.markDirty();
     return true;

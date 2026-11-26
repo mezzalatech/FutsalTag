@@ -189,7 +189,7 @@
 </script>
 
 <svelte:head>
-  <title>FutsalTag Pro - Futsal Video Analyser, Telestrator & Coach Board</title
+  <title>ARF FutsalTag - Futsal Video Analyser, Telestrator & Coach Board</title
   >
 </svelte:head>
 
@@ -227,8 +227,8 @@
       </div>
       <div class="brand-text">
         <div class="brand-title-wrap">
+          <span class="brand-tag">ARF</span>
           <span class="brand-title">FUTSALTAG</span>
-          <span class="brand-tag">PRO</span>
         </div>
       </div>
     </button>

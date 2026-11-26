@@ -56,7 +56,7 @@ export async function exportExecutiveMatchPdfReport(
   doc.setTextColor(56, 189, 248);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(9);
-  doc.text('FUTSALTAG PRO — LAPORAN ANALISIS PERTANDINGAN FUTSAL (FIFA 40m x 20m)', 14, 9);
+  doc.text('ARF FUTSALTAG — LAPORAN ANALISIS PERTANDINGAN FUTSAL (FIFA 40m x 20m)', 14, 9);
 
   doc.setTextColor(255, 255, 255);
   doc.setFontSize(15);
@@ -303,7 +303,7 @@ export async function exportExecutiveMatchPdfReport(
   // Footer Page 1
   doc.setFontSize(7.5);
   doc.setTextColor(100, 116, 139);
-  doc.text('FutsalTag Pro — Halaman 1', 14, pageH - 6);
+  doc.text('ARF FutsalTag — Halaman 1', 14, pageH - 6);
 
   // --- PAGE 2+: CHRONOLOGICAL KEY MOMENTS LOG ---
   const drawMomentsHeader = (pageNum: number) => {

@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "FutsalTag Pro",
+  "productName": "ARF FutsalTag",
   "version": "1.0.0",
   "identifier": "com.futsaltag.pro",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "FutsalTag Pro - Futsal Video Analyser, Telestrator & Tactical Board",
+        "title": "ARF FutsalTag - Futsal Video Analyser, Telestrator & Tactical Board",
         "width": 1366,
         "height": 840,
         "minWidth": 768,
@@ -40,8 +40,8 @@
         "ext": [
           "futsal"
         ],
-        "name": "FutsalTag Pro Project",
-        "description": "Proyek Analisis Video FutsalTag Pro",
+        "name": "ARF FutsalTag Project",
+        "description": "Proyek Analisis Video ARF FutsalTag",
         "mimeType": "application/x-futsaltag-project"
       }
     ],

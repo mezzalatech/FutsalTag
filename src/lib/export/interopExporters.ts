@@ -66,7 +66,7 @@ function colorForCategory(cat: string): string {
 // 1. SPORTSCODE / ONCE SPORT XML EXPORT & IMPORT
 // =========================================================================
 
-export function exportSportsCodeXml(tags: VideoTagEvent[], matchTitle = 'FutsalTag Pro'): string {
+export function exportSportsCodeXml(tags: VideoTagEvent[], matchTitle = 'ARF FutsalTag'): string {
   const lines: string[] = [
     '<?xml version="1.0" encoding="UTF-8"?>',
     `<file><!-- ${escapeXml(matchTitle)} -->`,
@@ -627,9 +627,9 @@ export function buildMultiSheetXlsxWorkbook(input: MultiSheetExportInput): XlsxW
 
   // --- SHEET 1: RINGKASAN PERTANDINGAN ---
   const summaryRows: XlsxRowPayload[] = [
-    { cells: [`RINGKASAN PERTANDINGAN FUTSALTAG PRO — ${matchTitle}`], style: 'title' },
+    { cells: [`RINGKASAN PERTANDINGAN ARF FUTSALTAG — ${matchTitle}`], style: 'title' },
     { cells: ['Metrik Pertandingan', 'Nilai'], style: 'header' },
-    { cells: ['Judul Proyek / Video', matchTitle || 'FutsalTag Pro'] },
+    { cells: ['Judul Proyek / Video', matchTitle || 'ARF FutsalTag'] },
     { cells: ['Durasi Total Video (detik)', Number((duration || 0).toFixed(1))] },
     { cells: ['Total Klip / Event Ditandai', tags.length] },
     { cells: ['Total Durasi Klip (detik)', Number(totalClipSec.toFixed(1))] },
@@ -954,7 +954,7 @@ export function buildMultiSheetXlsxWorkbook(input: MultiSheetExportInput): XlsxW
   });
 
   return {
-    title: matchTitle || 'FutsalTag Pro Report',
+    title: matchTitle || 'ARF FutsalTag Report',
     sheets: [
       { name: 'Ringkasan Pertandingan', rows: summaryRows, freeze_header_row: 2 },
       { name: 'Daftar Klip & Transkrip', rows: clipRows, freeze_header_row: 2 },

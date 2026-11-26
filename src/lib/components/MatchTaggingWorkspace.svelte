@@ -3,6 +3,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import {
     isTauriDesktop,
+    parseYouTubeVideoId,
     projectStore,
   } from "$lib/stores/projectStore.svelte";
   import { exportMomenBoardJson } from "$lib/tagging/momenBoards";
@@ -83,10 +84,20 @@
   let videoEl = $state<HTMLVideoElement | null>(null);
   let angle2VideoEl = $state<HTMLVideoElement | null>(null);
   let angle2InputEl = $state<HTMLInputElement | undefined>(undefined);
+  let ytHostEl = $state<HTMLDivElement | null>(null);
+  let ytPlayer: any = null;
+  let ytReady = $state(false);
+  let ytError = $state<string | null>(null);
   let isPlaying = $state(false);
   let currentTime = $state(0);
   let duration = $state(120);
   let playbackRate = $state(1.0);
+
+  const ytVideoId = $derived(
+    projectStore.onlineSourceType === "youtube" && !projectStore.videoSrc
+      ? parseYouTubeVideoId(projectStore.onlineVideoUrl)
+      : null,
+  );
 
   const activeSecondaryAngle = $derived(
     projectStore.secondaryAngles.find((a) => a.id === projectStore.activeAngleId) ??
@@ -1342,6 +1353,16 @@
         videoEl.play().catch(() => {});
         isPlaying = true;
       }
+    } else if (ytPlayer && ytReady) {
+      try {
+        ytPlayer.setPlaybackRate?.(nextRate);
+        if (autoPlay) {
+          ytPlayer.playVideo?.();
+          isPlaying = true;
+        }
+      } catch {
+        // Ignore rate unsupported
+      }
     }
     syncSecondaryAngle(false);
   }
@@ -1400,6 +1421,9 @@
     if (videoEl) {
       videoEl.pause();
       videoEl.playbackRate = 1.0;
+    } else if (ytPlayer && ytReady) {
+      ytPlayer.pauseVideo?.();
+      ytPlayer.setPlaybackRate?.(1.0);
     }
     playbackRate = 1.0;
     isPlaying = false;
@@ -1417,6 +1441,17 @@
   }
 
   function togglePlay() {
+    if (ytPlayer && ytReady) {
+      if (isPlaying) {
+        ytPlayer.pauseVideo?.();
+      } else {
+        ytPlayer.setPlaybackRate?.(playbackRate);
+        ytPlayer.playVideo?.();
+      }
+      isPlaying = !isPlaying;
+      syncSecondaryAngle(true);
+      return;
+    }
     if (!videoEl) {
       isPlaying = !isPlaying;
       syncSecondaryAngle(true);
@@ -1432,9 +1467,122 @@
     syncSecondaryAngle(true);
   }
 
-  // Live Stopwatch Ticker when running without a video file
+  // YouTube IFrame API controller & time sync when onlineSourceType === 'youtube'
   $effect(() => {
-    if (!isPlaying || projectStore.videoSrc) return;
+    const id = ytVideoId;
+    const host = ytHostEl;
+    if (!id || !host) {
+      ytReady = false;
+      ytError = null;
+      return;
+    }
+    let cancelled = false;
+    let pollId: ReturnType<typeof setInterval> | null = null;
+    ytReady = false;
+    ytError = null;
+
+    const mountPlayer = () => {
+      if (cancelled || !host) return;
+      const YT = (window as any).YT;
+      if (!YT?.Player) return;
+      host.innerHTML = "";
+      const inner = document.createElement("div");
+      host.appendChild(inner);
+      ytPlayer = new YT.Player(inner, {
+        videoId: id,
+        width: "100%",
+        height: "100%",
+        playerVars: {
+          rel: 0,
+          modestbranding: 1,
+          playsinline: 1,
+          disablekb: 1,
+          origin: typeof window !== "undefined" ? window.location.origin : undefined,
+        },
+        events: {
+          onReady: (ev: any) => {
+            if (cancelled) return;
+            ytReady = true;
+            const d = Number(ev.target?.getDuration?.() || 0);
+            if (d > 0) {
+              duration = d;
+              projectStore.duration = d;
+            }
+          },
+          onStateChange: (ev: any) => {
+            if (cancelled) return;
+            const st = ev.data;
+            isPlaying = st === 1;
+            const d = Number(ev.target?.getDuration?.() || 0);
+            if (d > 0 && d !== duration) {
+              duration = d;
+              projectStore.duration = d;
+            }
+          },
+          onError: (ev: any) => {
+            if (cancelled) return;
+            const code = Number(ev.data);
+            ytError =
+              code === 101 || code === 150
+                ? "Pemilik video YouTube membatasi pemutaran di aplikasi eksternal. Gunakan 'Unduh MP4 Lokal' di Hub atau Tautkan MP4."
+                : `YouTube gagal memutar video (kode ${code}). Periksa koneksi internet atau tautan video.`;
+            isPlaying = false;
+          },
+        },
+      });
+    };
+
+    if ((window as any).YT?.Player) {
+      mountPlayer();
+    } else {
+      const prevReady = (window as any).onYouTubeIframeAPIReady;
+      (window as any).onYouTubeIframeAPIReady = () => {
+        prevReady?.();
+        mountPlayer();
+      };
+      if (!document.querySelector('script[data-yt-iframe-api="1"]')) {
+        const s = document.createElement("script");
+        s.src = "https://www.youtube.com/iframe_api";
+        s.dataset.ytIframeApi = "1";
+        document.head.appendChild(s);
+      }
+    }
+
+    pollId = setInterval(() => {
+      if (cancelled || !ytPlayer || !ytReady) return;
+      const t = Number(ytPlayer.getCurrentTime?.() || 0);
+      if (Number.isFinite(t)) {
+        currentTime = t;
+        projectStore.currentTime = t;
+        syncSecondaryAngle(false);
+        if (activeClipQueue.length > 0 && activeQueueIndex < activeClipQueue.length) {
+          const cur = activeClipQueue[activeQueueIndex];
+          if (t >= cur.endTime) {
+            activeQueueIndex = activeQueueIndex + 1 < activeClipQueue.length ? activeQueueIndex + 1 : 0;
+            playQueueCurrentClip();
+          }
+        } else if (activeLoopClip && t >= activeLoopClip.endTime) {
+          ytPlayer.seekTo?.(activeLoopClip.startTime, true);
+        }
+      }
+    }, 100);
+
+    return () => {
+      cancelled = true;
+      if (pollId) clearInterval(pollId);
+      try {
+        ytPlayer?.destroy?.();
+      } catch {
+        // Ignore cleanup errors
+      }
+      ytPlayer = null;
+      ytReady = false;
+    };
+  });
+
+  // Live Stopwatch Ticker when running without a video file or YouTube stream
+  $effect(() => {
+    if (!isPlaying || projectStore.videoSrc || ytVideoId) return;
     let lastMs = performance.now();
     let rafId = 0;
     const step = (now: number) => {
@@ -1494,24 +1642,44 @@
   }
 
   function seekTo(seconds: number) {
+    const target = Math.max(0, Math.min(seconds, duration));
+    if (ytPlayer && ytReady) {
+      activeLoopClip = null;
+      activeClipQueue = [];
+      ytPlayer.seekTo?.(target, true);
+      currentTime = target;
+      projectStore.currentTime = target;
+      syncSecondaryAngle(true);
+      return;
+    }
     if (!videoEl) {
-      currentTime = Math.max(0, Math.min(seconds, duration));
+      currentTime = target;
       projectStore.currentTime = currentTime;
       return;
     }
     activeLoopClip = null;
     activeClipQueue = [];
-    videoEl.currentTime = Math.max(0, Math.min(seconds, duration));
+    videoEl.currentTime = target;
     currentTime = videoEl.currentTime;
     projectStore.currentTime = currentTime;
     syncSecondaryAngle(true);
   }
 
   function stepFrame(step: number) {
+    const fps = 25;
+    if (ytPlayer && ytReady) {
+      ytPlayer.pauseVideo?.();
+      isPlaying = false;
+      const target = Math.max(0, Math.min(currentTime + step / fps, duration));
+      ytPlayer.seekTo?.(target, true);
+      currentTime = target;
+      projectStore.currentTime = target;
+      showVideoOsd(step < 0 ? "◀" : "▶", `${step > 0 ? "+" : ""}${step}F`, "Frame", "sky");
+      return;
+    }
     if (!videoEl) return;
     videoEl.pause();
     isPlaying = false;
-    const fps = 25;
     videoEl.currentTime = Math.max(
       0,
       Math.min(videoEl.currentTime + step / fps, duration),
@@ -2082,11 +2250,16 @@
   }
 
   function playClipLoop(tag: VideoTagEvent) {
-    if (!videoEl) return;
+    if (!videoEl && !(ytPlayer && ytReady)) return;
     activeClipQueue = [];
     activeLoopClip = tag;
-    videoEl.currentTime = tag.startTime;
-    videoEl.play();
+    if (videoEl) {
+      videoEl.currentTime = tag.startTime;
+      videoEl.play();
+    } else if (ytPlayer && ytReady) {
+      ytPlayer.seekTo?.(tag.startTime, true);
+      ytPlayer.playVideo?.();
+    }
     isPlaying = true;
   }
 
@@ -2095,7 +2268,7 @@
   }
 
   function playSequentialClips(clips: VideoTagEvent[], title?: string) {
-    if (!clips || clips.length === 0 || !videoEl) return;
+    if (!clips || clips.length === 0 || (!videoEl && !(ytPlayer && ytReady))) return;
     activeLoopClip = null;
     activeClipQueue = [...clips];
     activeQueueIndex = 0;
@@ -2104,10 +2277,15 @@
   }
 
   function playQueueCurrentClip() {
-    if (!videoEl || activeQueueIndex >= activeClipQueue.length) return;
+    if ((!videoEl && !(ytPlayer && ytReady)) || activeQueueIndex >= activeClipQueue.length) return;
     const clip = activeClipQueue[activeQueueIndex];
-    videoEl.currentTime = clip.startTime;
-    videoEl.play();
+    if (videoEl) {
+      videoEl.currentTime = clip.startTime;
+      videoEl.play();
+    } else if (ytPlayer && ytReady) {
+      ytPlayer.seekTo?.(clip.startTime, true);
+      ytPlayer.playVideo?.();
+    }
     isPlaying = true;
     notifyUser(
       `[${activeQueueIndex + 1}/${activeClipQueue.length}] ${clip.title}`,
@@ -2119,6 +2297,7 @@
     activeQueueIndex = 0;
     activeQueueTitle = "";
     if (videoEl) videoEl.pause();
+    else if (ytPlayer && ytReady) ytPlayer.pauseVideo?.();
     isPlaying = false;
   }
 
@@ -2597,6 +2776,29 @@
                   onloadedmetadata={handleLoadedMetadata}
                   onclick={togglePlay}
                 ></video>
+              {:else if ytVideoId}
+                <div class="yt-stage" class:angle-hidden={hideMainAngle}>
+                  <div bind:this={ytHostEl} class="yt-iframe-host"></div>
+                  {#if ytError}
+                    <div class="yt-error-overlay">
+                      <p>{ytError}</p>
+                      {#if isTauriDesktop()}
+                        <button type="button" class="btn-sw-sec relink" onclick={() => projectStore.relinkVideoFile()}>
+                          <Link2 size={12} />
+                          <span>Tautkan File MP4 Lokal</span>
+                        </button>
+                      {/if}
+                    </div>
+                  {/if}
+                  <div class="yt-stream-pill">
+                    <span>YOUTUBE STREAM · {ytReady ? "SIAP TAG" : "MEMUAT..."}</span>
+                    {#if isTauriDesktop()}
+                      <button type="button" class="yt-pill-btn" onclick={() => projectStore.relinkVideoFile()} title="Pasangkan video MP4 lokal nanti untuk Telestrasi & Ekspor">
+                        Tautkan MP4
+                      </button>
+                    {/if}
+                  </div>
+                </div>
               {:else}
                 <div class="empty-video-placeholder stopwatch-stage">
                   <div class="sw-header-pill">
@@ -6777,5 +6979,68 @@
     border-color: #10b981;
     color: #6ee7b7;
     background: rgba(16, 185, 129, 0.14);
+  }
+
+  .yt-stage {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    background: #000000;
+  }
+
+  .yt-iframe-host {
+    width: 100%;
+    height: 100%;
+  }
+
+  .yt-iframe-host :global(iframe) {
+    width: 100%;
+    height: 100%;
+    border: 0;
+  }
+
+  .yt-stream-pill {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 5;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(6, 11, 20, 0.85);
+    border: 1px solid rgba(56, 189, 248, 0.4);
+    color: #bae6fd;
+    font-size: 9.5px;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    padding: 4px 8px;
+    border-radius: 999px;
+  }
+
+  .yt-pill-btn {
+    background: rgba(16, 185, 129, 0.18);
+    border: 1px solid #10b981;
+    color: #6ee7b7;
+    border-radius: 999px;
+    padding: 2px 7px;
+    font-size: 9.5px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .yt-error-overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(6, 11, 20, 0.92);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 24px;
+    text-align: center;
+    color: #fca5a5;
+    font-size: 12px;
+    z-index: 6;
   }
 </style>

@@ -4,6 +4,7 @@
   import {
     projectStore,
     isTauriDesktop,
+    parseYouTubeVideoId,
   } from "$lib/stores/projectStore.svelte";
   import {
     Video,
@@ -26,6 +27,9 @@
     Trash2,
     RefreshCw,
     Timer,
+    Link2,
+    Download,
+    XCircle,
   } from "lucide-svelte";
 
   interface Props {
@@ -69,6 +73,30 @@
   let quickVideoInputEl: HTMLInputElement | undefined = $state();
   let isMergingVideos = $state(false);
   let mergeStatusMsg = $state<string | null>(null);
+
+  // Tahap S2: Impor Link Online (YouTube / HLS .m3u8 / RTSP / Direct MP4)
+  let showOnlineUrlModal = $state(false);
+  let onlineUrlInput = $state("");
+  let customYtDlpPath = $state("");
+  let onlineToolsStatus = $state<{
+    yt_dlp_available: boolean;
+    yt_dlp_path: string | null;
+    yt_dlp_version: string | null;
+    ffmpeg_available: boolean;
+  } | null>(null);
+  let isCheckingTools = $state(false);
+  let isInstallingYtDlp = $state(false);
+  let isDownloadingOnline = $state(false);
+  let onlineUrlError = $state<string | null>(null);
+
+  const detectedOnlineKind = $derived.by(() => {
+    const u = onlineUrlInput.trim();
+    if (!u) return null;
+    if (parseYouTubeVideoId(u)) return "youtube";
+    if (/\.m3u8(\?|$|#)/i.test(u) || /^rtsp:|^rtmp:/i.test(u)) return "hls";
+    if (/\.(mp4|mov|webm|m4v|mkv)(\?|$|#)/i.test(u)) return "direct";
+    return "web";
+  });
 
   let unlistenTauriDrop: (() => void) | null = null;
 
@@ -218,6 +246,119 @@
         selectedHomeClubId || null,
         selectedAwayClubId || null,
       );
+    }
+  }
+
+  async function refreshOnlineToolsStatus() {
+    if (!isTauriDesktop()) return;
+    isCheckingTools = true;
+    try {
+      onlineToolsStatus = await invoke("check_online_tools_status", {
+        customYtDlpPath: customYtDlpPath.trim() || null,
+      });
+    } catch {
+      onlineToolsStatus = null;
+    } finally {
+      isCheckingTools = false;
+    }
+  }
+
+  function openOnlineUrlModal() {
+    if (!projectStore.confirmDiscardIfDirty("membuka video dari tautan online"))
+      return;
+    onlineUrlError = null;
+    showOnlineUrlModal = true;
+    refreshOnlineToolsStatus();
+  }
+
+  async function handleInstallYtDlp() {
+    if (!isTauriDesktop() || isInstallingYtDlp) return;
+    isInstallingYtDlp = true;
+    onlineUrlError = null;
+    try {
+      const path = await invoke<string>("install_yt_dlp_tool");
+      customYtDlpPath = path;
+      await refreshOnlineToolsStatus();
+    } catch (err: any) {
+      onlineUrlError = String(err?.message || err);
+    } finally {
+      isInstallingYtDlp = false;
+    }
+  }
+
+  async function handlePickCustomYtDlp() {
+    if (!isTauriDesktop()) return;
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const picked = await open({
+        title: "Pilih Binary yt-dlp (.exe)",
+        multiple: false,
+      });
+      if (picked && typeof picked === "string") {
+        customYtDlpPath = picked;
+        await refreshOnlineToolsStatus();
+      }
+    } catch (err: any) {
+      onlineUrlError = String(err?.message || err);
+    }
+  }
+
+  function handleStreamOnlineVideo() {
+    const url = onlineUrlInput.trim();
+    if (!/^https?:\/\//i.test(url)) {
+      onlineUrlError =
+        "Mode stream langsung di pemutar membutuhkan URL diawali https:// atau http://.";
+      return;
+    }
+    onlineUrlError = null;
+    projectStore.loadOnlineVideo(
+      url,
+      `${homeTeam} vs ${awayTeam} (${matchHalf})`,
+      matchKind,
+      tournamentName.trim(),
+    );
+    if (selectedHomeClubId || selectedAwayClubId) {
+      projectStore.applyClubsToMatchRoster(
+        selectedHomeClubId || null,
+        selectedAwayClubId || null,
+      );
+    }
+    showOnlineUrlModal = false;
+  }
+
+  async function handleDownloadOnlineVideo() {
+    const url = onlineUrlInput.trim();
+    if (!/^(https?|rtsp|rtmp|rtmps):\/\//i.test(url)) {
+      onlineUrlError =
+        "URL tidak valid. Awali dengan https://, http://, rtsp://, atau rtmp://.";
+      return;
+    }
+    if (!isTauriDesktop()) return;
+    onlineUrlError = null;
+    try {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const safeName = `${homeTeam}_vs_${awayTeam}_online`
+        .replace(/[^a-zA-Z0-9_-]/g, "_")
+        .toLowerCase();
+      const targetOut = await save({
+        title: "Simpan Unduhan Video MP4 Lokal",
+        defaultPath: `${safeName}.mp4`,
+        filters: [{ name: "MP4 Video", extensions: ["mp4"] }],
+      });
+      if (!targetOut) return;
+
+      isDownloadingOnline = true;
+      const savedPath = await invoke<string>("download_online_video_ffmpeg", {
+        url,
+        outputPath: targetOut,
+        customYtDlpPath: customYtDlpPath.trim() || null,
+      });
+      showOnlineUrlModal = false;
+      await openMergedOrSingleVideos([savedPath]);
+    } catch (err: any) {
+      onlineUrlError = String(err?.message || err);
+    } finally {
+      isDownloadingOnline = false;
     }
   }
 
@@ -425,7 +566,7 @@
       <span>FUTSAL VIDEO ANALYSIS & AI TELESTRATION</span>
     </div>
     <h1 class="hero-title">
-      Selamat Datang di <span class="highlight">FUTSALTAG PRO</span>
+      Selamat Datang di <span class="highlight">ARF FUTSALTAG</span>
     </h1>
     <p class="hero-desc">
       Platform analisis video futsal profesional, auto pre/post roll tagging,
@@ -614,6 +755,15 @@
         >
           <Timer size={14} />
           <span>Mulai Tagging Live (Stopwatch Tanpa Video)</span>
+        </button>
+        <button
+          type="button"
+          class="btn-load-project"
+          onclick={openOnlineUrlModal}
+          title="Putar langsung atau unduh dari link YouTube, HLS (.m3u8), RTSP, atau MP4"
+        >
+          <Link2 size={14} />
+          <span>Impor Link Online (YouTube / .m3u8 / MP4)</span>
         </button>
         <input
           bind:this={fullVideoInputEl}
@@ -907,6 +1057,134 @@
       </div>
     </div>
   </div>
+
+  {#if showOnlineUrlModal}
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <div
+      class="online-modal-backdrop"
+      role="presentation"
+      onclick={() => !isDownloadingOnline && !isInstallingYtDlp && (showOnlineUrlModal = false)}
+    >
+      <div
+        class="online-modal-card"
+        role="dialog"
+        tabindex="-1"
+        onclick={(e) => e.stopPropagation()}
+      >
+        <div class="om-header">
+          <div class="om-title-wrap">
+            <Link2 size={16} class="text-sky-400" />
+            <h3>Impor Link Video Online</h3>
+          </div>
+          <button
+            type="button"
+            class="om-close"
+            disabled={isDownloadingOnline || isInstallingYtDlp}
+            onclick={() => (showOnlineUrlModal = false)}
+            title="Tutup"
+          >
+            <XCircle size={16} />
+          </button>
+        </div>
+
+        <p class="om-desc">
+          Tempel URL pertandingan dari <strong>YouTube</strong> (video/live/shorts), tautan langsung <strong>.mp4/.webm</strong>, atau stream <strong>.m3u8 / RTSP</strong>.
+        </p>
+
+        <label class="om-field">
+          <span>Tautan Video Online</span>
+          <input
+            type="url"
+            class="om-input"
+            bind:value={onlineUrlInput}
+            placeholder="https://www.youtube.com/watch?v=... atau https://.../match.mp4"
+          />
+        </label>
+
+        {#if detectedOnlineKind}
+          <div class="om-kind-row">
+            <span class="om-kind-pill">
+              {#if detectedOnlineKind === "youtube"}
+                Terdeteksi: YouTube (ID: {parseYouTubeVideoId(onlineUrlInput)})
+              {:else if detectedOnlineKind === "hls"}
+                Terdeteksi: Stream HLS / RTSP (Disarankan Unduh via FFmpeg)
+              {:else if detectedOnlineKind === "direct"}
+                Terdeteksi: File Video Direct HTTP/HTTPS
+              {:else}
+                Tautan Web Video
+              {/if}
+            </span>
+          </div>
+        {/if}
+
+        {#if isTauriDesktop()}
+          <div class="om-tools-box">
+            <div class="om-tools-row">
+              <span>
+                Status <code>yt-dlp</code>:
+                {#if isCheckingTools}
+                  <strong>Memeriksa...</strong>
+                {:else if onlineToolsStatus?.yt_dlp_available}
+                  <strong class="ok">Siap ({onlineToolsStatus.yt_dlp_version || "terpasang"})</strong>
+                {:else}
+                  <strong class="warn">Belum terpasang (perlu jika ingin unduh YouTube ke MP4)</strong>
+                {/if}
+              </span>
+              <div class="om-tools-btns">
+                {#if !onlineToolsStatus?.yt_dlp_available}
+                  <button
+                    type="button"
+                    class="om-mini-btn"
+                    disabled={isInstallingYtDlp || isDownloadingOnline}
+                    onclick={handleInstallYtDlp}
+                  >
+                    {isInstallingYtDlp ? "Mengunduh yt-dlp..." : "Pasang yt-dlp Otomatis"}
+                  </button>
+                {/if}
+                <button
+                  type="button"
+                  class="om-mini-btn"
+                  disabled={isInstallingYtDlp || isDownloadingOnline}
+                  onclick={handlePickCustomYtDlp}
+                >
+                  Pilih Manual...
+                </button>
+              </div>
+            </div>
+          </div>
+        {/if}
+
+        {#if onlineUrlError}
+          <div class="om-error">{onlineUrlError}</div>
+        {/if}
+
+        <div class="om-actions">
+          <button
+            type="button"
+            class="om-btn primary"
+            disabled={!onlineUrlInput.trim() || isDownloadingOnline || detectedOnlineKind === "hls"}
+            onclick={handleStreamOnlineVideo}
+            title="Langsung putar & tagging tanpa mengunduh file MP4 (khusus YouTube / Direct MP4 HTTP)"
+          >
+            <PlayCircle size={15} />
+            <span>Stream Langsung & Tagging</span>
+          </button>
+          {#if isTauriDesktop()}
+            <button
+              type="button"
+              class="om-btn secondary"
+              disabled={!onlineUrlInput.trim() || isDownloadingOnline || isInstallingYtDlp}
+              onclick={handleDownloadOnlineVideo}
+              title="Simpan ke file MP4 lokal agar Telestrasi Frame, AI Tracking & Ekspor Klip Video aktif penuh"
+            >
+              <Download size={15} />
+              <span>{isDownloadingOnline ? "Mengunduh ke MP4..." : "Unduh MP4 Lokal (Penuh)"}</span>
+            </button>
+          {/if}
+        </div>
+      </div>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -1738,5 +2016,202 @@
     border-radius: 6px;
     padding: 5px 8px;
     text-align: center;
+  }
+
+  .online-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(2, 6, 23, 0.78);
+    backdrop-filter: blur(4px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 200;
+    padding: 16px;
+  }
+
+  .online-modal-card {
+    width: 100%;
+    max-width: 540px;
+    background: #0b1629;
+    border: 1px solid #1e3a5f;
+    border-radius: 12px;
+    padding: 18px;
+    box-shadow: 0 24px 50px rgba(0, 0, 0, 0.75);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .om-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .om-title-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .om-title-wrap h3 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 800;
+    color: #f8fafc;
+  }
+
+  .om-close {
+    background: transparent;
+    border: none;
+    color: #94a3b8;
+    cursor: pointer;
+    padding: 2px;
+  }
+
+  .om-close:hover {
+    color: #f8fafc;
+  }
+
+  .om-desc {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.45;
+    color: #94a3b8;
+  }
+
+  .om-field {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .om-field span {
+    font-size: 11px;
+    font-weight: 700;
+    color: #cbd5e1;
+  }
+
+  .om-input {
+    width: 100%;
+    box-sizing: border-box;
+    background: #060d19;
+    border: 1px solid #243b61;
+    border-radius: 7px;
+    padding: 9px 10px;
+    color: #f8fafc;
+    font-size: 12px;
+    outline: none;
+  }
+
+  .om-input:focus {
+    border-color: #38bdf8;
+  }
+
+  .om-kind-row {
+    display: flex;
+  }
+
+  .om-kind-pill {
+    font-size: 10.5px;
+    font-weight: 700;
+    color: #7dd3fc;
+    background: rgba(14, 165, 233, 0.12);
+    border: 1px solid rgba(56, 189, 248, 0.35);
+    border-radius: 999px;
+    padding: 3px 10px;
+  }
+
+  .om-tools-box {
+    background: #071020;
+    border: 1px solid #1a2e4d;
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 11px;
+    color: #cbd5e1;
+  }
+
+  .om-tools-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .om-tools-row .ok {
+    color: #34d399;
+  }
+
+  .om-tools-row .warn {
+    color: #fbbf24;
+  }
+
+  .om-tools-btns {
+    display: flex;
+    gap: 6px;
+  }
+
+  .om-mini-btn {
+    background: #10203a;
+    border: 1px solid #284574;
+    color: #e2e8f0;
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 10.5px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .om-mini-btn:hover:not(:disabled) {
+    border-color: #38bdf8;
+  }
+
+  .om-error {
+    background: rgba(239, 68, 68, 0.14);
+    border: 1px solid rgba(239, 68, 68, 0.45);
+    color: #fca5a5;
+    border-radius: 7px;
+    padding: 8px 10px;
+    font-size: 11px;
+    line-height: 1.4;
+  }
+
+  .om-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 2px;
+  }
+
+  .om-btn {
+    flex: 1 1 200px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    border-radius: 8px;
+    padding: 9px 12px;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    border: 1px solid transparent;
+  }
+
+  .om-btn.primary {
+    background: linear-gradient(135deg, #0284c7, #2563eb);
+    color: #ffffff;
+  }
+
+  .om-btn.secondary {
+    background: #0f1d35;
+    border-color: #10b981;
+    color: #6ee7b7;
+  }
+
+  .om-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 </style>

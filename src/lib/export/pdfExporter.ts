@@ -28,7 +28,7 @@ export function exportDrillToPDF(
   doc.setTextColor(56, 189, 248); // Sky blue
   doc.setFontSize(14);
   doc.setFont('helvetica', 'bold');
-  doc.text('FUTSALTAG PRO // FUTSAL TACTICAL BOARD', 14, 11);
+  doc.text('ARF FUTSALTAG // FUTSAL TACTICAL BOARD', 14, 11);
 
   doc.setTextColor(255, 255, 255);
   doc.setFontSize(16);
@@ -101,7 +101,7 @@ export function exportDrillToPDF(
   doc.setTextColor(100, 116, 139);
   doc.setFontSize(8);
   doc.text(
-    `Dibuat dengan FutsalTag Pro | Tanggal: ${new Date().toLocaleDateString('id-ID')} | Standar Lapangan FIFA (40m x 20m)`,
+    `Dibuat dengan ARF FutsalTag | Tanggal: ${new Date().toLocaleDateString('id-ID')} | Standar Lapangan FIFA (40m x 20m)`,
     14,
     pageHeight - 8
   );

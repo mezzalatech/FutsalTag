@@ -1,8 +1,8 @@
-# FutsalTag Pro
+# ARF FutsalTag
 
 **Aplikasi Analisis Video Pertandingan Futsal, Telestrasi Broadcast & Papan Taktik Interaktif (Desktop macOS & Windows)**
 
-FutsalTag Pro dibangun menggunakan **Tauri v2 (Rust)** dan **Svelte 5 (TypeScript)** khusus untuk alur kerja pelatih dan analis futsal berstandar lapangan FIFA ($40\text{m} \times 20\text{m}$).
+ARF FutsalTag dibangun menggunakan **Tauri v2 (Rust)** dan **Svelte 5 (TypeScript)** khusus untuk alur kerja pelatih dan analis futsal berstandar lapangan FIFA ($40\text{m} \times 20\text{m}$).
 
 ---
 

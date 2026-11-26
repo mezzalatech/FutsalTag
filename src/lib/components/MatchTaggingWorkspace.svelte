@@ -7,6 +7,10 @@
   } from "$lib/stores/projectStore.svelte";
   import { exportMomenBoardJson } from "$lib/tagging/momenBoards";
   import { renderDrawingsToDataUrl } from "$lib/export/telestrationRenderer";
+  import {
+    getEffectiveFreezeStopsForTag,
+    type FreezeStopExportPayload,
+  } from "$lib/export/freezeStops";
   import type {
     VideoTagEvent,
     TagCategory,
@@ -47,6 +51,7 @@
     Upload,
     Download,
     RotateCcw,
+    Redo2,
     Square,
     UserPlus,
     ChevronDown,
@@ -101,6 +106,9 @@
   let stickyAutoDescriptors = $state<string[]>([]);
   let lastSyncedBoardId = $state<string>("");
   let selectedClipId = $state<string | null>(null);
+  let selectedClipIds = $state<string[]>([]);
+  let isLinimasaCollapsed = $state<boolean>(false);
+  let autoDescribeAfterTag = $state<boolean>(false);
   let copiedMeta = $state<{
     labels: TagDescriptor[];
     players: string[];
@@ -128,6 +136,12 @@
   let showStatsMatrix = $state(false);
   let showTagLabelEditor = $state(false);
   let activeEditingTag = $state<VideoTagEvent | null>(null);
+  const liveEditingTag = $derived(
+    activeEditingTag
+      ? (projectStore.tags.find((t) => t.id === activeEditingTag!.id) ??
+          activeEditingTag)
+      : null,
+  );
 
   // Unified reactive roster & board
   const FUTSAL_ROSTER = $derived(projectStore.roster);
@@ -329,6 +343,16 @@
     );
   }
 
+  function buildReassignedTitle(
+    target: VideoTagEvent,
+    targetCategory: string,
+  ): string {
+    const oldCat = target.category;
+    return target.title.startsWith(oldCat)
+      ? targetCategory + target.title.slice(oldCat.length)
+      : `${targetCategory} - ${target.playerLabel || target.title}`;
+  }
+
   function handleReassignClipCategory(
     tagId: string,
     targetCategory: string,
@@ -337,18 +361,265 @@
   ) {
     const target = projectStore.tags.find((t) => t.id === tagId);
     if (!target || target.category === targetCategory) return;
-    const oldCat = target.category;
-    const nextTitle = target.title.startsWith(oldCat)
-      ? targetCategory + target.title.slice(oldCat.length)
-      : `${targetCategory} - ${target.playerLabel || target.title}`;
     projectStore.updateTag({
       ...target,
-      title: nextTitle,
+      title: buildReassignedTitle(target, targetCategory),
       category: targetCategory as TagCategory,
       color: targetColor,
       boardButtonId: targetButtonId || target.boardButtonId,
     });
     notifyUser(`Kategori dipindah ke "${targetCategory}"`);
+  }
+
+  function handleBatchChangeCategory(
+    ids: string[],
+    targetCategory: string,
+    targetColor: string,
+    targetButtonId?: string,
+  ) {
+    if (ids.length === 0) return;
+    projectStore.runBatchTagMutation(`Ubah Tag ke "${targetCategory}"`, () => {
+      for (const id of ids) {
+        const target = projectStore.tags.find((t) => t.id === id);
+        if (!target || target.category === targetCategory) continue;
+        projectStore.updateTag({
+          ...target,
+          title: buildReassignedTitle(target, targetCategory),
+          category: targetCategory as TagCategory,
+          color: targetColor,
+          boardButtonId: targetButtonId || target.boardButtonId,
+        });
+      }
+    });
+    notifyUser(`${ids.length} klip diubah ke "${targetCategory}"`);
+  }
+
+  function handleBatchToggleLabel(
+    ids: string[],
+    desc: { id: string; name: string; color?: string; group?: string | null },
+  ) {
+    const targets = projectStore.tags.filter((t) => ids.includes(t.id));
+    if (targets.length === 0) return;
+    const allHave = targets.every((t) =>
+      t.labels?.some(
+        (l) =>
+          l.id === desc.id || l.name.toLowerCase() === desc.name.toLowerCase(),
+      ),
+    );
+    projectStore.runBatchTagMutation(
+      allHave ? `Hapus Label "${desc.name}"` : `Tambah Label "${desc.name}"`,
+      () => {
+        for (const t of targets) {
+          const cur = t.labels || [];
+          let nextLabels: TagDescriptor[];
+          if (allHave) {
+            nextLabels = cur.filter(
+              (l) =>
+                l.id !== desc.id &&
+                l.name.toLowerCase() !== desc.name.toLowerCase(),
+            );
+          } else {
+            const cleaned = desc.group
+              ? cur.filter((l) => l.group !== desc.group)
+              : cur;
+            const exists = cleaned.some(
+              (l) =>
+                l.id === desc.id ||
+                l.name.toLowerCase() === desc.name.toLowerCase(),
+            );
+            nextLabels = exists
+              ? cleaned
+              : [
+                  ...cleaned,
+                  {
+                    id: desc.id,
+                    name: desc.name,
+                    color: desc.color || "#38bdf8",
+                    group: desc.group ?? null,
+                    atTime: Number(currentTime.toFixed(2)),
+                  },
+                ];
+          }
+          projectStore.updateTag({ ...t, labels: nextLabels });
+        }
+      },
+    );
+    notifyUser(
+      allHave
+        ? `Label "${desc.name}" dihapus dari ${targets.length} klip`
+        : `Label "${desc.name}" diterapkan ke ${targets.length} klip`,
+    );
+  }
+
+  function handleBatchAddCustomLabel(ids: string[], name: string) {
+    const clean = name.trim();
+    if (!clean || ids.length === 0) return;
+    handleBatchToggleLabel(ids, {
+      id: `custom_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+      name: clean,
+      color: "#38bdf8",
+      group: null,
+    });
+  }
+
+  function handleBatchTogglePlayer(ids: string[], playerLabel: string) {
+    const normPlayer = projectStore.normalizePlayerLabel(playerLabel);
+    const targets = projectStore.tags.filter((t) => ids.includes(t.id));
+    if (targets.length === 0) return;
+    const getPlayers = (t: VideoTagEvent): string[] =>
+      t.playersInvolved && t.playersInvolved.length > 0
+        ? t.playersInvolved.map((p) => projectStore.normalizePlayerLabel(p))
+        : t.playerLabel
+          ? [projectStore.normalizePlayerLabel(t.playerLabel)]
+          : [];
+    const allHave = targets.every((t) => getPlayers(t).includes(normPlayer));
+    projectStore.runBatchTagMutation(
+      allHave ? `Hapus Pemain ${normPlayer}` : `Tambah Pemain ${normPlayer}`,
+      () => {
+        for (const t of targets) {
+          const cur = getPlayers(t);
+          let nextPlayers: string[];
+          if (allHave) {
+            nextPlayers =
+              cur.length > 1 ? cur.filter((p) => p !== normPlayer) : cur;
+          } else {
+            nextPlayers = cur.includes(normPlayer) ? cur : [...cur, normPlayer];
+          }
+          projectStore.updateTag({
+            ...t,
+            playerLabel: nextPlayers[0] || normPlayer,
+            playersInvolved: nextPlayers,
+          });
+        }
+      },
+    );
+    notifyUser(
+      allHave
+        ? `${normPlayer} dilepas dari ${targets.length} klip`
+        : `${normPlayer} ditambahkan ke ${targets.length} klip`,
+    );
+  }
+
+  function handleBatchAddCustomPlayer(ids: string[], rawName: string) {
+    const added = projectStore.addRosterPlayer(rawName);
+    if (!added) return;
+    if (ids.length > 0) {
+      handleBatchTogglePlayer(ids, added);
+    } else {
+      handlePlayerPress(added);
+    }
+  }
+
+  function handleBatchSetTeamSide(ids: string[], side: "home" | "away") {
+    const targets = projectStore.tags.filter((t) => ids.includes(t.id));
+    if (targets.length === 0) return;
+    projectStore.runBatchTagMutation(`Set Tim ${side.toUpperCase()}`, () => {
+      for (const t of targets) {
+        projectStore.updateTag({ ...t, teamSide: side });
+      }
+    });
+    notifyUser(`${targets.length} klip diset ke ${side.toUpperCase()}`);
+  }
+
+  function handleBatchToggleFavorite(ids: string[]) {
+    const targets = projectStore.tags.filter((t) => ids.includes(t.id));
+    if (targets.length === 0) return;
+    const allFav = targets.every((t) => Boolean(t.favorite));
+    projectStore.runBatchTagMutation(
+      allFav ? "Hapus Favorit" : "Tandai Favorit",
+      () => {
+        for (const t of targets) {
+          projectStore.updateTag({ ...t, favorite: !allFav });
+        }
+      },
+    );
+    notifyUser(
+      allFav
+        ? `${targets.length} klip dihapus dari Favorit`
+        : `${targets.length} klip ditandai Favorit ★`,
+    );
+  }
+
+  function handleSplitClipAtPlayhead(tag: VideoTagEvent) {
+    const res = projectStore.splitTag(tag.id, currentTime);
+    if (!res) {
+      notifyUser(
+        "Posisikan garis merah di tengah klip (min. 0.3s dari tepi) untuk Split",
+      );
+      return;
+    }
+    selectedClipId = res[1].id;
+    selectedClipIds = [res[1].id];
+    notifyUser(
+      `Klip dibelah pada ${formatTime(currentTime)} (Ctrl+Z untuk batal)`,
+    );
+  }
+
+  function handleDuplicateClip(tag: VideoTagEvent) {
+    const dup = projectStore.duplicateTag(tag.id);
+    if (!dup) return;
+    selectedClipId = dup.id;
+    selectedClipIds = [dup.id];
+    notifyUser(`Klip diduplikasi: "${dup.category}"`);
+  }
+
+  function handleBatchPasteMeta(ids: string[]) {
+    if (!copiedMeta || ids.length === 0) return;
+    const targets = projectStore.tags.filter((t) => ids.includes(t.id));
+    if (targets.length === 0) return;
+    projectStore.runBatchTagMutation("Tempel Meta Klip", () => {
+      for (const t of targets) {
+        const players =
+          copiedMeta!.players.length > 0
+            ? [...copiedMeta!.players]
+            : t.playersInvolved;
+        projectStore.updateTag({
+          ...t,
+          labels: JSON.parse(JSON.stringify(copiedMeta!.labels)),
+          playersInvolved: players,
+          playerLabel:
+            players && players.length > 0 ? players[0] : t.playerLabel,
+          teamSide: copiedMeta!.teamSide ?? t.teamSide,
+        });
+      }
+    });
+    notifyUser(`Label & pemain ditempel ke ${targets.length} klip`);
+  }
+
+  function handleBatchAddToPlaylist(ids: string[]) {
+    const targets = projectStore.tags.filter((t) => ids.includes(t.id));
+    if (targets.length === 0) return;
+    for (const t of targets) {
+      projectStore.addToPlaylist(t);
+    }
+    notifyUser(`${targets.length} klip ditambahkan ke Playlist`);
+  }
+
+  function handleBatchDeleteClips(ids: string[]) {
+    const validIds = ids.filter((id) =>
+      projectStore.tags.some((t) => t.id === id),
+    );
+    if (validIds.length === 0) return;
+    projectStore.runBatchTagMutation(
+      validIds.length > 1
+        ? `Hapus ${validIds.length} Klip`
+        : `Hapus "${projectStore.tags.find((t) => t.id === validIds[0])?.category ?? "Klip"}"`,
+      () => {
+        for (const id of validIds) {
+          projectStore.deleteTag(id);
+        }
+      },
+    );
+    if (selectedClipId && validIds.includes(selectedClipId)) {
+      selectedClipId = null;
+    }
+    selectedClipIds = selectedClipIds.filter((id) => !validIds.includes(id));
+    if (activeLoopClip && validIds.includes(activeLoopClip.id)) {
+      activeLoopClip = null;
+    }
+    notifyUser(
+      `${validIds.length} klip dihapus. Tekan Ctrl+Z untuk mengurungkan.`,
+    );
   }
 
   function toggleClipFavorite(tag: VideoTagEvent) {
@@ -385,26 +656,54 @@
 
       const hasDrawings = Boolean(tag.drawings && tag.drawings.length > 0);
       const hasVoice = Boolean(tag.voiceoverAudioBase64);
-      if (hasDrawings || hasVoice) {
+      const effectiveStops = getEffectiveFreezeStopsForTag(tag);
+      const appendCleanReplay = Boolean(tag.appendCleanReplay);
+      if (
+        hasDrawings ||
+        hasVoice ||
+        effectiveStops.length > 1 ||
+        appendCleanReplay
+      ) {
         const freezeSec =
-          tag.freezeTimestamp ?? (tag.startTime + tag.endTime) / 2;
-        const overlayBase64 = hasDrawings
-          ? renderDrawingsToDataUrl(tag.drawings || [], 1280, 720, freezeSec, {
-              chromaConfig: projectStore.chromaFloorConfig,
-              clipStartTime: tag.startTime,
-              animElapsedSec: 1.0,
-            })
-          : null;
+          effectiveStops[0]?.time ??
+          tag.freezeTimestamp ??
+          (tag.startTime + tag.endTime) / 2;
+        const freezeStopsPayload: FreezeStopExportPayload[] =
+          effectiveStops.map((st) => ({
+            time: st.time,
+            duration: st.duration,
+            overlay_base64: hasDrawings
+              ? renderDrawingsToDataUrl(
+                  tag.drawings || [],
+                  1280,
+                  720,
+                  st.time,
+                  {
+                    chromaConfig: projectStore.chromaFloorConfig,
+                    clipStartTime: tag.startTime,
+                    clipEndTime: tag.endTime,
+                    subtitleText: tag.voiceoverTranscript,
+                    subtitleCues: tag.subtitleCues,
+                    burnSubtitle: tag.burnSubtitle,
+                    animElapsedSec: 1.0,
+                  },
+                ) || null
+              : null,
+          }));
         await invoke<string>("burn_telestration_clip_ffmpeg", {
           inputPath: path,
           outputPath: outPath,
           startSec: tag.startTime,
           durationSec: Math.max(0.4, tag.endTime - tag.startTime),
           freezeSec,
-          pauseDuration: tag.pauseDuration ?? 3.0,
-          overlayBase64,
+          pauseDuration:
+            effectiveStops[0]?.duration ?? tag.pauseDuration ?? 3.0,
+          overlayBase64: freezeStopsPayload[0]?.overlay_base64 ?? null,
           voiceoverBase64: tag.voiceoverAudioBase64 || null,
           targetHeight: 720,
+          freezeStops:
+            freezeStopsPayload.length > 0 ? freezeStopsPayload : null,
+          appendCleanReplay,
         });
       } else {
         await invoke<string>("render_video_clip_ffmpeg", {
@@ -525,6 +824,7 @@
       spatialCanvasHeight = 122;
     }
     function handleKeyDown(e: KeyboardEvent) {
+      if (showTagLabelEditor || showStatsMatrix) return;
       const targetTag = (e.target as HTMLElement)?.tagName;
       if (
         targetTag === "INPUT" ||
@@ -533,6 +833,7 @@
       ) {
         return;
       }
+      const hasMod = e.ctrlKey || e.metaKey;
       if (e.code === "Space") {
         e.preventDefault();
         togglePlay();
@@ -542,13 +843,56 @@
         } else if (Object.keys(activeContinuousTags).length > 0) {
           e.preventDefault();
           stopAllContinuousTags();
+        } else if (selectedClipIds.length > 0) {
+          selectedClipIds = [];
         }
-      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+      } else if (hasMod && e.key.toLowerCase() === "z" && !e.shiftKey) {
         e.preventDefault();
         handleUndoLastTag();
+      } else if (
+        hasMod &&
+        (e.key.toLowerCase() === "y" ||
+          (e.key.toLowerCase() === "z" && e.shiftKey))
+      ) {
+        e.preventDefault();
+        handleRedoTags();
+      } else if (hasMod && e.key.toLowerCase() === "c") {
+        const selText = window.getSelection()?.toString();
+        if (!selText && targetExistingClip) {
+          e.preventDefault();
+          handleCopyClipMeta(targetExistingClip);
+        }
+      } else if (hasMod && e.key.toLowerCase() === "v") {
+        if (copiedMeta) {
+          const targets =
+            selectedClipIds.length > 0
+              ? selectedClipIds
+              : targetExistingClip
+                ? [targetExistingClip.id]
+                : [];
+          if (targets.length > 0) {
+            e.preventDefault();
+            handleBatchPasteMeta(targets);
+          }
+        }
+      } else if (e.key === "Delete" || e.key === "Backspace") {
+        const targets =
+          selectedClipIds.length > 0
+            ? selectedClipIds
+            : selectedClipId
+              ? [selectedClipId]
+              : [];
+        if (targets.length > 0) {
+          e.preventDefault();
+          handleBatchDeleteClips(targets);
+        }
       } else if (e.altKey && e.key.toLowerCase() === "u") {
         e.preventDefault();
-        createClipFromInOut();
+        if (inPoint !== null) {
+          createClipFromInOut();
+        } else if (targetExistingClip) {
+          openTagEditor(targetExistingClip);
+        }
       } else if (e.key === "/") {
         e.preventDefault();
         document.getElementById("quick-tag-search-input")?.focus();
@@ -572,6 +916,27 @@
           setInPoint();
         } else if (keyUpper === "O") {
           setOutPoint();
+        } else if (keyUpper === "S" && targetExistingClip) {
+          e.preventDefault();
+          handleSplitClipAtPlayhead(targetExistingClip);
+        } else if (keyUpper === "J" && videoEl) {
+          e.preventDefault();
+          seekTo(currentTime - 2.0);
+        } else if (keyUpper === "K" && videoEl) {
+          e.preventDefault();
+          videoEl.pause();
+          videoEl.playbackRate = 1.0;
+          playbackRate = 1.0;
+          isPlaying = false;
+        } else if (keyUpper === "L" && videoEl) {
+          e.preventDefault();
+          const rates = [1.0, 1.5, 2.0, 4.0];
+          const curIdx = rates.indexOf(playbackRate);
+          const nextRate = isPlaying ? rates[(curIdx + 1) % rates.length] : 1.0;
+          videoEl.playbackRate = nextRate;
+          playbackRate = nextRate;
+          videoEl.play().catch(() => {});
+          isPlaying = true;
         }
       }
     }
@@ -734,11 +1099,13 @@
     };
     projectStore.addTag(newTag);
     selectedClipId = newTag.id;
+    selectedClipIds = [newTag.id];
     inPoint = null;
     outPoint = null;
     notifyUser(
       `Klip Alt+U: ${resolvedCategory} (${(end - start).toFixed(1)}s)`,
     );
+    if (autoDescribeAfterTag) openTagEditor(newTag);
   }
 
   function buildSeedLabels(catButtonId: string): TagDescriptor[] {
@@ -805,6 +1172,7 @@
     };
     projectStore.addTag(newTag);
     selectedClipId = newTag.id;
+    selectedClipIds = [newTag.id];
 
     const next = { ...activeContinuousTags };
     delete next[buttonId];
@@ -812,6 +1180,7 @@
     notifyUser(
       `Klip Kontinu Disimpan: ${active.name} (${(endTime - active.startTime).toFixed(1)}s)`,
     );
+    if (autoDescribeAfterTag) openTagEditor(newTag);
   }
 
   async function runAutoWhistleDetect() {
@@ -829,7 +1198,9 @@
     }
 
     isDetectingWhistles = true;
-    notifyUser("Memindai audio pertandingan untuk mencari suara peluit wasit...");
+    notifyUser(
+      "Memindai audio pertandingan untuk mencari suara peluit wasit...",
+    );
     try {
       const raw = await invoke<
         Array<{
@@ -970,7 +1341,9 @@
     };
     projectStore.addTag(newTag);
     selectedClipId = newTag.id;
+    selectedClipIds = [newTag.id];
     notifyUser(`Klip Ditandai: ${btn.name} [${activeSelectedPlayer}]`);
+    if (autoDescribeAfterTag) openTagEditor(newTag);
   }
 
   function handleDescriptorPress(btn: TaggingButton) {
@@ -1094,10 +1467,26 @@
   }
 
   function handleUndoLastTag() {
-    const removed = projectStore.undoLastTag();
-    if (removed) {
-      if (selectedClipId === removed.id) selectedClipId = null;
-      notifyUser(`Dibatalkan: ${removed.title}`);
+    const label = projectStore.undoTags();
+    if (label) {
+      const validIds = new Set(projectStore.tags.map((t) => t.id));
+      if (selectedClipId && !validIds.has(selectedClipId))
+        selectedClipId = null;
+      selectedClipIds = selectedClipIds.filter((id) => validIds.has(id));
+      if (activeLoopClip && !validIds.has(activeLoopClip.id))
+        activeLoopClip = null;
+      notifyUser(`Undo: ${label}`);
+    } else {
+      notifyUser("Tidak ada perubahan untuk di-undo");
+    }
+  }
+
+  function handleRedoTags() {
+    const label = projectStore.redoTags();
+    if (label) {
+      notifyUser(`Redo: ${label}`);
+    } else {
+      notifyUser("Tidak ada perubahan untuk di-redo");
     }
   }
 
@@ -1282,7 +1671,19 @@
   let currentPlaylist = $derived(projectStore.playlists[0]);
 </script>
 
-<div class="tagging-workspace">
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div
+  class="tagging-workspace"
+  oncontextmenu={(e) => {
+    const targetEl = e.target as HTMLElement | null;
+    if (
+      targetEl &&
+      !["INPUT", "TEXTAREA", "SELECT"].includes(targetEl.tagName)
+    ) {
+      e.preventDefault();
+    }
+  }}
+>
   <!-- SLIM TOP SUB-HEADER (34px) -->
   <header class="tagging-header">
     <div class="header-left">
@@ -1405,10 +1806,36 @@
           <button
             type="button"
             class="hdr-tool-btn"
+            disabled={!projectStore.canUndo}
             onclick={handleUndoLastTag}
-            title="Undo Tag Terakhir (Ctrl+Z)"
+            title={projectStore.lastUndoLabel
+              ? `Undo: ${projectStore.lastUndoLabel} (Ctrl+Z)`
+              : "Undo (Ctrl+Z)"}
           >
             <RotateCcw size={11} />
+          </button>
+
+          <button
+            type="button"
+            class="hdr-tool-btn"
+            disabled={!projectStore.canRedo}
+            onclick={handleRedoTags}
+            title={projectStore.lastRedoLabel
+              ? `Redo: ${projectStore.lastRedoLabel} (Ctrl+Y)`
+              : "Redo (Ctrl+Y)"}
+          >
+            <Redo2 size={11} />
+          </button>
+
+          <button
+            type="button"
+            class="hdr-tool-btn hdr-auto-btn"
+            class:active={autoDescribeAfterTag}
+            onclick={() => (autoDescribeAfterTag = !autoDescribeAfterTag)}
+            title="Otomatis buka form Edit Tag, Label & Pemain setiap selesai menandai klip"
+          >
+            <Edit3 size={10} />
+            <span>Auto-Edit</span>
           </button>
         </div>
       {/if}
@@ -1945,7 +2372,9 @@
                   {#if showWhistleMenu}
                     <div class="whistle-popover" role="menu">
                       <div class="ko-pop-hdr">
-                        <span>Deteksi Peluit Wasit ({whistleMarkers.length})</span>
+                        <span
+                          >Deteksi Peluit Wasit ({whistleMarkers.length})</span
+                        >
                         <button
                           type="button"
                           class="ko-close"
@@ -1964,7 +2393,11 @@
                           onclick={runAutoWhistleDetect}
                         >
                           <Volume2 size={11} class="text-amber-400" />
-                          <span>{isDetectingWhistles ? "Memindai Audio..." : "Pindai Ulang Audio"}</span>
+                          <span
+                            >{isDetectingWhistles
+                              ? "Memindai Audio..."
+                              : "Pindai Ulang Audio"}</span
+                          >
                         </button>
                         {#if whistleMarkers.length > 0}
                           <button
@@ -1986,16 +2419,23 @@
                                 type="button"
                                 class="whistle-seek-btn"
                                 onclick={() => seekTo(w.peakTime)}
-                                title="{w.label} · {Math.round(w.peakFreqHz)} Hz ({Math.round(w.confidence * 100)}%)"
+                                title="{w.label} · {Math.round(
+                                  w.peakFreqHz,
+                                )} Hz ({Math.round(w.confidence * 100)}%)"
                               >
-                                <span class="whistle-time">{formatTime(w.peakTime)}</span>
-                                <span class="whistle-freq">{Math.round(w.peakFreqHz)}Hz</span>
+                                <span class="whistle-time"
+                                  >{formatTime(w.peakTime)}</span
+                                >
+                                <span class="whistle-freq"
+                                  >{Math.round(w.peakFreqHz)}Hz</span
+                                >
                               </button>
                               <div class="whistle-tag-btns">
                                 <button
                                   type="button"
                                   class="whistle-tag-btn foul"
-                                  onclick={() => createTagFromWhistle(w, "Foul")}
+                                  onclick={() =>
+                                    createTagFromWhistle(w, "Foul")}
                                   title="Buat tag Foul di momen peluit ini"
                                 >
                                   +Foul
@@ -2003,7 +2443,11 @@
                                 <button
                                   type="button"
                                   class="whistle-tag-btn ko"
-                                  onclick={() => createTagFromWhistle(w, "Kick-in Set Piece")}
+                                  onclick={() =>
+                                    createTagFromWhistle(
+                                      w,
+                                      "Kick-in Set Piece",
+                                    )}
                                   title="Buat tag Kick-in di momen peluit ini"
                                 >
                                   +Set
@@ -2013,7 +2457,9 @@
                           {/each}
                         </div>
                       {:else}
-                        <span class="whistle-empty">Klik Pindai Audio untuk menandai peluit di linimasa.</span>
+                        <span class="whistle-empty"
+                          >Klik Pindai Audio untuk menandai peluit di linimasa.</span
+                        >
                       {/if}
                     </div>
                   {/if}
@@ -2651,7 +3097,10 @@
           <span class="resize-pill"></span>
         </div>
 
-        <div class="linimasa-bottom-tier" style="height: {linimasaHeight}px;">
+        <div
+          class="linimasa-bottom-tier"
+          style="height: {isLinimasaCollapsed ? 26 : linimasaHeight}px;"
+        >
           <LinimasaTimeline
             board={activeBoard}
             tags={projectStore.tags}
@@ -2662,6 +3111,12 @@
             {leadTimeSeconds}
             {lagTimeSeconds}
             {selectedClipId}
+            {selectedClipIds}
+            roster={FUTSAL_ROSTER.map((p) =>
+              projectStore.getPlayerDisplayLabel(p),
+            )}
+            hasCopiedMeta={copiedMeta !== null}
+            isCollapsed={isLinimasaCollapsed}
             activeLoopClipId={activeLoopClip?.id ?? null}
             periodKickoffs={projectStore.periodKickoffs}
             useMatchClock={projectStore.useMatchClock}
@@ -2671,12 +3126,34 @@
             onSeek={seekTo}
             onSelectClip={(tag) => {
               selectedClipId = tag.id;
+              selectedClipIds = [tag.id];
               playClipLoop(tag);
             }}
+            onSelectionChange={(ids, primaryId) => {
+              selectedClipIds = ids;
+              selectedClipId = primaryId;
+            }}
             onEditClip={openTagEditor}
+            onOpenTelestration={(t) => projectStore.openClipInTelestrator(t)}
             onTrimClip={handleTrimClip}
             onMoveClip={handleMoveClip}
             onReassignClipCategory={handleReassignClipCategory}
+            onBatchChangeCategory={handleBatchChangeCategory}
+            onBatchToggleLabel={handleBatchToggleLabel}
+            onBatchAddCustomLabel={handleBatchAddCustomLabel}
+            onBatchTogglePlayer={handleBatchTogglePlayer}
+            onBatchAddCustomPlayer={handleBatchAddCustomPlayer}
+            onBatchSetTeamSide={handleBatchSetTeamSide}
+            onBatchToggleFavorite={handleBatchToggleFavorite}
+            onSplitClip={handleSplitClipAtPlayhead}
+            onDuplicateClip={handleDuplicateClip}
+            onCopyClipMeta={handleCopyClipMeta}
+            onBatchPasteMeta={handleBatchPasteMeta}
+            onBatchAddToPlaylist={handleBatchAddToPlaylist}
+            onQuickExportClip={handleQuickExportSingleClip}
+            onBatchDeleteClips={handleBatchDeleteClips}
+            onToggleCollapse={() =>
+              (isLinimasaCollapsed = !isLinimasaCollapsed)}
             onChangeLead={(sec) => (leadTimeSeconds = sec)}
             onChangeLag={(sec) => (lagTimeSeconds = sec)}
           />
@@ -2897,18 +3374,44 @@
     {/if}
   </main>
 
-  <!-- DEDICATED TAG & LABEL MODAL -->
-  {#if activeEditingTag && showTagLabelEditor}
+  <!-- DEDICATED 3-COLUMN TAG / LABEL / PLAYER PANEL (ONCE SPORT STYLE) -->
+  {#if liveEditingTag && showTagLabelEditor}
     <TagLabelEditorModal
-      tag={activeEditingTag}
+      tag={liveEditingTag}
       isOpen={showTagLabelEditor}
+      allTags={projectStore.tags}
+      selectedBatchIds={selectedClipIds}
       onClose={() => (showTagLabelEditor = false)}
       onSave={(updated) => {
         projectStore.updateTag(updated);
+        activeEditingTag = updated;
         showTagLabelEditor = false;
+      }}
+      onLiveUpdate={(updated) => {
+        projectStore.updateTag(updated);
+        activeEditingTag = updated;
+      }}
+      onNavigateClip={(nextTag) => {
+        activeEditingTag = nextTag;
+        selectedClipId = nextTag.id;
+        selectedClipIds = [nextTag.id];
+        playClipLoop(nextTag);
       }}
       onDelete={(id) => {
         projectStore.deleteTag(id);
+        if (selectedClipId === id) selectedClipId = null;
+        selectedClipIds = selectedClipIds.filter((x) => x !== id);
+        showTagLabelEditor = false;
+      }}
+      onBatchChangeCategory={handleBatchChangeCategory}
+      onBatchToggleLabel={handleBatchToggleLabel}
+      onBatchAddCustomLabel={handleBatchAddCustomLabel}
+      onBatchTogglePlayer={handleBatchTogglePlayer}
+      onBatchAddCustomPlayer={handleBatchAddCustomPlayer}
+      onBatchSetTeamSide={handleBatchSetTeamSide}
+      onBatchToggleFavorite={handleBatchToggleFavorite}
+      onBatchDelete={(ids) => {
+        handleBatchDeleteClips(ids);
         showTagLabelEditor = false;
       }}
     />
@@ -3023,6 +3526,12 @@
     background: rgba(220, 38, 38, 0.25);
     border-color: #ef4444;
     color: #fecaca;
+  }
+
+  .hdr-auto-btn.active {
+    background: rgba(14, 165, 233, 0.25);
+    border-color: #38bdf8;
+    color: #e0f2fe;
   }
 
   /* WORKSPACE SUBNAV */

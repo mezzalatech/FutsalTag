@@ -136,7 +136,127 @@ class ProjectStore {
     },
   ]);
 
+  // Full NLE Tag Undo/Redo History Stack
+  private tagHistoryPast: { label: string; tags: VideoTagEvent[] }[] = [];
+  private tagHistoryFuture: { label: string; tags: VideoTagEvent[] }[] = [];
+  private isRestoringHistory = false;
+  canUndo = $state(false);
+  canRedo = $state(false);
+  lastUndoLabel = $state<string | null>(null);
+  lastRedoLabel = $state<string | null>(null);
+
   constructor() {}
+
+  private cloneTagsSnapshot(): VideoTagEvent[] {
+    return JSON.parse(JSON.stringify(this.tags));
+  }
+
+  private syncHistoryFlags() {
+    this.canUndo = this.tagHistoryPast.length > 0;
+    this.canRedo = this.tagHistoryFuture.length > 0;
+    this.lastUndoLabel =
+      this.tagHistoryPast.length > 0
+        ? this.tagHistoryPast[this.tagHistoryPast.length - 1].label
+        : null;
+    this.lastRedoLabel =
+      this.tagHistoryFuture.length > 0
+        ? this.tagHistoryFuture[this.tagHistoryFuture.length - 1].label
+        : null;
+  }
+
+  private pushTagUndoSnapshot(label: string) {
+    if (this.isRestoringHistory) return;
+    this.tagHistoryPast.push({ label, tags: this.cloneTagsSnapshot() });
+    if (this.tagHistoryPast.length > 50) {
+      this.tagHistoryPast.shift();
+    }
+    this.tagHistoryFuture = [];
+    this.syncHistoryFlags();
+  }
+
+  private clearTagHistory() {
+    this.tagHistoryPast = [];
+    this.tagHistoryFuture = [];
+    this.syncHistoryFlags();
+  }
+
+  private syncPlaylistsAfterTagsRestore() {
+    const tagMap = new Map(this.tags.map((t) => [t.id, t]));
+    for (const pl of this.playlists) {
+      pl.items = pl.items
+        .filter((item) => tagMap.has(item.tagEventId))
+        .map((item, idx) => {
+          const t = tagMap.get(item.tagEventId)!;
+          return {
+            ...item,
+            order: idx + 1,
+            title: t.title,
+            pauseDuration: t.pauseDuration ?? 3.0,
+            tagEvent: t,
+          };
+        });
+    }
+    if (this.playlists.length > 0) {
+      const defPl = this.playlists[0];
+      const existingIds = new Set(defPl.items.map((it) => it.tagEventId));
+      for (const t of this.tags) {
+        if (!existingIds.has(t.id)) {
+          defPl.items.push({
+            id: `pl-item-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            tagEventId: t.id,
+            order: defPl.items.length + 1,
+            pauseDuration: t.pauseDuration ?? 3.0,
+            title: t.title,
+            tagEvent: t,
+          });
+        }
+      }
+      defPl.items.forEach((it, idx) => (it.order = idx + 1));
+    }
+    if (this.activeClipForDrawing) {
+      this.activeClipForDrawing = tagMap.get(this.activeClipForDrawing.id) ?? null;
+    }
+  }
+
+  runBatchTagMutation(label: string, mutator: () => void) {
+    this.pushTagUndoSnapshot(label);
+    this.isRestoringHistory = true;
+    try {
+      mutator();
+    } finally {
+      this.isRestoringHistory = false;
+    }
+  }
+
+  undoTags(): string | null {
+    const entry = this.tagHistoryPast.pop();
+    if (!entry) return null;
+    this.tagHistoryFuture.push({ label: entry.label, tags: this.cloneTagsSnapshot() });
+    this.isRestoringHistory = true;
+    try {
+      this.tags = entry.tags;
+      this.syncPlaylistsAfterTagsRestore();
+    } finally {
+      this.isRestoringHistory = false;
+    }
+    this.syncHistoryFlags();
+    return entry.label;
+  }
+
+  redoTags(): string | null {
+    const entry = this.tagHistoryFuture.pop();
+    if (!entry) return null;
+    this.tagHistoryPast.push({ label: entry.label, tags: this.cloneTagsSnapshot() });
+    this.isRestoringHistory = true;
+    try {
+      this.tags = entry.tags;
+      this.syncPlaylistsAfterTagsRestore();
+    } finally {
+      this.isRestoringHistory = false;
+    }
+    this.syncHistoryFlags();
+    return entry.label;
+  }
 
   // --- MATCH CLOCK & KICK-OFF SYNCHRONIZATION ---
   setPeriodKickoff(period: 1 | 2 | 3, videoTime: number) {
@@ -546,6 +666,7 @@ class ProjectStore {
         items: [],
       },
     ];
+    this.clearTagHistory();
     this.stage = 'tagging';
   }
 
@@ -679,10 +800,12 @@ class ProjectStore {
       },
     ];
 
+    this.clearTagHistory();
     this.stage = 'tagging';
   }
 
   addTag(tag: VideoTagEvent) {
+    this.pushTagUndoSnapshot(`Tambah "${tag.category}"`);
     const normalized = this.normalizeTagPlayers(tag);
     this.tags.push(normalized);
     if (this.playlists.length > 0) {
@@ -698,6 +821,7 @@ class ProjectStore {
   }
 
   updateTag(updated: VideoTagEvent) {
+    this.pushTagUndoSnapshot(`Edit "${updated.category}"`);
     const norm = this.normalizeTagPlayers(updated);
     const idx = this.tags.findIndex((t) => t.id === norm.id);
     if (idx !== -1) {
@@ -717,6 +841,8 @@ class ProjectStore {
   }
 
   deleteTag(id: string) {
+    const target = this.tags.find((t) => t.id === id);
+    this.pushTagUndoSnapshot(`Hapus "${target?.category ?? 'Klip'}"`);
     this.tags = this.tags.filter((t) => t.id !== id);
     for (const pl of this.playlists) {
       pl.items = pl.items.filter((item) => item.tagEventId !== id);
@@ -726,7 +852,101 @@ class ProjectStore {
     }
   }
 
+  splitTag(tagId: string, splitTime: number): [VideoTagEvent, VideoTagEvent] | null {
+    const idx = this.tags.findIndex((t) => t.id === tagId);
+    if (idx === -1) return null;
+    const orig = this.tags[idx];
+    if (splitTime <= orig.startTime + 0.3 || splitTime >= orig.endTime - 0.3) {
+      return null;
+    }
+    const splitSec = Number(splitTime.toFixed(2));
+    const first: VideoTagEvent = {
+      ...JSON.parse(JSON.stringify(orig)),
+      endTime: splitSec,
+      freezeStops: orig.freezeStops
+        ? orig.freezeStops.filter((s) => s.time <= splitSec + 0.01).map((s) => ({ ...s }))
+        : undefined,
+      freezeTimestamp:
+        typeof orig.freezeTimestamp === 'number'
+          ? Math.max(orig.startTime, Math.min(splitSec, orig.freezeTimestamp))
+          : undefined,
+    };
+    const secondId = `tag-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`;
+    const second: VideoTagEvent = {
+      ...JSON.parse(JSON.stringify(orig)),
+      id: secondId,
+      title: orig.title.includes('(Bagian 2)') ? orig.title : `${orig.title} (Bagian 2)`,
+      startTime: splitSec,
+      endTime: orig.endTime,
+      freezeStops: orig.freezeStops
+        ? orig.freezeStops.filter((s) => s.time >= splitSec - 0.01).map((s) => ({ ...s }))
+        : undefined,
+      freezeTimestamp:
+        typeof orig.freezeTimestamp === 'number'
+          ? Math.max(splitSec, Math.min(orig.endTime, orig.freezeTimestamp))
+          : undefined,
+    };
+
+    this.runBatchTagMutation(`Split "${orig.category}"`, () => {
+      const next = [...this.tags];
+      next[idx] = first;
+      next.splice(idx + 1, 0, second);
+      this.tags = next;
+      if (this.playlists.length > 0) {
+        const pl = this.playlists[0];
+        const pIdx = pl.items.findIndex((it) => it.tagEventId === first.id);
+        if (pIdx !== -1) {
+          pl.items[pIdx].tagEvent = first;
+        }
+        pl.items.splice(pIdx !== -1 ? pIdx + 1 : pl.items.length, 0, {
+          id: `pl-item-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          tagEventId: second.id,
+          order: pl.items.length + 1,
+          pauseDuration: second.pauseDuration ?? 3.0,
+          title: second.title,
+          tagEvent: second,
+        });
+        pl.items.forEach((it, i) => (it.order = i + 1));
+      }
+    });
+
+    return [first, second];
+  }
+
+  duplicateTag(tagId: string): VideoTagEvent | null {
+    const idx = this.tags.findIndex((t) => t.id === tagId);
+    if (idx === -1) return null;
+    const orig = this.tags[idx];
+    const cloned: VideoTagEvent = {
+      ...JSON.parse(JSON.stringify(orig)),
+      id: `tag-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+      title: orig.title.includes('(Salinan)') ? orig.title : `${orig.title} (Salinan)`,
+    };
+
+    this.runBatchTagMutation(`Duplikat "${orig.category}"`, () => {
+      const next = [...this.tags];
+      next.splice(idx + 1, 0, cloned);
+      this.tags = next;
+      if (this.playlists.length > 0) {
+        this.playlists[0].items.push({
+          id: `pl-item-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          tagEventId: cloned.id,
+          order: this.playlists[0].items.length + 1,
+          pauseDuration: cloned.pauseDuration ?? 3.0,
+          title: cloned.title,
+          tagEvent: cloned,
+        });
+      }
+    });
+    return cloned;
+  }
+
   undoLastTag(): VideoTagEvent | null {
+    const prevTags = [...this.tags];
+    if (this.undoTags()) {
+      const currIds = new Set(this.tags.map((t) => t.id));
+      return prevTags.find((t) => !currIds.has(t.id)) ?? null;
+    }
     if (this.tags.length === 0) return null;
     const removed = this.tags[this.tags.length - 1];
     this.deleteTag(removed.id);
@@ -965,6 +1185,7 @@ class ProjectStore {
           .map((p) => p.id);
       }
       this.substitutions = Array.isArray(data.substitutions) ? data.substitutions : [];
+      this.clearTagHistory();
       this.stage = 'tagging';
       return true;
     } catch (err) {
@@ -1069,6 +1290,7 @@ class ProjectStore {
         items: [],
       },
     ];
+    this.clearTagHistory();
     this.stage = 'hub';
   }
 }

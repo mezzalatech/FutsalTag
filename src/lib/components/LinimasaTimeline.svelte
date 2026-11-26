@@ -1,11 +1,26 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { ZoomIn, ZoomOut } from 'lucide-svelte';
+  import {
+    ZoomIn,
+    ZoomOut,
+    ChevronDown,
+    ChevronUp,
+    Filter,
+    Layers,
+    Tag,
+    Users,
+    ListPlus,
+    Trash2,
+    Clipboard,
+    X,
+    Check,
+    Plus,
+  } from 'lucide-svelte';
+  import TimelineClipContextMenu from '$lib/components/TimelineClipContextMenu.svelte';
   import type {
     ActiveContinuousTag,
     PeriodKickoff,
     TaggingBoard,
-    TaggingButton,
     VideoTagEvent,
     WhistleMarker,
   } from '$lib/types';
@@ -20,6 +35,10 @@
     leadTimeSeconds: number;
     lagTimeSeconds: number;
     selectedClipId: string | null;
+    selectedClipIds?: string[];
+    roster?: string[];
+    hasCopiedMeta?: boolean;
+    isCollapsed?: boolean;
     activeLoopClipId: string | null;
     periodKickoffs?: PeriodKickoff[];
     useMatchClock?: boolean;
@@ -28,7 +47,9 @@
     onQuickTagWhistle?: (marker: WhistleMarker) => void;
     onSeek: (time: number) => void;
     onSelectClip: (tag: VideoTagEvent) => void;
+    onSelectionChange?: (ids: string[], primaryId: string | null) => void;
     onEditClip: (tag: VideoTagEvent) => void;
+    onOpenTelestration?: (tag: VideoTagEvent) => void;
     onTrimClip: (tagId: string, newStart: number, newEnd: number) => void;
     onMoveClip: (tagId: string, newStart: number, newEnd: number) => void;
     onReassignClipCategory: (
@@ -37,6 +58,29 @@
       targetColor: string,
       targetButtonId?: string
     ) => void;
+    onBatchChangeCategory?: (
+      ids: string[],
+      category: string,
+      color: string,
+      buttonId?: string
+    ) => void;
+    onBatchToggleLabel?: (
+      ids: string[],
+      desc: { id: string; name: string; color?: string; group?: string | null }
+    ) => void;
+    onBatchAddCustomLabel?: (ids: string[], name: string) => void;
+    onBatchTogglePlayer?: (ids: string[], playerLabel: string) => void;
+    onBatchAddCustomPlayer?: (ids: string[], rawName: string) => void;
+    onBatchSetTeamSide?: (ids: string[], side: 'home' | 'away') => void;
+    onBatchToggleFavorite?: (ids: string[]) => void;
+    onSplitClip?: (tag: VideoTagEvent) => void;
+    onDuplicateClip?: (tag: VideoTagEvent) => void;
+    onCopyClipMeta?: (tag: VideoTagEvent) => void;
+    onBatchPasteMeta?: (ids: string[]) => void;
+    onBatchAddToPlaylist?: (ids: string[]) => void;
+    onQuickExportClip?: (tag: VideoTagEvent) => void;
+    onBatchDeleteClips?: (ids: string[]) => void;
+    onToggleCollapse?: () => void;
     onChangeLead: (sec: number) => void;
     onChangeLag: (sec: number) => void;
   }
@@ -51,6 +95,10 @@
     leadTimeSeconds,
     lagTimeSeconds,
     selectedClipId,
+    selectedClipIds = [],
+    roster = [],
+    hasCopiedMeta = false,
+    isCollapsed = false,
     activeLoopClipId,
     periodKickoffs = [],
     useMatchClock = false,
@@ -59,10 +107,27 @@
     onQuickTagWhistle,
     onSeek,
     onSelectClip,
+    onSelectionChange,
     onEditClip,
+    onOpenTelestration,
     onTrimClip,
     onMoveClip,
     onReassignClipCategory,
+    onBatchChangeCategory,
+    onBatchToggleLabel,
+    onBatchAddCustomLabel,
+    onBatchTogglePlayer,
+    onBatchAddCustomPlayer,
+    onBatchSetTeamSide,
+    onBatchToggleFavorite,
+    onSplitClip,
+    onDuplicateClip,
+    onCopyClipMeta,
+    onBatchPasteMeta,
+    onBatchAddToPlaylist,
+    onQuickExportClip,
+    onBatchDeleteClips,
+    onToggleCollapse,
     onChangeLead,
     onChangeLag,
   }: Props = $props();
@@ -72,6 +137,43 @@
 
   let zoomLevel = $state<number>(1);
   let viewStart = $state<number>(0);
+  let onlyPopulatedLanes = $state(false);
+  let teamFilter = $state<'all' | 'home' | 'away'>('all');
+  let ctxMenu = $state<{ open: boolean; x: number; y: number; tagId: string | null }>({
+    open: false,
+    x: 0,
+    y: 0,
+    tagId: null,
+  });
+  let batchPopover = $state<'category' | 'labels' | 'players' | null>(null);
+  let batchCustomLabel = $state('');
+  let batchCustomPlayer = $state('');
+
+  const effectiveSelectedIds = $derived(
+    selectedClipIds && selectedClipIds.length > 0
+      ? selectedClipIds
+      : selectedClipId
+        ? [selectedClipId]
+        : []
+  );
+
+  const ctxMenuTag = $derived(
+    ctxMenu.tagId ? (tags.find((t) => t.id === ctxMenu.tagId) ?? null) : null
+  );
+
+  const targetIdsForCtx = $derived(
+    ctxMenu.tagId && effectiveSelectedIds.includes(ctxMenu.tagId)
+      ? effectiveSelectedIds
+      : ctxMenu.tagId
+        ? [ctxMenu.tagId]
+        : []
+  );
+
+  $effect(() => {
+    if (effectiveSelectedIds.length <= 1) {
+      batchPopover = null;
+    }
+  });
 
   const windowDur = $derived(safeDuration / zoomLevel);
   const viewEnd = $derived(Math.min(safeDuration, viewStart + windowDur));
@@ -189,8 +291,11 @@
       map.get(rec.name)!.live.push(rec);
     }
 
-    // Completed clips (including custom / imported tags)
+    // Completed clips (including custom / imported tags, filtered by teamFilter)
     for (const t of tags) {
+      const isAway = t.teamSide === 'away' || t.playerLabel === 'Tim Lawan';
+      if (teamFilter === 'home' && isAway) continue;
+      if (teamFilter === 'away' && !isAway) continue;
       if (!map.has(t.category)) {
         map.set(t.category, {
           id: `extra-${t.category}`,
@@ -204,8 +309,55 @@
       map.get(t.category)!.tags.push(t);
     }
 
-    return Array.from(map.values());
+    const list = Array.from(map.values());
+    return onlyPopulatedLanes
+      ? list.filter((l) => l.tags.length > 0 || l.live.length > 0)
+      : list;
   });
+
+  function handleClipClick(e: MouseEvent, tag: VideoTagEvent) {
+    e.stopPropagation();
+    if (suppressNextClick) return;
+    if (e.ctrlKey || e.metaKey) {
+      const exists = effectiveSelectedIds.includes(tag.id);
+      const nextIds = exists
+        ? effectiveSelectedIds.filter((id) => id !== tag.id)
+        : [...effectiveSelectedIds, tag.id];
+      const nextPrimary = nextIds[nextIds.length - 1] ?? null;
+      onSelectionChange?.(nextIds, nextPrimary);
+      return;
+    }
+    if (e.shiftKey && selectedClipId) {
+      const ordered = [...tags].sort((a, b) => a.startTime - b.startTime);
+      const i1 = ordered.findIndex((t) => t.id === selectedClipId);
+      const i2 = ordered.findIndex((t) => t.id === tag.id);
+      if (i1 !== -1 && i2 !== -1) {
+        const [lo, hi] = i1 <= i2 ? [i1, i2] : [i2, i1];
+        const rangeIds = ordered.slice(lo, hi + 1).map((t) => t.id);
+        onSelectionChange?.(rangeIds, tag.id);
+        return;
+      }
+    }
+    onSelectionChange?.([tag.id], tag.id);
+    onSelectClip(tag);
+  }
+
+  function openClipContextMenu(e: MouseEvent, tag: VideoTagEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!effectiveSelectedIds.includes(tag.id)) {
+      onSelectionChange?.([tag.id], tag.id);
+    }
+    ctxMenu = {
+      open: true,
+      x: e.clientX,
+      y: e.clientY,
+      tagId: tag.id,
+    };
+  }
+
+  const boardCatButtons = $derived(board.buttons.filter((b) => b.kind === 'category'));
+  const boardDescButtons = $derived(board.buttons.filter((b) => b.kind === 'descriptor'));
 
   // Smart ruler ticks inside [viewStart, viewEnd]
   const rulerTicks = $derived.by<{ time: number; leftPct: number; label: string }[]>(() => {
@@ -436,17 +588,74 @@
   }
 </script>
 
-<div class="linimasa-shell" onwheel={handleTrackWheel}>
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="linimasa-shell" onwheel={handleTrackWheel} oncontextmenu={(e) => e.preventDefault()}>
   <!-- TOP HEADER STRIP (24px) -->
   <div class="linimasa-header">
     <div class="lh-left">
-      <span class="lh-title">Linimasa</span>
+      {#if onToggleCollapse}
+        <button
+          type="button"
+          class="lh-collapse-btn"
+          onclick={onToggleCollapse}
+          title={isCollapsed ? 'Tampilkan Linimasa' : 'Lipat Linimasa'}
+        >
+          {#if isCollapsed}
+            <ChevronUp size={12} />
+          {:else}
+            <ChevronDown size={12} />
+          {/if}
+          <span class="lh-title">Linimasa</span>
+        </button>
+      {:else}
+        <span class="lh-title">Linimasa</span>
+      {/if}
       <span class="lh-hint">
-        I & O / Alt+U buat klip · Seret tengah klip: geser / pindah baris · Seret tepi: pangkas
+        Klik kanan klip: Edit Tag/Label/Pemain · 2x Klik: Edit Lengkap · Ctrl+Klik: Pilih Banyak
       </span>
     </div>
 
     <div class="lh-right">
+      <div class="tl-team-group" title="Filter Tampilan Tim di Linimasa">
+        <button
+          type="button"
+          class="tl-micro-btn"
+          class:active={teamFilter === 'all'}
+          onclick={() => (teamFilter = 'all')}
+        >
+          Semua
+        </button>
+        <button
+          type="button"
+          class="tl-micro-btn"
+          class:active={teamFilter === 'home'}
+          onclick={() => (teamFilter = 'home')}
+        >
+          HOME
+        </button>
+        <button
+          type="button"
+          class="tl-micro-btn"
+          class:active={teamFilter === 'away'}
+          onclick={() => (teamFilter = 'away')}
+        >
+          AWAY
+        </button>
+      </div>
+
+      <button
+        type="button"
+        class="tl-micro-btn"
+        class:active={onlyPopulatedLanes}
+        onclick={() => (onlyPopulatedLanes = !onlyPopulatedLanes)}
+        title="Sembunyikan baris kategori yang masih 0 klip"
+      >
+        <Filter size={10} />
+        <span>Isi Saja</span>
+      </button>
+
+      <span class="lh-sep"></span>
+
       <div class="roll-group" title="Durasi mundur otomatis (Pre-Roll) saat tag 1-klik">
         <span class="roll-lbl">Pre:</span>
         <button type="button" class="roll-btn" onclick={() => onChangeLead(Math.max(0, leadTimeSeconds - 1))}>-1s</button>
@@ -500,8 +709,204 @@
     </div>
   </div>
 
-  <!-- MAIN SCROLLABLE MULTI-LANE VIEWPORT -->
-  <div class="linimasa-body">
+  {#if !isCollapsed}
+    <!-- FLOATING MULTI-SELECT BATCH BAR -->
+    {#if effectiveSelectedIds.length > 1}
+      <div class="batch-bar">
+        <span class="batch-count">{effectiveSelectedIds.length} Klip Terpilih</span>
+        <div class="batch-actions">
+          <button
+            type="button"
+            class="batch-btn active"
+            onclick={() => {
+              const first = tags.find((t) => t.id === effectiveSelectedIds[0]);
+              if (first) onEditClip(first);
+            }}
+            title="Buka Panel 3-Kolom (Tag | Label | Pemain) untuk seluruh klip terpilih"
+          >
+            <Layers size={11} />
+            <span>Edit Tag / Label / Pemain</span>
+          </button>
+          <button
+            type="button"
+            class="batch-btn"
+            class:active={batchPopover === 'category'}
+            onclick={() => (batchPopover = batchPopover === 'category' ? null : 'category')}
+          >
+            <Layers size={11} />
+            <span>Ganti Tag</span>
+          </button>
+          <button
+            type="button"
+            class="batch-btn"
+            class:active={batchPopover === 'labels'}
+            onclick={() => (batchPopover = batchPopover === 'labels' ? null : 'labels')}
+          >
+            <Tag size={11} />
+            <span>+ Label</span>
+          </button>
+          <button
+            type="button"
+            class="batch-btn"
+            class:active={batchPopover === 'players'}
+            onclick={() => (batchPopover = batchPopover === 'players' ? null : 'players')}
+          >
+            <Users size={11} />
+            <span>+ Pemain</span>
+          </button>
+          <button
+            type="button"
+            class="batch-btn"
+            onclick={() => onBatchSetTeamSide?.(effectiveSelectedIds, 'home')}
+          >
+            HOME
+          </button>
+          <button
+            type="button"
+            class="batch-btn"
+            onclick={() => onBatchSetTeamSide?.(effectiveSelectedIds, 'away')}
+          >
+            AWAY
+          </button>
+          {#if hasCopiedMeta}
+            <button
+              type="button"
+              class="batch-btn"
+              onclick={() => onBatchPasteMeta?.(effectiveSelectedIds)}
+            >
+              <Clipboard size={11} />
+              <span>Tempel Meta</span>
+            </button>
+          {/if}
+          <button
+            type="button"
+            class="batch-btn"
+            onclick={() => onBatchAddToPlaylist?.(effectiveSelectedIds)}
+          >
+            <ListPlus size={11} />
+            <span>Ke Playlist</span>
+          </button>
+          <button
+            type="button"
+            class="batch-btn danger"
+            onclick={() => onBatchDeleteClips?.(effectiveSelectedIds)}
+          >
+            <Trash2 size={11} />
+            <span>Hapus ({effectiveSelectedIds.length})</span>
+          </button>
+          <button
+            type="button"
+            class="batch-btn ghost"
+            onclick={() => onSelectionChange?.([], null)}
+            title="Batalkan pilihan banyak"
+          >
+            <X size={11} />
+          </button>
+        </div>
+
+        {#if batchPopover === 'category'}
+          <div class="batch-popover">
+            {#each boardCatButtons as cb (cb.id)}
+              <button
+                type="button"
+                class="bp-chip"
+                onclick={() => {
+                  onBatchChangeCategory?.(effectiveSelectedIds, cb.name, cb.color, cb.id);
+                  batchPopover = null;
+                }}
+              >
+                <span class="bp-dot" style="background-color: {cb.color};"></span>
+                <span>{cb.name}</span>
+              </button>
+            {/each}
+          </div>
+        {:else if batchPopover === 'labels'}
+          <div class="batch-popover">
+            {#each boardDescButtons as db (db.id)}
+              <button
+                type="button"
+                class="bp-chip"
+                onclick={() =>
+                  onBatchToggleLabel?.(effectiveSelectedIds, {
+                    id: db.id,
+                    name: db.name,
+                    color: db.color,
+                    group: db.group ?? null,
+                  })
+                }
+              >
+                <span class="bp-dot" style="background-color: {db.color};"></span>
+                <span>{db.name}</span>
+              </button>
+            {/each}
+            <div class="bp-add-inline">
+              <input
+                type="text"
+                bind:value={batchCustomLabel}
+                placeholder="+ Label baru..."
+                onkeydown={(e) => {
+                  if (e.key === 'Enter' && batchCustomLabel.trim()) {
+                    onBatchAddCustomLabel?.(effectiveSelectedIds, batchCustomLabel.trim());
+                    batchCustomLabel = '';
+                  }
+                }}
+              />
+              <button
+                type="button"
+                onclick={() => {
+                  if (batchCustomLabel.trim()) {
+                    onBatchAddCustomLabel?.(effectiveSelectedIds, batchCustomLabel.trim());
+                    batchCustomLabel = '';
+                  }
+                }}
+              >
+                <Plus size={11} />
+              </button>
+            </div>
+          </div>
+        {:else if batchPopover === 'players'}
+          <div class="batch-popover">
+            {#each roster as pName (pName)}
+              <button
+                type="button"
+                class="bp-chip"
+                onclick={() => onBatchTogglePlayer?.(effectiveSelectedIds, pName)}
+              >
+                <Check size={10} class="text-sky-400" />
+                <span>{pName}</span>
+              </button>
+            {/each}
+            <div class="bp-add-inline">
+              <input
+                type="text"
+                bind:value={batchCustomPlayer}
+                placeholder="+ Pemain (#14...)..."
+                onkeydown={(e) => {
+                  if (e.key === 'Enter' && batchCustomPlayer.trim()) {
+                    onBatchAddCustomPlayer?.(effectiveSelectedIds, batchCustomPlayer.trim());
+                    batchCustomPlayer = '';
+                  }
+                }}
+              />
+              <button
+                type="button"
+                onclick={() => {
+                  if (batchCustomPlayer.trim()) {
+                    onBatchAddCustomPlayer?.(effectiveSelectedIds, batchCustomPlayer.trim());
+                    batchCustomPlayer = '';
+                  }
+                }}
+              >
+                <Plus size={11} />
+              </button>
+            </div>
+          </div>
+        {/if}
+      </div>
+    {/if}
+
+    <!-- MAIN SCROLLABLE MULTI-LANE VIEWPORT -->
+    <div class="linimasa-body">
     <!-- TIME RULER ROW (STICKY TOP) -->
     <div class="ruler-row">
       <div class="ruler-corner" style="width: {HEADER_W}px;">
@@ -646,27 +1051,31 @@
                 {#if clampedE >= viewStart && clampedS <= viewEnd && effEnd >= viewStart && effStart <= viewEnd}
                   {@const lPct = ((clampedS - viewStart) / windowDur) * 100}
                   {@const wPct = Math.max(0.65, ((Math.max(clampedS + 0.25, clampedE) - clampedS) / windowDur) * 100)}
-                  {@const isSelected = activeLoopClipId === tag.id || selectedClipId === tag.id}
+                  {@const isSelected =
+                    activeLoopClipId === tag.id ||
+                    selectedClipId === tag.id ||
+                    effectiveSelectedIds.includes(tag.id)}
+                  {@const extraPlayers = Math.max(0, (tag.playersInvolved?.length ?? 1) - 1)}
+                  {@const labelNames = tag.labels?.map((l) => l.name).join(', ') || ''}
+                  {@const playerText = tag.playersInvolved?.length ? tag.playersInvolved.join(', ') : (tag.playerLabel || '-')}
                   <!-- svelte-ignore a11y_click_events_have_key_events -->
                   <div
                     class="clip-block"
                     class:selected={isSelected}
+                    class:multi-selected={effectiveSelectedIds.length > 1 && effectiveSelectedIds.includes(tag.id)}
                     class:trimming={isTrimming}
                     class:dragging-clip={isDragging}
                     style="left: {lPct}%; width: {wPct}%; background-color: {tag.color || lane.color};"
                     onpointerdown={(e) => startClipDrag(e, tag, e.currentTarget.parentElement!)}
-                    onclick={(e) => {
-                      e.stopPropagation();
-                      if (suppressNextClick) return;
-                      onSelectClip(tag);
-                    }}
+                    onclick={(e) => handleClipClick(e, tag)}
+                    oncontextmenu={(e) => openClipContextMenu(e, tag)}
                     ondblclick={(e) => {
                       e.stopPropagation();
                       onEditClip(tag);
                     }}
                     role="button"
                     tabindex="0"
-                    title="{tag.title} ({formatPreciseTime(effStart)} - {formatPreciseTime(effEnd)}) · Seret tengah: geser/pindah baris · 2x Klik: Edit · Seret tepi: Pangkas"
+                    title="{tag.title} ({formatPreciseTime(effStart)} - {formatPreciseTime(effEnd)})&#10;Pemain: {playerText}{labelNames ? ` | Label: ${labelNames}` : ''}&#10;Klik kanan: Menu Edit · 2x Klik: Edit Lengkap · Ctrl+Klik: Pilih Banyak"
                   >
                     <div
                       class="trim-handle trim-handle-l"
@@ -682,7 +1091,19 @@
                       {:else if isDragging}
                         {formatPreciseTime(effStart)}{dragHoverLane && dragHoverLane.category !== dragOriginalCategory ? ` → ${dragHoverLane.category}` : ''}
                       {:else}
-                        {tag.playerLabel || tag.category}
+                        {#if tag.favorite}<span class="clip-fav-star">★</span>{/if}
+                        {#if tag.teamSide === 'away'}<span class="clip-opp-tag">OPP</span>{/if}
+                        <span class="clip-main-txt">{tag.playerLabel || tag.category}{extraPlayers > 0 ? ` +${extraPlayers}` : ''}</span>
+                        {#if tag.labels && tag.labels.length > 0}
+                          <span class="clip-lbl-dots">
+                            {#each tag.labels.slice(0, 3) as lbl}
+                              <span class="clip-lbl-dot" style="background-color: {lbl.color || '#ffffff'};" title={lbl.name}></span>
+                            {/each}
+                          </span>
+                        {/if}
+                        {#if tag.drawings && tag.drawings.length > 0}
+                          <span class="clip-draw-mark" title="Memiliki Telestrasi">✎</span>
+                        {/if}
                       {/if}
                     </span>
                     <div
@@ -720,6 +1141,29 @@
       </div>
     </div>
   </div>
+  {/if}
+
+  <TimelineClipContextMenu
+    open={ctxMenu.open}
+    x={ctxMenu.x}
+    y={ctxMenu.y}
+    tag={ctxMenuTag}
+    selectedCount={targetIdsForCtx.length}
+    {currentTime}
+    {hasCopiedMeta}
+    onClose={() => (ctxMenu = { ...ctxMenu, open: false })}
+    onEditFull={(t) => onEditClip(t)}
+    onOpenTelestration={(t) => onOpenTelestration?.(t)}
+    onSetTeamSide={(side) => onBatchSetTeamSide?.(targetIdsForCtx, side)}
+    onToggleFavorite={() => onBatchToggleFavorite?.(targetIdsForCtx)}
+    onSplitAtPlayhead={(t) => onSplitClip?.(t)}
+    onDuplicate={(t) => onDuplicateClip?.(t)}
+    onCopyMeta={(t) => onCopyClipMeta?.(t)}
+    onPasteMeta={() => onBatchPasteMeta?.(targetIdsForCtx)}
+    onAddToPlaylist={() => onBatchAddToPlaylist?.(targetIdsForCtx)}
+    onQuickExport={(t) => onQuickExportClip?.(t)}
+    onDelete={() => onBatchDeleteClips?.(targetIdsForCtx)}
+  />
 </div>
 
 <style>
@@ -761,6 +1205,184 @@
     color: #f0f6fc;
     letter-spacing: 0.03em;
     flex-shrink: 0;
+  }
+
+  .lh-collapse-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: transparent;
+    border: none;
+    color: #f0f6fc;
+    cursor: pointer;
+    padding: 0 2px;
+    flex-shrink: 0;
+  }
+
+  .tl-team-group {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .tl-micro-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    background: #060b14;
+    border: 1px solid #1a355d;
+    color: #94a3b8;
+    font-size: 8.5px;
+    font-weight: 700;
+    padding: 1px 5px;
+    border-radius: 3px;
+    cursor: pointer;
+  }
+
+  .tl-micro-btn:hover {
+    border-color: #38bdf8;
+    color: #ffffff;
+  }
+
+  .tl-micro-btn.active {
+    background: #0284c7;
+    border-color: #38bdf8;
+    color: #ffffff;
+  }
+
+  .batch-bar {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 3px 10px;
+    background: rgba(14, 165, 233, 0.14);
+    border-bottom: 1px solid rgba(56, 189, 248, 0.45);
+    flex-shrink: 0;
+    z-index: 30;
+  }
+
+  .batch-count {
+    font-size: 10px;
+    font-weight: 800;
+    color: #7dd3fc;
+    white-space: nowrap;
+  }
+
+  .batch-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: wrap;
+  }
+
+  .batch-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: #0b182e;
+    border: 1px solid #1e3b68;
+    color: #e2e8f0;
+    font-size: 9.5px;
+    font-weight: 700;
+    padding: 2px 7px;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+
+  .batch-btn:hover,
+  .batch-btn.active {
+    border-color: #38bdf8;
+    background: #142b50;
+    color: #ffffff;
+  }
+
+  .batch-btn.danger {
+    color: #fca5a5;
+    border-color: rgba(239, 68, 68, 0.45);
+  }
+
+  .batch-btn.danger:hover {
+    background: rgba(239, 68, 68, 0.2);
+    border-color: #ef4444;
+    color: #ffffff;
+  }
+
+  .batch-btn.ghost {
+    padding: 2px 5px;
+  }
+
+  .batch-popover {
+    position: absolute;
+    top: 100%;
+    left: 10px;
+    right: 10px;
+    background: #081224;
+    border: 1px solid #1e3b68;
+    border-radius: 7px;
+    box-shadow: 0 12px 28px rgba(2, 6, 23, 0.85);
+    padding: 7px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    max-height: 140px;
+    overflow-y: auto;
+    z-index: 40;
+  }
+
+  .bp-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: #0d1e38;
+    border: 1px solid #1e3b68;
+    color: #e2e8f0;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 999px;
+    cursor: pointer;
+  }
+
+  .bp-chip:hover {
+    border-color: #38bdf8;
+    background: #142b50;
+  }
+
+  .bp-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+  }
+
+  .bp-add-inline {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    background: #050b16;
+    border: 1px solid #1e3b68;
+    border-radius: 999px;
+    padding: 2px 6px;
+  }
+
+  .bp-add-inline input {
+    background: transparent;
+    border: none;
+    color: #f8fafc;
+    font-size: 10px;
+    width: 120px;
+    outline: none;
+  }
+
+  .bp-add-inline button {
+    background: #0284c7;
+    border: none;
+    color: #ffffff;
+    border-radius: 999px;
+    padding: 2px 5px;
+    display: inline-flex;
+    cursor: pointer;
   }
 
   .lh-hint {
@@ -1161,6 +1783,11 @@
     z-index: 15;
   }
 
+  .clip-block.multi-selected {
+    outline: 1.5px solid #f59e0b;
+    box-shadow: 0 0 8px rgba(245, 158, 11, 0.5);
+  }
+
   .clip-block.dragging-clip {
     cursor: grabbing;
     opacity: 0.92;
@@ -1174,6 +1801,10 @@
   }
 
   .clip-block-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    min-width: 0;
     font-size: 8px;
     font-weight: 800;
     color: #ffffff;
@@ -1182,6 +1813,48 @@
     text-overflow: ellipsis;
     text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85);
     pointer-events: none;
+  }
+
+  .clip-main-txt {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .clip-fav-star {
+    color: #fde047;
+    font-size: 9px;
+    line-height: 1;
+    flex-shrink: 0;
+  }
+
+  .clip-opp-tag {
+    font-size: 7px;
+    font-weight: 900;
+    background: rgba(0, 0, 0, 0.55);
+    color: #fcd34d;
+    padding: 0 3px;
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+
+  .clip-lbl-dots {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    flex-shrink: 0;
+  }
+
+  .clip-lbl-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    border: 0.5px solid rgba(0, 0, 0, 0.6);
+  }
+
+  .clip-draw-mark {
+    font-size: 8px;
+    color: #e0f2fe;
+    flex-shrink: 0;
   }
 
   .trim-handle {

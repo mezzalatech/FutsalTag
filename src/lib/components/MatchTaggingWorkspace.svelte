@@ -1197,6 +1197,10 @@
       if (e.key === "Escape") {
         if (showKickoffMenu) {
           showKickoffMenu = false;
+        } else if (activeLoopClip || activeClipQueue.length > 0) {
+          e.preventDefault();
+          stopClipLoop();
+          showVideoOsd("▶", "Lanjut", "Loop klip dimatikan", "emerald");
         } else if (Object.keys(activeContinuousTags).length > 0) {
           e.preventDefault();
           stopAllContinuousTags();
@@ -1490,6 +1494,8 @@
   }
 
   function applyPlaybackSpeed(nextRate: number, autoPlay: boolean = true) {
+    activeLoopClip = null;
+    activeClipQueue = [];
     reverseRate = 0;
     playbackRate = nextRate;
     if (videoEl) {
@@ -1583,6 +1589,8 @@
   }
 
   function handleSpeedResetAndPause() {
+    activeLoopClip = null;
+    activeClipQueue = [];
     reverseRate = 0;
     if (videoEl) {
       videoEl.pause();
@@ -1609,6 +1617,8 @@
   function togglePlay() {
     if (projectStore.liveCaptureActive) return;
     hasRestoredInitialTime = true;
+    activeLoopClip = null;
+    activeClipQueue = [];
     if (reverseRate > 0) {
       reverseRate = 0;
       isPlaying = false;
@@ -1906,6 +1916,8 @@
 
   function stepFrame(step: number) {
     reverseRate = 0;
+    activeLoopClip = null;
+    activeClipQueue = [];
     const fps = 25;
     if (ytPlayer && ytReady) {
       ytPlayer.pauseVideo?.();
@@ -2184,6 +2196,8 @@
   }
 
   function handleCategoryPress(btn: TaggingButton) {
+    activeLoopClip = null;
+    activeClipQueue = [];
     if (btn.continuous) {
       if (activeContinuousTags[btn.id]) {
         finalizeContinuousTag(btn.id);
@@ -2491,6 +2505,7 @@
 
   function playClipLoop(tag: VideoTagEvent) {
     if (!videoEl && !(ytPlayer && ytReady)) return;
+    reverseRate = 0;
     activeClipQueue = [];
     activeLoopClip = tag;
     if (videoEl) {
@@ -2505,6 +2520,7 @@
 
   function stopClipLoop() {
     activeLoopClip = null;
+    activeClipQueue = [];
   }
 
   function playSequentialClips(clips: VideoTagEvent[], title?: string) {
@@ -3598,6 +3614,19 @@
                 <span class="play-status-pill" class:running={isPlaying || reverseRate > 0}>
                   ● {reverseRate > 0 ? `◀ -${reverseRate}x` : isPlaying ? "jalan" : "jeda"}
                 </span>
+                {#if activeLoopClip}
+                  <button
+                    type="button"
+                    class="loop-active-pill"
+                    onclick={() => {
+                      stopClipLoop();
+                      showVideoOsd("▶", "Lanjut", "Loop klip dimatikan", "emerald");
+                    }}
+                    title="Sedang mengulang klip ini — klik untuk lanjut video penuh (atau tekan Spasi / Esc)"
+                  >
+                    🔁 {activeLoopClip.category} ×
+                  </button>
+                {/if}
               </div>
 
               <div class="mtb-scrubber">
@@ -4107,9 +4136,12 @@
                               class:playing={activeLoopClip?.id === tag.id}
                               onclick={(e) => {
                                 e.stopPropagation();
-                                if (activeLoopClip?.id === tag.id)
+                                if (activeLoopClip?.id === tag.id) {
                                   stopClipLoop();
-                                else playClipLoop(tag);
+                                  showVideoOsd("▶", "Lanjut", "Loop klip dimatikan", "emerald");
+                                } else {
+                                  playClipLoop(tag);
+                                }
                               }}
                               title="Putar / Loop Klip"
                             >
@@ -4343,7 +4375,9 @@
             onSelectClip={(tag) => {
               selectedClipId = tag.id;
               selectedClipIds = [tag.id];
-              playClipLoop(tag);
+              activeLoopClip = null;
+              activeClipQueue = [];
+              seekTo(tag.startTime);
             }}
             onSelectionChange={(ids, primaryId) => {
               selectedClipIds = ids;
@@ -5808,6 +5842,26 @@
     background: rgba(16, 185, 129, 0.18);
     border-color: #10b981;
     color: #34d399;
+  }
+
+  .loop-active-pill {
+    font-size: 9px;
+    font-weight: 800;
+    padding: 1px 7px;
+    border-radius: 999px;
+    background: rgba(245, 158, 11, 0.2);
+    border: 1px solid #f59e0b;
+    color: #fcd34d;
+    white-space: nowrap;
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+    transition: background 0.12s ease;
+  }
+
+  .loop-active-pill:hover {
+    background: rgba(245, 158, 11, 0.35);
   }
 
   .mtb-scrubber {

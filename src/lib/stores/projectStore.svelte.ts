@@ -777,6 +777,15 @@ class ProjectStore {
     this.stage = 'tagging';
   }
 
+  startLiveStopwatchSession(title: string, kind: MatchKind = 'match', competition = '') {
+    this.loadVideo('', null, title || 'Live Tagging Pertandingan', 2400);
+    this.videoSrc = null;
+    this.videoFilePath = null;
+    this.videoMissing = false;
+    this.matchKind = kind;
+    this.competitionName = competition;
+  }
+
   // Load sample demo match with pre-tagged futsal events (with real courtCoord & passing links)
   loadSampleDemo() {
     this.currentProjectFilePath = null;

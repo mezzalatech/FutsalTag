@@ -1417,7 +1417,11 @@
   }
 
   function togglePlay() {
-    if (!videoEl) return;
+    if (!videoEl) {
+      isPlaying = !isPlaying;
+      syncSecondaryAngle(true);
+      return;
+    }
     if (isPlaying) {
       videoEl.pause();
     } else {
@@ -1427,6 +1431,29 @@
     isPlaying = !isPlaying;
     syncSecondaryAngle(true);
   }
+
+  // Live Stopwatch Ticker when running without a video file
+  $effect(() => {
+    if (!isPlaying || projectStore.videoSrc) return;
+    let lastMs = performance.now();
+    let rafId = 0;
+    const step = (now: number) => {
+      const dt = Math.min(0.25, Math.max(0, (now - lastMs) / 1000));
+      lastMs = now;
+      currentTime += dt * playbackRate;
+      projectStore.currentTime = currentTime;
+      if (currentTime >= duration - 5) {
+        duration = Math.max(duration, Math.ceil(currentTime + 600));
+        projectStore.duration = duration;
+      }
+      if (activeLoopClip && currentTime >= activeLoopClip.endTime) {
+        currentTime = activeLoopClip.startTime;
+      }
+      rafId = requestAnimationFrame(step);
+    };
+    rafId = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(rafId);
+  });
 
   function handleTimeUpdate() {
     if (!videoEl) return;
@@ -2571,21 +2598,46 @@
                   onclick={togglePlay}
                 ></video>
               {:else}
-                <div class="empty-video-placeholder">
-                  <div class="futsal-glow-orb">⚽</div>
-                  <h3 class="placeholder-title">
-                    Layar Video Pertandingan Futsal
-                  </h3>
+                <div class="empty-video-placeholder stopwatch-stage">
+                  <div class="sw-header-pill">
+                    <Timer size={13} class="text-sky-400" />
+                    <span>MODE STOPWATCH LIVE (TANPA VIDEO)</span>
+                  </div>
+                  <div class="sw-clock-readout">{formatTime(currentTime)}</div>
+                  {#if projectStore.periodKickoffs.length > 0}
+                    <div class="sw-match-clock">
+                      Match Clock: <strong>{projectStore.formatMatchClock(currentTime)}</strong>
+                    </div>
+                  {/if}
                   <p class="placeholder-desc">
-                    Silakan buka video di Hub Proyek atau gunakan sampel demo
-                    untuk memotong momen dengan akurasi sub-detik.
+                    Tekan <strong>Spasi</strong> atau tombol di bawah untuk menjalankan timer saat pertandingan berlangsung, lalu tautkan file MP4 rekaman setelah laga selesai.
                   </p>
-                  <button
-                    class="btn-sample-inline"
-                    onclick={() => projectStore.loadSampleDemo()}
-                  >
-                    Muat Video Sampel Demo
-                  </button>
+                  <div class="sw-actions-row">
+                    <button type="button" class="btn-sample-inline" onclick={togglePlay}>
+                      {#if isPlaying}
+                        <Pause size={13} />
+                        <span>Jeda Stopwatch (Spasi)</span>
+                      {:else}
+                        <Play size={13} />
+                        <span>Mulai Stopwatch (Spasi)</span>
+                      {/if}
+                    </button>
+                    <button type="button" class="btn-sw-sec" onclick={() => seekTo(0)} title="Reset stopwatch ke 00:00">
+                      <RotateCcw size={12} />
+                      <span>Reset 00:00</span>
+                    </button>
+                    {#if isTauriDesktop()}
+                      <button type="button" class="btn-sw-sec relink" onclick={() => projectStore.relinkVideoFile()} title="Pasangkan video rekaman ke semua tag & timeline ini">
+                        <Link2 size={12} />
+                        <span>Tautkan Video MP4</span>
+                      </button>
+                    {/if}
+                    {#if projectStore.tags.length === 0}
+                      <button type="button" class="btn-sw-sec" onclick={() => projectStore.loadSampleDemo()}>
+                        <span>Sampel Demo</span>
+                      </button>
+                    {/if}
+                  </div>
                 </div>
               {/if}
 
@@ -6662,5 +6714,68 @@
   .clip-row.multi-selected {
     background: rgba(2, 132, 199, 0.14);
     border-color: rgba(56, 189, 248, 0.55);
+  }
+
+  .stopwatch-stage {
+    gap: 8px;
+  }
+
+  .sw-header-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    color: #7dd3fc;
+    background: rgba(14, 165, 233, 0.14);
+    border: 1px solid rgba(56, 189, 248, 0.35);
+    padding: 3px 10px;
+    border-radius: 999px;
+  }
+
+  .sw-clock-readout {
+    font-family: 'Fira Code', monospace;
+    font-size: clamp(28px, 4vw, 44px);
+    font-weight: 900;
+    color: #f8fafc;
+    letter-spacing: 0.04em;
+  }
+
+  .sw-match-clock {
+    font-size: 11px;
+    color: #34d399;
+  }
+
+  .sw-actions-row {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+  }
+
+  .btn-sw-sec {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: #0f172a;
+    border: 1px solid #334155;
+    color: #cbd5e1;
+    border-radius: 7px;
+    padding: 6px 11px;
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .btn-sw-sec:hover {
+    border-color: #38bdf8;
+    color: #ffffff;
+  }
+
+  .btn-sw-sec.relink {
+    border-color: #10b981;
+    color: #6ee7b7;
+    background: rgba(16, 185, 129, 0.14);
   }
 </style>

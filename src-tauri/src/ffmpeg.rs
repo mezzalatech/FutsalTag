@@ -642,6 +642,93 @@ pub fn concat_playlist_ffmpeg(
 }
 
 #[tauri::command]
+pub fn merge_source_videos_ffmpeg(
+    input_paths: Vec<String>,
+    output_path: String,
+) -> Result<String, String> {
+    if input_paths.is_empty() {
+        return Err("Daftar file video sumber kosong.".to_string());
+    }
+    for p in &input_paths {
+        if !Path::new(p).is_file() {
+            return Err(format!("File video tidak ditemukan: {}", p));
+        }
+    }
+    ensure_parent_dir(&output_path)?;
+
+    if input_paths.len() == 1 {
+        if input_paths[0] != output_path {
+            fs::copy(&input_paths[0], &output_path)
+                .map_err(|e| format!("Gagal menyalin file video: {}", e))?;
+        }
+        return Ok(output_path);
+    }
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let temp_list = std::env::temp_dir().join(format!("futsaltag_merge_src_{}.txt", now));
+    let mut cleanup = TempCleanup(vec![temp_list.clone()]);
+
+    {
+        let mut file = fs::File::create(&temp_list)
+            .map_err(|e| format!("Gagal membuat daftar penggabungan video: {}", e))?;
+        for p in &input_paths {
+            let escaped = p.replace('\\', "/").replace('\'', "'\\''");
+            writeln!(file, "file '{}'", escaped)
+                .map_err(|e| format!("Gagal menulis daftar penggabungan video: {}", e))?;
+        }
+    }
+
+    let list_str = temp_list.to_string_lossy().to_string();
+    let copy_args = vec![
+        "-y".into(),
+        "-f".into(),
+        "concat".into(),
+        "-safe".into(),
+        "0".into(),
+        "-i".into(),
+        list_str,
+        "-c".into(),
+        "copy".into(),
+        "-movflags".into(),
+        "+faststart".into(),
+        output_path.clone(),
+    ];
+
+    if run_ffmpeg(&copy_args).is_ok() {
+        return Ok(output_path);
+    }
+
+    // Fallback: normalize heterogeneous sources to first file's even resolution + 44.1kHz stereo AAC
+    let base_info = probe_video_info(&input_paths[0])?;
+    let base_w = (base_info.width / 2 * 2).max(320);
+    let base_h = (base_info.height / 2 * 2).max(240);
+    let mut norm_parts: Vec<String> = Vec::with_capacity(input_paths.len());
+
+    for (idx, p) in input_paths.iter().enumerate() {
+        let info = probe_video_info(p)?;
+        let part_path = std::env::temp_dir().join(format!("futsaltag_src_norm_{}_{}.mp4", now, idx));
+        cleanup.0.push(part_path.clone());
+        let part_str = part_path.to_string_lossy().to_string();
+        let args = build_norm_segment_args(
+            p,
+            &part_str,
+            0.0,
+            info.duration.max(0.2),
+            base_w,
+            base_h,
+            info.has_audio,
+        );
+        run_ffmpeg(&args)?;
+        norm_parts.push(part_str);
+    }
+
+    concat_playlist_ffmpeg(norm_parts, output_path, Some(false))
+}
+
+#[tauri::command]
 pub fn burn_telestration_clip_ffmpeg(
     input_path: String,
     output_path: String,
@@ -1841,5 +1928,53 @@ mod tests {
         assert!(fc.contains("boxblur=20:5"));
         assert!(fc.contains("crop=720:1280"));
         assert!(fc.contains("[vout]"));
+    }
+
+    #[test]
+    fn test_merge_source_videos_ffmpeg() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let p1 = std::env::temp_dir().join(format!("futsaltag_msrc1_{}.mp4", now));
+        let p2 = std::env::temp_dir().join(format!("futsaltag_msrc2_{}.mp4", now));
+        let merged = std::env::temp_dir().join(format!("futsaltag_msrc_out_{}.mp4", now));
+        let _cleanup = TempCleanup(vec![p1.clone(), p2.clone(), merged.clone()]);
+
+        for p in [&p1, &p2] {
+            let args = vec![
+                "-y".into(),
+                "-f".into(),
+                "lavfi".into(),
+                "-i".into(),
+                "color=c=blue:s=320x240:d=1.0:r=25".into(),
+                "-f".into(),
+                "lavfi".into(),
+                "-i".into(),
+                "anullsrc=r=44100:cl=stereo".into(),
+                "-t".into(),
+                "1.0".into(),
+                "-c:v".into(),
+                "libx264".into(),
+                "-pix_fmt".into(),
+                "yuv420p".into(),
+                "-c:a".into(),
+                "aac".into(),
+                p.to_string_lossy().to_string(),
+            ];
+            run_ffmpeg(&args).expect("generate sample video part failed");
+        }
+
+        merge_source_videos_ffmpeg(
+            vec![
+                p1.to_string_lossy().to_string(),
+                p2.to_string_lossy().to_string(),
+            ],
+            merged.to_string_lossy().to_string(),
+        )
+        .expect("merge_source_videos_ffmpeg failed");
+
+        let info = probe_video_info(&merged.to_string_lossy()).expect("probe merged source failed");
+        assert!(info.duration >= 1.85, "expected merged >= 1.85s, got {:.3}s", info.duration);
     }
 }

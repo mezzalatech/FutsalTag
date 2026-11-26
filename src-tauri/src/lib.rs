@@ -269,6 +269,7 @@ pub fn run() {
             delete_project_file,
             ffmpeg::render_video_clip_ffmpeg,
             ffmpeg::concat_playlist_ffmpeg,
+            ffmpeg::merge_source_videos_ffmpeg,
             ffmpeg::burn_telestration_clip_ffmpeg,
             ffmpeg::burn_animated_telestration_clip_ffmpeg,
             ffmpeg::save_overlay_frame_png,

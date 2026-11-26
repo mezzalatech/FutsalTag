@@ -1,7 +1,10 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
-  import { convertFileSrc, invoke } from '@tauri-apps/api/core';
-  import { projectStore, isTauriDesktop } from '$lib/stores/projectStore.svelte';
+  import { onMount, onDestroy } from "svelte";
+  import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+  import {
+    projectStore,
+    isTauriDesktop,
+  } from "$lib/stores/projectStore.svelte";
   import {
     Video,
     Sparkles,
@@ -22,7 +25,7 @@
     Copy,
     Trash2,
     RefreshCw,
-  } from 'lucide-svelte';
+  } from "lucide-svelte";
 
   interface Props {
     onOpenTeamDatabase?: () => void;
@@ -31,36 +34,40 @@
 
   let { onOpenTeamDatabase, onOpenSeasonAnalytics }: Props = $props();
 
-  let homeTeam = $state('Tim Kami (Futsal Pro)');
-  let awayTeam = $state('Tim Lawan');
-  let tournamentName = $state('Liga Futsal Profesional 2026');
-  let matchHalf = $state<'Babak 1' | 'Babak 2' | 'Full Time'>('Babak 1');
-  let matchKind = $state<'match' | 'training'>('match');
-  let libSearch = $state('');
-  let libKind = $state<'all' | 'match' | 'training'>('all');
-  let libStatus = $state<'all' | 'analysed' | 'empty'>('all');
+  let homeTeam = $state("Tim Kami (Futsal Pro)");
+  let awayTeam = $state("Tim Lawan");
+  let tournamentName = $state("Liga Futsal Profesional 2026");
+  let matchHalf = $state<"Babak 1" | "Babak 2" | "Full Time">("Babak 1");
+  let matchKind = $state<"match" | "training">("match");
+  let libSearch = $state("");
+  let libKind = $state<"all" | "match" | "training">("all");
+  let libStatus = $state<"all" | "analysed" | "empty">("all");
 
   const filteredLibrary = $derived.by(() => {
     const q = libSearch.trim().toLowerCase();
     return projectStore.libraryMatches.filter((m) => {
-      if (libKind !== 'all' && (m.matchKind ?? 'match') !== libKind) return false;
-      if (libStatus === 'analysed' && m.tags.length === 0) return false;
-      if (libStatus === 'empty' && m.tags.length > 0) return false;
+      if (libKind !== "all" && (m.matchKind ?? "match") !== libKind)
+        return false;
+      if (libStatus === "analysed" && m.tags.length === 0) return false;
+      if (libStatus === "empty" && m.tags.length > 0) return false;
       if (q) {
-        const hay = `${m.title} ${m.competition || ''} ${m.matchDate || ''}`.toLowerCase();
+        const hay =
+          `${m.title} ${m.competition || ""} ${m.matchDate || ""}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
     });
   });
-  let homeColor = $state('#0284c7');
-  let awayColor = $state('#ef4444');
-  let selectedHomeClubId = $state<string>('');
-  let selectedAwayClubId = $state<string>('');
+  let homeColor = $state("#0284c7");
+  let awayColor = $state("#ef4444");
+  let selectedHomeClubId = $state<string>("");
+  let selectedAwayClubId = $state<string>("");
   let isDragging = $state(false);
   let fullVideoInputEl: HTMLInputElement | undefined = $state();
   let projectFileInputEl: HTMLInputElement | undefined = $state();
   let quickVideoInputEl: HTMLInputElement | undefined = $state();
+  let isMergingVideos = $state(false);
+  let mergeStatusMsg = $state<string | null>(null);
 
   let unlistenTauriDrop: (() => void) | null = null;
 
@@ -71,45 +78,43 @@
     if (isTauriDesktop()) {
       projectStore.scanMatchLibrary();
       try {
-        const { getCurrentWebview } = await import('@tauri-apps/api/webview');
-        unlistenTauriDrop = await getCurrentWebview().onDragDropEvent(async (event) => {
-          if (event.payload.type === 'enter' || event.payload.type === 'over') {
-            isDragging = true;
-          } else if (event.payload.type === 'leave') {
-            isDragging = false;
-          } else if (event.payload.type === 'drop') {
-            isDragging = false;
-            const droppedPath = event.payload.paths?.[0];
-            if (!droppedPath) return;
+        const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+        unlistenTauriDrop = await getCurrentWebview().onDragDropEvent(
+          async (event) => {
+            if (
+              event.payload.type === "enter" ||
+              event.payload.type === "over"
+            ) {
+              isDragging = true;
+            } else if (event.payload.type === "leave") {
+              isDragging = false;
+            } else if (event.payload.type === "drop") {
+              isDragging = false;
+              const droppedPaths = event.payload.paths ?? [];
+              const droppedPath = droppedPaths[0];
+              if (!droppedPath) return;
 
-            if (!projectStore.confirmDiscardIfDirty('membuka berkas baru')) return;
+              if (!projectStore.confirmDiscardIfDirty("membuka berkas baru"))
+                return;
 
-            if (/\.(futsal|json)$/i.test(droppedPath)) {
-              try {
-                await projectStore.openProjectFromPath(droppedPath);
-              } catch (err: any) {
-                alert(`Gagal membuka berkas proyek: ${err?.message || err}`);
+              if (/\.(futsal|json)$/i.test(droppedPath)) {
+                try {
+                  await projectStore.openProjectFromPath(droppedPath);
+                } catch (err: any) {
+                  alert(`Gagal membuka berkas proyek: ${err?.message || err}`);
+                }
+                return;
               }
-              return;
-            }
 
-            if (/\.(mp4|mov|mkv|webm|avi|m4v)$/i.test(droppedPath)) {
-              const assetUrl = convertFileSrc(droppedPath);
-              projectStore.loadVideo(
-                assetUrl,
-                droppedPath,
-                `${homeTeam} vs ${awayTeam} (${matchHalf})`,
-                180
+              const videoDrops = droppedPaths.filter((p) =>
+                /\.(mp4|mov|mkv|webm|avi|m4v)$/i.test(p),
               );
-              projectStore.matchKind = matchKind;
-              projectStore.competitionName = tournamentName.trim();
-              if (selectedHomeClubId || selectedAwayClubId) {
-                projectStore.applyClubsToMatchRoster(selectedHomeClubId || null, selectedAwayClubId || null);
+              if (videoDrops.length > 0) {
+                await openMergedOrSingleVideos(videoDrops);
               }
-              projectStore.setStage('tagging');
             }
-          }
-        });
+          },
+        );
       } catch {
         // Fallback ke HTML5 drag-drop biasa
       }
@@ -141,10 +146,82 @@
     }
   }
 
-  const TEAM_COLORS = ['#0284c7', '#ef4444', '#10b981', '#f59e0b', '#ffffff', '#1e293b'];
+  const TEAM_COLORS = [
+    "#0284c7",
+    "#ef4444",
+    "#10b981",
+    "#f59e0b",
+    "#ffffff",
+    "#1e293b",
+  ];
+
+  async function openMergedOrSingleVideos(paths: string[]) {
+    if (paths.length === 0) return;
+    let finalPath = paths[0];
+    if (paths.length >= 2) {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const firstDir = paths[0].replace(/[\\/][^\\/]+$/, "");
+      const safeName = `${homeTeam}_vs_${awayTeam}_merged`
+        .replace(/[^a-zA-Z0-9_-]/g, "_")
+        .toLowerCase();
+      const targetOut = await save({
+        title: `Simpan Hasil Gabung ${paths.length} Bagian Video`,
+        defaultPath: firstDir
+          ? `${firstDir}\\${safeName}.mp4`
+          : `${safeName}.mp4`,
+        filters: [{ name: "MP4 Video", extensions: ["mp4"] }],
+      });
+      if (!targetOut) return;
+
+      isMergingVideos = true;
+      mergeStatusMsg = `Menggabungkan ${paths.length} file video menjadi 1 pertandingan utuh...`;
+      try {
+        finalPath = await invoke<string>("merge_source_videos_ffmpeg", {
+          inputPaths: paths,
+          outputPath: targetOut,
+        });
+      } finally {
+        isMergingVideos = false;
+        mergeStatusMsg = null;
+      }
+    }
+
+    const assetUrl = convertFileSrc(finalPath);
+    projectStore.loadVideo(
+      assetUrl,
+      finalPath,
+      `${homeTeam} vs ${awayTeam} (${matchHalf})`,
+      180,
+    );
+    projectStore.matchKind = matchKind;
+    projectStore.competitionName = tournamentName.trim();
+    if (selectedHomeClubId || selectedAwayClubId) {
+      projectStore.applyClubsToMatchRoster(
+        selectedHomeClubId || null,
+        selectedAwayClubId || null,
+      );
+    }
+    projectStore.setStage("tagging");
+  }
+
+  function handleStartLiveStopwatch() {
+    if (!projectStore.confirmDiscardIfDirty("memulai tagging live stopwatch"))
+      return;
+    projectStore.startLiveStopwatchSession(
+      `${homeTeam} vs ${awayTeam} (${matchHalf})`,
+      matchKind,
+      tournamentName.trim(),
+    );
+    if (selectedHomeClubId || selectedAwayClubId) {
+      projectStore.applyClubsToMatchRoster(
+        selectedHomeClubId || null,
+        selectedAwayClubId || null,
+      );
+    }
+  }
 
   async function handleTauriVideoClick(quickTelestrate = false) {
-    if (!projectStore.confirmDiscardIfDirty('membuka video baru')) return;
+    if (!projectStore.confirmDiscardIfDirty("membuka video baru")) return;
     if (!isTauriDesktop()) {
       if (quickTelestrate) {
         quickVideoInputEl?.click();
@@ -154,25 +231,41 @@
       return;
     }
     try {
-      const { open } = await import('@tauri-apps/plugin-dialog');
+      const { open } = await import("@tauri-apps/plugin-dialog");
       const selected = await open({
-        title: quickTelestrate ? 'Pilih Klip Video untuk Telestrasi' : 'Pilih Video Pertandingan Futsal',
-        multiple: false,
-        filters: [{ name: 'Video Files', extensions: ['mp4', 'mov', 'mkv', 'webm', 'avi', 'm4v'] }],
+        title: quickTelestrate
+          ? "Pilih Klip Video untuk Telestrasi"
+          : "Pilih Video Pertandingan (Bisa >1 File untuk Auto-Gabung)",
+        multiple: !quickTelestrate,
+        filters: [
+          {
+            name: "Video Files",
+            extensions: ["mp4", "mov", "mkv", "webm", "avi", "m4v"],
+          },
+        ],
       });
-      if (!selected || typeof selected !== 'string') return;
-      const assetUrl = convertFileSrc(selected);
-      const fileName = selected.split(/[\\/]/).pop() || selected;
+      if (!selected) return;
+      const paths = Array.isArray(selected) ? selected : [selected];
+      if (paths.length === 0) return;
+
       if (quickTelestrate) {
-        projectStore.loadVideo(assetUrl, selected, `Klip Telestrasi: ${fileName}`, 30);
+        const first = paths[0];
+        const assetUrl = convertFileSrc(first);
+        const fileName = first.split(/[\\/]/).pop() || first;
+        projectStore.loadVideo(
+          assetUrl,
+          first,
+          `Klip Telestrasi: ${fileName}`,
+          30,
+        );
         const quickTag = {
           id: `quick-clip-${Date.now()}`,
-          title: `Telestrasi: ${fileName.replace(/\.[^/.]+$/, '')}`,
-          category: 'Transition Attack' as const,
+          title: `Telestrasi: ${fileName.replace(/\.[^/.]+$/, "")}`,
+          category: "Transition Attack" as const,
           startTime: 0,
           endTime: 30,
-          color: '#38bdf8',
-          playerLabel: '#9 Pivot',
+          color: "#38bdf8",
+          playerLabel: "#9 Pivot",
           pauseDuration: 3.0,
           freezeTimestamp: 15.0,
           drawings: [],
@@ -180,26 +273,16 @@
         projectStore.addTag(quickTag);
         projectStore.openClipInTelestrator(quickTag);
       } else {
-        projectStore.loadVideo(
-          assetUrl,
-          selected,
-          `${homeTeam} vs ${awayTeam} (${matchHalf})`,
-          180
-        );
-        projectStore.matchKind = matchKind;
-        projectStore.competitionName = tournamentName.trim();
-        if (selectedHomeClubId || selectedAwayClubId) {
-          projectStore.applyClubsToMatchRoster(selectedHomeClubId || null, selectedAwayClubId || null);
-        }
-        projectStore.setStage('tagging');
+        await openMergedOrSingleVideos(paths);
       }
     } catch (err: any) {
-      alert(`Gagal membuka video: ${err?.message || err}`);
+      alert(`Gagal membuka / menggabungkan video: ${err?.message || err}`);
     }
   }
 
   async function handleTauriProjectOpenClick() {
-    if (!projectStore.confirmDiscardIfDirty('membuka berkas proyek lain')) return;
+    if (!projectStore.confirmDiscardIfDirty("membuka berkas proyek lain"))
+      return;
     if (!isTauriDesktop()) {
       projectFileInputEl?.click();
       return;
@@ -222,26 +305,33 @@
     e.preventDefault();
     isDragging = false;
     if (isTauriDesktop()) return;
-    if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+    if (
+      e.dataTransfer &&
+      e.dataTransfer.files &&
+      e.dataTransfer.files.length > 0
+    ) {
       processSelectedFile(e.dataTransfer.files[0]);
     }
   }
 
   function processSelectedFile(file: File) {
-    if (!projectStore.confirmDiscardIfDirty('membuka video baru')) return;
+    if (!projectStore.confirmDiscardIfDirty("membuka video baru")) return;
     const url = URL.createObjectURL(file);
     projectStore.loadVideo(
       url,
       file.name,
       `${homeTeam} vs ${awayTeam} (${matchHalf})`,
-      180
+      180,
     );
     projectStore.matchKind = matchKind;
     projectStore.competitionName = tournamentName.trim();
     if (selectedHomeClubId || selectedAwayClubId) {
-      projectStore.applyClubsToMatchRoster(selectedHomeClubId || null, selectedAwayClubId || null);
+      projectStore.applyClubsToMatchRoster(
+        selectedHomeClubId || null,
+        selectedAwayClubId || null,
+      );
     }
-    projectStore.setStage('tagging');
+    projectStore.setStage("tagging");
   }
 
   function handleQuickClipUpload(event: Event) {
@@ -253,17 +343,17 @@
         url,
         file.name,
         `Klip Telestrasi: ${file.name}`,
-        30
+        30,
       );
 
       const quickTag = {
         id: `quick-clip-${Date.now()}`,
-        title: `Telestrasi: ${file.name.replace(/\.[^/.]+$/, '')}`,
-        category: 'Transition Attack' as const,
+        title: `Telestrasi: ${file.name.replace(/\.[^/.]+$/, "")}`,
+        category: "Transition Attack" as const,
         startTime: 0,
         endTime: 30,
-        color: '#38bdf8',
-        playerLabel: '#9 Pivot',
+        color: "#38bdf8",
+        playerLabel: "#9 Pivot",
         pauseDuration: 3.0,
         drawings: [],
       };
@@ -273,13 +363,13 @@
   }
 
   function loadSampleMatch() {
-    if (!projectStore.confirmDiscardIfDirty('memuat sampel demo')) return;
+    if (!projectStore.confirmDiscardIfDirty("memuat sampel demo")) return;
     projectStore.loadSampleDemo();
   }
 
   async function handleOpenLibraryMatch(filePath: string | null) {
     if (!filePath) return;
-    if (!projectStore.confirmDiscardIfDirty('membuka pertandingan ini')) return;
+    if (!projectStore.confirmDiscardIfDirty("membuka pertandingan ini")) return;
     try {
       await projectStore.openProjectFromPath(filePath);
     } catch (err: any) {
@@ -287,9 +377,17 @@
     }
   }
 
-  async function handleDeleteLibraryMatch(filePath: string | null, title: string) {
+  async function handleDeleteLibraryMatch(
+    filePath: string | null,
+    title: string,
+  ) {
     if (!filePath) return;
-    if (!confirm(`Hapus file analisis "${title}" dari folder pustaka? File video MP4 asli tidak akan terhapus.`)) return;
+    if (
+      !confirm(
+        `Hapus file analisis "${title}" dari folder pustaka? File video MP4 asli tidak akan terhapus.`,
+      )
+    )
+      return;
     try {
       await projectStore.deleteMatchFile(filePath);
     } catch (err: any) {
@@ -309,7 +407,7 @@
           if (ok) {
             alert(`Berkas proyek "${file.name}" berhasil dimuat!`);
           } else {
-            alert('Format berkas proyek tidak valid.');
+            alert("Format berkas proyek tidak valid.");
           }
         }
       };
@@ -329,7 +427,8 @@
       Selamat Datang di <span class="highlight">FUTSALTAG PRO</span>
     </h1>
     <p class="hero-desc">
-      Platform analisis video futsal profesional, auto pre/post roll tagging, telestrasi siaran TV, dan papan taktik standar FIFA (40m x 20m).
+      Platform analisis video futsal profesional, auto pre/post roll tagging,
+      telestrasi siaran TV, dan papan taktik standar FIFA (40m x 20m).
     </p>
   </div>
 
@@ -339,14 +438,25 @@
         <Clock size={16} />
         <div>
           <strong>Cadangan Sesi Terakhir Tersedia:</strong>
-          <span>{projectStore.autoSaveMeta.title} ({projectStore.autoSaveMeta.tagCount} klip)</span>
+          <span
+            >{projectStore.autoSaveMeta.title} ({projectStore.autoSaveMeta
+              .tagCount} klip)</span
+          >
         </div>
       </div>
       <div class="rec-actions">
-        <button type="button" class="btn-rec-restore" onclick={() => projectStore.restoreAutoSave()}>
+        <button
+          type="button"
+          class="btn-rec-restore"
+          onclick={() => projectStore.restoreAutoSave()}
+        >
           Pulihkan Cadangan
         </button>
-        <button type="button" class="btn-rec-dismiss" onclick={() => projectStore.clearAutoSave()}>
+        <button
+          type="button"
+          class="btn-rec-dismiss"
+          onclick={() => projectStore.clearAutoSave()}
+        >
           Abaikan
         </button>
       </div>
@@ -359,7 +469,10 @@
     <div
       class="workflow-card primary-card"
       class:dragover={isDragging}
-      ondragover={(e) => { e.preventDefault(); isDragging = true; }}
+      ondragover={(e) => {
+        e.preventDefault();
+        isDragging = true;
+      }}
       ondragleave={() => (isDragging = false)}
       ondrop={handleDrop}
       role="region"
@@ -371,7 +484,9 @@
       </div>
       <h3 class="card-title">Analisis Pertandingan Penuh</h3>
       <p class="card-desc">
-        Impor video pertandingan futsal (1 babak / 40 menit). Lakukan pemotongan momen instan (tagging) dengan tombol aksi cepat, labeling pemain, dan matriks silang statistik.
+        Impor video pertandingan futsal (1 babak / 40 menit). Lakukan pemotongan
+        momen instan (tagging) dengan tombol aksi cepat, labeling pemain, dan
+        matriks silang statistik.
       </p>
 
       <!-- MATCH SETUP FORM -->
@@ -385,7 +500,11 @@
             placeholder="Nama Turnamen / Latihan"
             bind:value={tournamentName}
           />
-          <select class="club-select kind-mini-sel" bind:value={matchKind} title="Jenis sesi analisis">
+          <select
+            class="club-select kind-mini-sel"
+            bind:value={matchKind}
+            title="Jenis sesi analisis"
+          >
             <option value="match">Pertandingan</option>
             <option value="training">Latihan</option>
           </select>
@@ -396,7 +515,10 @@
           <select
             class="club-select"
             value={selectedHomeClubId}
-            onchange={(e) => handleSelectHomeClub((e.currentTarget as HTMLSelectElement).value)}
+            onchange={(e) =>
+              handleSelectHomeClub(
+                (e.currentTarget as HTMLSelectElement).value,
+              )}
             title="Pilih Klub Home dari Library (otomatis isi roster)"
           >
             <option value="">-- Klub Home (Library) --</option>
@@ -407,7 +529,10 @@
           <select
             class="club-select"
             value={selectedAwayClubId}
-            onchange={(e) => handleSelectAwayClub((e.currentTarget as HTMLSelectElement).value)}
+            onchange={(e) =>
+              handleSelectAwayClub(
+                (e.currentTarget as HTMLSelectElement).value,
+              )}
             title="Pilih Profil Lawan dari Library"
           >
             <option value="">-- Klub Away (Library) --</option>
@@ -420,7 +545,8 @@
         <!-- Teams row with jersey color pills -->
         <div class="form-row teams-setup-row">
           <div class="team-input-group">
-            <span class="color-dot" style="background-color: {homeColor}"></span>
+            <span class="color-dot" style="background-color: {homeColor}"
+            ></span>
             <input
               type="text"
               class="input-meta"
@@ -432,7 +558,8 @@
           <span class="vs-text">VS</span>
 
           <div class="team-input-group">
-            <span class="color-dot" style="background-color: {awayColor}"></span>
+            <span class="color-dot" style="background-color: {awayColor}"
+            ></span>
             <input
               type="text"
               class="input-meta"
@@ -444,23 +571,48 @@
 
         <!-- Period selector -->
         <div class="half-select">
-          <label class="radio-label" class:selected={matchHalf === 'Babak 1'}>
-            <input type="radio" bind:group={matchHalf} value="Babak 1" /> Babak 1 (20m)
+          <label class="radio-label" class:selected={matchHalf === "Babak 1"}>
+            <input type="radio" bind:group={matchHalf} value="Babak 1" /> Babak 1
+            (20m)
           </label>
-          <label class="radio-label" class:selected={matchHalf === 'Babak 2'}>
-            <input type="radio" bind:group={matchHalf} value="Babak 2" /> Babak 2 (20m)
+          <label class="radio-label" class:selected={matchHalf === "Babak 2"}>
+            <input type="radio" bind:group={matchHalf} value="Babak 2" /> Babak 2
+            (20m)
           </label>
-          <label class="radio-label" class:selected={matchHalf === 'Full Time'}>
-            <input type="radio" bind:group={matchHalf} value="Full Time" /> Penuh (40m)
+          <label class="radio-label" class:selected={matchHalf === "Full Time"}>
+            <input type="radio" bind:group={matchHalf} value="Full Time" /> Penuh
+            (40m)
           </label>
         </div>
       </div>
 
       <!-- ACTIONS -->
       <div class="card-actions">
-        <button type="button" class="btn-primary-action" onclick={() => handleTauriVideoClick(false)}>
+        <button
+          type="button"
+          class="btn-primary-action"
+          disabled={isMergingVideos}
+          onclick={() => handleTauriVideoClick(false)}
+          title="Pilih 1 file video atau beberapa bagian (Babak 1 + Babak 2 / GoPro) untuk digabung otomatis"
+        >
           <Upload size={15} />
-          <span>Pilih / Seret Video MP4</span>
+          <span
+            >{isMergingVideos
+              ? "Menggabungkan Video..."
+              : "Pilih / Gabung Video MP4"}</span
+          >
+        </button>
+        {#if mergeStatusMsg}
+          <div class="merge-status-note">{mergeStatusMsg}</div>
+        {/if}
+        <button
+          type="button"
+          class="btn-load-project"
+          onclick={handleStartLiveStopwatch}
+          title="Catat tag, pemain & menit bermain langsung di lapangan pakai Stopwatch (video bisa ditautkan nanti via Relink)"
+        >
+          <Timer size={14} />
+          <span>Mulai Tagging Live (Stopwatch Tanpa Video)</span>
         </button>
         <input
           bind:this={fullVideoInputEl}
@@ -469,11 +621,20 @@
           onchange={handleFileUpload}
           style="display: none;"
         />
-        <button type="button" class="btn-sample-action" onclick={loadSampleMatch}>
+        <button
+          type="button"
+          class="btn-sample-action"
+          onclick={loadSampleMatch}
+        >
           <PlayCircle size={14} />
           <span>Muat Sampel Demo (Pendekar United vs Blacksteel)</span>
         </button>
-        <button type="button" class="btn-load-project" title="Buka Proyek yang Sudah Ada (.futsal)" onclick={handleTauriProjectOpenClick}>
+        <button
+          type="button"
+          class="btn-load-project"
+          title="Buka Proyek yang Sudah Ada (.futsal)"
+          onclick={handleTauriProjectOpenClick}
+        >
           <FolderOpen size={14} />
           <span>Buka Berkas Proyek (.futsal / .json)</span>
         </button>
@@ -495,7 +656,9 @@
       </div>
       <h3 class="card-title">Studio Telestrasi Singkat</h3>
       <p class="card-desc">
-        Punya cuplikan 10–60 detik rekaman ponsel atau cuplikan gol? Langsung buka Studio Telestrasi untuk menggambar spotlight 3D, lingkaran pemain, dan radar visi.
+        Punya cuplikan 10–60 detik rekaman ponsel atau cuplikan gol? Langsung
+        buka Studio Telestrasi untuk menggambar spotlight 3D, lingkaran pemain,
+        dan radar visi.
       </p>
 
       <div class="quick-clip-features">
@@ -514,7 +677,11 @@
       </div>
 
       <div class="card-actions">
-        <button type="button" class="btn-amber-action" onclick={() => handleTauriVideoClick(true)}>
+        <button
+          type="button"
+          class="btn-amber-action"
+          onclick={() => handleTauriVideoClick(true)}
+        >
           <FolderOpen size={15} />
           <span>Impor Klip & Langsung Gambar</span>
         </button>
@@ -536,7 +703,9 @@
       </div>
       <h3 class="card-title">Papan Taktik Futsal (2D)</h3>
       <p class="card-desc">
-        Rancang simulasi rotasi 3-1, 4-0 flat, power play 5v4, dan skema bola mati (kick-in & corner) dengan animasi pergerakan pemain dan ekspor dokumen taktik PDF.
+        Rancang simulasi rotasi 3-1, 4-0 flat, power play 5v4, dan skema bola
+        mati (kick-in & corner) dengan animasi pergerakan pemain dan ekspor
+        dokumen taktik PDF.
       </p>
 
       <div class="coach-presets-preview">
@@ -549,7 +718,7 @@
       <div class="card-actions">
         <button
           class="btn-green-action"
-          onclick={() => projectStore.setStage('coachboard')}
+          onclick={() => projectStore.setStage("coachboard")}
         >
           <ArrowRight size={15} />
           <span>Buka Papan Taktik (Coach Board)</span>
@@ -563,30 +732,71 @@
     <div class="lhp-top">
       <div class="recent-title">
         <FolderOpen size={15} class="text-sky-400" />
-        <span>Daftar Pertandingan Pustaka ({projectStore.libraryMatches.length})</span>
+        <span
+          >Daftar Pertandingan Pustaka ({projectStore.libraryMatches
+            .length})</span
+        >
       </div>
 
       <div class="lhp-controls">
         <div class="lhp-search">
           <Search size={12} />
-          <input type="text" bind:value={libSearch} placeholder="Cari laga / turnamen..." />
+          <input
+            type="text"
+            bind:value={libSearch}
+            placeholder="Cari laga / turnamen..."
+          />
         </div>
         <div class="lhp-seg">
-          <button type="button" class:active={libKind === 'all'} onclick={() => (libKind = 'all')}>Semua</button>
-          <button type="button" class:active={libKind === 'match'} onclick={() => (libKind = 'match')}>Pertandingan</button>
-          <button type="button" class:active={libKind === 'training'} onclick={() => (libKind = 'training')}>Latihan</button>
+          <button
+            type="button"
+            class:active={libKind === "all"}
+            onclick={() => (libKind = "all")}>Semua</button
+          >
+          <button
+            type="button"
+            class:active={libKind === "match"}
+            onclick={() => (libKind = "match")}>Pertandingan</button
+          >
+          <button
+            type="button"
+            class:active={libKind === "training"}
+            onclick={() => (libKind = "training")}>Latihan</button
+          >
         </div>
         <div class="lhp-seg">
-          <button type="button" class:active={libStatus === 'all'} onclick={() => (libStatus = 'all')}>Semua Status</button>
-          <button type="button" class:active={libStatus === 'analysed'} onclick={() => (libStatus = 'analysed')}>Ada Klip</button>
-          <button type="button" class:active={libStatus === 'empty'} onclick={() => (libStatus = 'empty')}>Kosong</button>
+          <button
+            type="button"
+            class:active={libStatus === "all"}
+            onclick={() => (libStatus = "all")}>Semua Status</button
+          >
+          <button
+            type="button"
+            class:active={libStatus === "analysed"}
+            onclick={() => (libStatus = "analysed")}>Ada Klip</button
+          >
+          <button
+            type="button"
+            class:active={libStatus === "empty"}
+            onclick={() => (libStatus = "empty")}>Kosong</button
+          >
         </div>
         {#if isTauriDesktop()}
-          <button type="button" class="recent-chip" onclick={() => projectStore.pickMatchLibraryFolder()} title={projectStore.matchLibraryFolder || 'Pilih Folder Pustaka'}>
+          <button
+            type="button"
+            class="recent-chip"
+            onclick={() => projectStore.pickMatchLibraryFolder()}
+            title={projectStore.matchLibraryFolder || "Pilih Folder Pustaka"}
+          >
             <FolderOpen size={12} class="text-sky-400" />
             <span class="chip-name">Folder</span>
           </button>
-          <button type="button" class="recent-chip" onclick={() => projectStore.scanMatchLibrary()} title="Scan ulang folder .futsal">
+          <button
+            type="button"
+            class="recent-chip"
+            onclick={() => projectStore.scanMatchLibrary()}
+            title="Scan ulang folder .futsal"
+          >
             <RefreshCw size={12} class="text-emerald-400" />
             <span class="chip-name">Scan</span>
           </button>
@@ -599,20 +809,43 @@
         {#each filteredLibrary as m (m.id)}
           <div class="lhp-card">
             <div class="lhp-card-main">
-              <span class="lhp-kind-badge" class:training={m.matchKind === 'training'}>
-                {m.matchKind === 'training' ? 'Latihan' : 'Laga'}
+              <span
+                class="lhp-kind-badge"
+                class:training={m.matchKind === "training"}
+              >
+                {m.matchKind === "training" ? "Latihan" : "Laga"}
               </span>
-              <span class="lhp-card-title" title={m.filePath || m.title}>{m.title}</span>
-              <span class="chip-meta">{m.tags.length} Klip{m.competition ? ` · ${m.competition}` : ''}</span>
+              <span class="lhp-card-title" title={m.filePath || m.title}
+                >{m.title}</span
+              >
+              <span class="chip-meta"
+                >{m.tags.length} Klip{m.competition
+                  ? ` · ${m.competition}`
+                  : ""}</span
+              >
             </div>
             <div class="lhp-card-actions">
-              <button type="button" class="lhp-btn open" onclick={() => handleOpenLibraryMatch(m.filePath)}>
+              <button
+                type="button"
+                class="lhp-btn open"
+                onclick={() => handleOpenLibraryMatch(m.filePath)}
+              >
                 Lanjutkan
               </button>
-              <button type="button" class="lhp-btn" onclick={() => projectStore.duplicateMatchFile(m)} title="Duplikat file analisis">
+              <button
+                type="button"
+                class="lhp-btn"
+                onclick={() => projectStore.duplicateMatchFile(m)}
+                title="Duplikat file analisis"
+              >
                 <Copy size={11} />
               </button>
-              <button type="button" class="lhp-btn del" onclick={() => handleDeleteLibraryMatch(m.filePath, m.title)} title="Hapus file .futsal">
+              <button
+                type="button"
+                class="lhp-btn del"
+                onclick={() => handleDeleteLibraryMatch(m.filePath, m.title)}
+                title="Hapus file .futsal"
+              >
                 <Trash2 size={11} />
               </button>
             </div>
@@ -621,7 +854,9 @@
       </div>
     {:else}
       <div class="lhp-empty">
-        Belum ada file `.futsal` tersimpan di folder pustaka{projectStore.matchLibraryFolder ? ` (${projectStore.matchLibraryFolder})` : ''}. Simpan proyek dengan Ctrl+S atau pilih folder pustaka.
+        Belum ada file `.futsal` tersimpan di folder pustaka{projectStore.matchLibraryFolder
+          ? ` (${projectStore.matchLibraryFolder})`
+          : ""}. Simpan proyek dengan Ctrl+S atau pilih folder pustaka.
       </div>
     {/if}
 
@@ -637,13 +872,23 @@
           <span class="chip-meta">(Babak 1 • 3 Klip Taktis)</span>
         </button>
         {#if onOpenTeamDatabase}
-          <button type="button" class="recent-chip" onclick={onOpenTeamDatabase}>
+          <button
+            type="button"
+            class="recent-chip"
+            onclick={onOpenTeamDatabase}
+          >
             <Shield size={12} class="text-sky-400" />
-            <span class="chip-name">Library Klub ({projectStore.clubLibrary.length})</span>
+            <span class="chip-name"
+              >Library Klub ({projectStore.clubLibrary.length})</span
+            >
           </button>
         {/if}
         {#if onOpenSeasonAnalytics}
-          <button type="button" class="recent-chip" onclick={onOpenSeasonAnalytics}>
+          <button
+            type="button"
+            class="recent-chip"
+            onclick={onOpenSeasonAnalytics}
+          >
             <BarChart3 size={12} class="text-emerald-400" />
             <span class="chip-name">Season Analytics Hub</span>
           </button>
@@ -676,7 +921,11 @@
     flex-direction: column;
     justify-content: space-between;
     gap: 18px;
-    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-family:
+      "Inter",
+      system-ui,
+      -apple-system,
+      sans-serif;
   }
 
   /* HERO */
@@ -728,7 +977,11 @@
     width: 100%;
     margin: 0 auto;
     padding: 10px 14px;
-    background: linear-gradient(90deg, rgba(2, 132, 199, 0.16), rgba(16, 185, 129, 0.12));
+    background: linear-gradient(
+      90deg,
+      rgba(2, 132, 199, 0.16),
+      rgba(16, 185, 129, 0.12)
+    );
     border: 1px solid rgba(56, 189, 248, 0.45);
     border-radius: 10px;
   }
@@ -796,7 +1049,9 @@
     flex-direction: column;
     position: relative;
     transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-    box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.7), 0 0 15px rgba(14, 165, 233, 0.06);
+    box-shadow:
+      0 10px 30px -10px rgba(0, 0, 0, 0.7),
+      0 0 15px rgba(14, 165, 233, 0.06);
   }
 
   @media (max-width: 1160px) {
@@ -840,7 +1095,9 @@
   .workflow-card:hover {
     transform: translateY(-4px);
     border-color: #38bdf8;
-    box-shadow: 0 20px 35px -10px rgba(0, 0, 0, 0.8), 0 0 25px rgba(56, 189, 248, 0.25);
+    box-shadow:
+      0 20px 35px -10px rgba(0, 0, 0, 0.8),
+      0 0 25px rgba(56, 189, 248, 0.25);
   }
 
   .workflow-card.dragover {
@@ -886,21 +1143,33 @@
   }
 
   .icon-blue {
-    background: linear-gradient(135deg, rgba(56, 189, 248, 0.25), rgba(30, 58, 138, 0.5));
+    background: linear-gradient(
+      135deg,
+      rgba(56, 189, 248, 0.25),
+      rgba(30, 58, 138, 0.5)
+    );
     color: #38bdf8;
     border: 1px solid rgba(56, 189, 248, 0.4);
     box-shadow: 0 0 15px rgba(56, 189, 248, 0.3);
   }
 
   .icon-amber {
-    background: linear-gradient(135deg, rgba(96, 165, 250, 0.25), rgba(30, 64, 175, 0.5));
+    background: linear-gradient(
+      135deg,
+      rgba(96, 165, 250, 0.25),
+      rgba(30, 64, 175, 0.5)
+    );
     color: #60a5fa;
     border: 1px solid rgba(96, 165, 250, 0.4);
     box-shadow: 0 0 15px rgba(96, 165, 250, 0.3);
   }
 
   .icon-green {
-    background: linear-gradient(135deg, rgba(16, 185, 129, 0.25), rgba(6, 78, 59, 0.5));
+    background: linear-gradient(
+      135deg,
+      rgba(16, 185, 129, 0.25),
+      rgba(6, 78, 59, 0.5)
+    );
     color: #10b981;
     border: 1px solid rgba(16, 185, 129, 0.4);
     box-shadow: 0 0 15px rgba(16, 185, 129, 0.3);
@@ -1082,7 +1351,11 @@
     align-items: center;
     justify-content: center;
     gap: 6px;
-    background: linear-gradient(135deg, rgba(14, 165, 233, 0.1), rgba(30, 64, 175, 0.15));
+    background: linear-gradient(
+      135deg,
+      rgba(14, 165, 233, 0.1),
+      rgba(30, 64, 175, 0.15)
+    );
     border: 1px dashed #0284c7;
     color: #38bdf8;
     padding: 7px;
@@ -1096,7 +1369,11 @@
   .btn-load-project:hover {
     color: #ffffff;
     border-color: #38bdf8;
-    background: linear-gradient(135deg, rgba(2, 132, 199, 0.3), rgba(37, 99, 235, 0.3));
+    background: linear-gradient(
+      135deg,
+      rgba(2, 132, 199, 0.3),
+      rgba(37, 99, 235, 0.3)
+    );
     box-shadow: 0 0 12px rgba(56, 189, 248, 0.3);
   }
 
@@ -1449,5 +1726,16 @@
     font-size: 10.5px;
     color: #64748b;
     padding: 6px 2px;
+  }
+
+  .merge-status-note {
+    font-size: 10.5px;
+    font-weight: 700;
+    color: #38bdf8;
+    background: rgba(2, 132, 199, 0.14);
+    border: 1px solid rgba(56, 189, 248, 0.35);
+    border-radius: 6px;
+    padding: 5px 8px;
+    text-align: center;
   }
 </style>

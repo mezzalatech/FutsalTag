@@ -643,6 +643,160 @@
     );
   }
 
+  let isBatchExporting = $state<boolean>(false);
+
+  function toggleClipSelection(tag: VideoTagEvent, e?: MouseEvent) {
+    if (e?.shiftKey && selectedClipId) {
+      const a = filteredTags.findIndex((t) => t.id === selectedClipId);
+      const b = filteredTags.findIndex((t) => t.id === tag.id);
+      if (a !== -1 && b !== -1) {
+        const [lo, hi] = a <= b ? [a, b] : [b, a];
+        const rangeIds = filteredTags.slice(lo, hi + 1).map((t) => t.id);
+        selectedClipIds = Array.from(new Set([...selectedClipIds, ...rangeIds]));
+        selectedClipId = tag.id;
+        return;
+      }
+    }
+    if (selectedClipIds.includes(tag.id)) {
+      const next = selectedClipIds.filter((id) => id !== tag.id);
+      selectedClipIds = next;
+      if (selectedClipId === tag.id) {
+        selectedClipId = next[0] ?? null;
+      }
+    } else {
+      selectedClipIds = [...selectedClipIds, tag.id];
+      selectedClipId = tag.id;
+    }
+  }
+
+  function toggleSelectAllFiltered() {
+    if (filteredTags.length === 0) return;
+    const visIds = filteredTags.map((t) => t.id);
+    if (allFilteredSelected) {
+      selectedClipIds = selectedClipIds.filter((id) => !visIds.includes(id));
+      if (selectedClipId && visIds.includes(selectedClipId)) {
+        selectedClipId = selectedClipIds[0] ?? null;
+      }
+    } else {
+      selectedClipIds = Array.from(new Set([...selectedClipIds, ...visIds]));
+      if (!selectedClipId) selectedClipId = visIds[0] ?? null;
+    }
+  }
+
+  function handlePlaySelectedClips() {
+    const targets = projectStore.tags
+      .filter((t) => selectedClipIds.includes(t.id))
+      .sort((a, b) => a.startTime - b.startTime);
+    if (targets.length === 0) return;
+    playSequentialClips(targets, `Pilihan (${targets.length} Klip)`);
+  }
+
+  function handleOpenBatchEditor() {
+    const first = projectStore.tags.find((t) => selectedClipIds.includes(t.id));
+    if (first) openTagEditor(first);
+  }
+
+  async function handleBatchExportSelectedClips() {
+    if (isBatchExporting) return;
+    const targets = projectStore.tags
+      .filter((t) => selectedClipIds.includes(t.id))
+      .sort((a, b) => a.startTime - b.startTime);
+    if (targets.length === 0) return;
+    if (!isTauriDesktop()) {
+      notifyUser("Ekspor massal MP4 memerlukan aplikasi desktop Tauri.");
+      return;
+    }
+    const path = projectStore.videoFilePath;
+    if (!path || (!path.startsWith("/") && !/^[A-Za-z]:[\\/]/.test(path))) {
+      notifyUser("Buka file video asli di Hub Proyek sebelum ekspor massal MP4.");
+      return;
+    }
+
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const targetDir = await open({
+        title: `Pilih Folder Tujuan (${targets.length} Klip Terpilih)`,
+        directory: true,
+        multiple: false,
+      });
+      if (!targetDir || typeof targetDir !== "string") return;
+
+      isBatchExporting = true;
+      const sep =
+        targetDir.endsWith("/") || targetDir.endsWith("\\") ? "" : "/";
+      for (let i = 0; i < targets.length; i++) {
+        const tag = targets[i];
+        const idxStr = String(i + 1).padStart(2, "0");
+        const cleanCat = tag.category.replace(/[^a-zA-Z0-9_-]/g, "_");
+        const outPath = `${targetDir}${sep}${idxStr}_${cleanCat}_${Math.round(tag.startTime)}s.mp4`;
+        notifyUser(
+          `Ekspor massal ${i + 1}/${targets.length}: ${tag.category}...`,
+        );
+
+        const hasDrawings = Boolean(tag.drawings?.length);
+        const hasVoice = Boolean(tag.voiceoverAudioBase64);
+        const effectiveStops = getEffectiveFreezeStopsForTag(tag);
+        const appendCleanReplay = Boolean(tag.appendCleanReplay);
+        const clipDur = Math.max(0.4, tag.endTime - tag.startTime);
+        if (
+          hasDrawings ||
+          hasVoice ||
+          effectiveStops.length > 0 ||
+          appendCleanReplay
+        ) {
+          const freezeSec =
+            effectiveStops[0]?.time ??
+            tag.freezeTimestamp ??
+            (tag.startTime + tag.endTime) / 2;
+          const freezeStopsPayload: FreezeStopExportPayload[] =
+            effectiveStops.map((st) => ({
+              time: st.time,
+              duration: st.duration,
+              overlay_base64: hasDrawings
+                ? renderDrawingsToDataUrl(tag.drawings || [], 1280, 720, st.time, {
+                    chromaConfig: projectStore.chromaFloorConfig,
+                    clipStartTime: tag.startTime,
+                    clipEndTime: tag.endTime,
+                    subtitleText: tag.voiceoverTranscript,
+                    subtitleCues: tag.subtitleCues,
+                    burnSubtitle: tag.burnSubtitle,
+                    animElapsedSec: 1.0,
+                  }) || null
+                : null,
+            }));
+          await invoke<string>("burn_telestration_clip_ffmpeg", {
+            inputPath: path,
+            outputPath: outPath,
+            startSec: tag.startTime,
+            durationSec: clipDur,
+            freezeSec,
+            pauseDuration:
+              effectiveStops[0]?.duration ?? tag.pauseDuration ?? 3.0,
+            overlayBase64: freezeStopsPayload[0]?.overlay_base64 ?? null,
+            voiceoverBase64: tag.voiceoverAudioBase64 || null,
+            targetHeight: 720,
+            freezeStops:
+              freezeStopsPayload.length > 0 ? freezeStopsPayload : null,
+            appendCleanReplay,
+          });
+        } else {
+          await invoke<string>("render_video_clip_ffmpeg", {
+            inputPath: path,
+            outputPath: outPath,
+            startSec: tag.startTime,
+            durationSec: clipDur,
+            fastCopy: true,
+          });
+        }
+      }
+      notifyUser(`Selesai! ${targets.length} klip diekspor ke ${targetDir}`);
+    } catch (err: any) {
+      notifyUser(`Ekspor massal gagal: ${err?.message || err}`);
+    } finally {
+      isBatchExporting = false;
+    }
+  }
+
   function toggleClipFavorite(tag: VideoTagEvent) {
     projectStore.updateTag({
       ...tag,
@@ -913,6 +1067,14 @@
         targetTag === "TEXTAREA" ||
         targetTag === "SELECT"
       ) {
+        return;
+      }
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
+        if (workspaceSubTab === "tagging" && filteredTags.length > 0) {
+          e.preventDefault();
+          toggleSelectAllFiltered();
+        }
         return;
       }
 
@@ -1893,6 +2055,11 @@
 
       return matchSearch && matchCat && matchPlayer && matchMicro;
     }),
+  );
+
+  const allFilteredSelected = $derived(
+    filteredTags.length > 0 &&
+      filteredTags.every((t) => selectedClipIds.includes(t.id)),
   );
 
   let currentPlaylist = $derived(projectStore.playlists[0]);
@@ -3023,6 +3190,17 @@
                     >
                       <ThumbsDown size={9} />
                     </button>
+                    {#if filteredTags.length > 0}
+                      <button
+                        type="button"
+                        class="mf-pill"
+                        class:active={allFilteredSelected}
+                        onclick={toggleSelectAllFiltered}
+                        title="Pilih / Batal Pilih Semua Klip Terlihat (Ctrl+A)"
+                      >
+                        {allFilteredSelected ? "✓ Semua" : "Pilih Semua"}
+                      </button>
+                    {/if}
                   </div>
 
                   {#if filterPlayer !== "ALL"}
@@ -3038,6 +3216,40 @@
                     </div>
                   {/if}
                 </div>
+
+                {#if selectedClipIds.length > 0}
+                  <div class="clip-pick-bar" role="toolbar" aria-label="Aksi Massal Klip Terpilih">
+                    <span class="cpb-count"><strong>{selectedClipIds.length}</strong> dipilih</span>
+                    <div class="cpb-actions">
+                      <button type="button" class="cpb-btn" onclick={handlePlaySelectedClips} title="Putar berurutan semua klip terpilih">
+                        <Play size={10} />
+                        <span>Putar</span>
+                      </button>
+                      <button type="button" class="cpb-btn" onclick={handleOpenBatchEditor} title="Edit Label & Pemain Massal">
+                        <Edit3 size={10} />
+                        <span>Edit</span>
+                      </button>
+                      <button type="button" class="cpb-btn" onclick={() => handleBatchToggleFavorite(selectedClipIds)} title="Toggle Favorit Massal">
+                        <span>★</span>
+                      </button>
+                      <button type="button" class="cpb-btn" onclick={() => handleBatchAddToPlaylist(selectedClipIds)} title="Tambah ke Playlist">
+                        <Plus size={10} />
+                        <span>Playlist</span>
+                      </button>
+                      <button type="button" class="cpb-btn" disabled={isBatchExporting} onclick={handleBatchExportSelectedClips} title="Ekspor semua klip terpilih ke 1 folder MP4">
+                        <Download size={10} />
+                        <span>{isBatchExporting ? "Ekspor..." : "Ekspor"}</span>
+                      </button>
+                      <button type="button" class="cpb-btn danger" onclick={() => handleBatchDeleteClips(selectedClipIds)} title="Hapus semua klip terpilih">
+                        <Trash2 size={10} />
+                        <span>Hapus</span>
+                      </button>
+                      <button type="button" class="cpb-btn" onclick={() => (selectedClipIds = [])} title="Bersihkan pilihan (Esc)">
+                        <X size={10} />
+                      </button>
+                    </div>
+                  </div>
+                {/if}
 
                 <div class="list-items-scroll">
                   {#if filteredTags.length === 0}
@@ -3067,7 +3279,14 @@
                         class="clip-row"
                         class:active-loop={activeLoopClip?.id === tag.id}
                         class:selected-clip={selectedClipId === tag.id}
-                        onclick={() => (selectedClipId = tag.id)}
+                        class:multi-selected={selectedClipIds.includes(tag.id)}
+                        onclick={(e) => {
+                          if (e.ctrlKey || e.metaKey || e.shiftKey) {
+                            toggleClipSelection(tag, e);
+                          } else {
+                            selectedClipId = tag.id;
+                          }
+                        }}
                         ondblclick={() => openTagEditor(tag)}
                         role="button"
                         tabindex="0"
@@ -3077,6 +3296,16 @@
                             class="clip-color-bar"
                             style="background-color: {tag.color};"
                           ></span>
+                          <input
+                            type="checkbox"
+                            class="clip-pick-check"
+                            checked={selectedClipIds.includes(tag.id)}
+                            onclick={(e) => {
+                              e.stopPropagation();
+                              toggleClipSelection(tag, e);
+                            }}
+                            aria-label="Pilih klip {tag.title}"
+                          />
                           <button
                             type="button"
                             class="clip-star-btn"
@@ -6078,5 +6307,67 @@
     .btn-canvas-toggle {
       min-height: 36px;
     }
+  }
+
+  .clip-pick-bar {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 6px 8px;
+    background: #0a1b33;
+    border-bottom: 1px solid #1e3b68;
+  }
+
+  .cpb-count {
+    font-size: 10px;
+    color: #93c5fd;
+  }
+
+  .cpb-count strong {
+    color: #38bdf8;
+  }
+
+  .cpb-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .cpb-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    background: #0f172a;
+    border: 1px solid #243b61;
+    color: #cbd5e1;
+    font-size: 9.5px;
+    font-weight: 700;
+    padding: 3px 6px;
+    border-radius: 5px;
+    cursor: pointer;
+  }
+
+  .cpb-btn:hover:not(:disabled) {
+    border-color: #38bdf8;
+    color: #ffffff;
+  }
+
+  .cpb-btn.danger:hover {
+    border-color: #ef4444;
+    color: #fca5a5;
+  }
+
+  .clip-pick-check {
+    width: 12px;
+    height: 12px;
+    margin: 0 2px 0 0;
+    accent-color: #38bdf8;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  .clip-row.multi-selected {
+    background: rgba(2, 132, 199, 0.14);
+    border-color: rgba(56, 189, 248, 0.55);
   }
 </style>

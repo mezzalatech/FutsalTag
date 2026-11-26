@@ -25,6 +25,11 @@
   import LinimasaTimeline from "$lib/components/LinimasaTimeline.svelte";
   import VisualCodingBoard from "$lib/components/VisualCodingBoard.svelte";
   import MatchMinutesView from "$lib/components/MatchMinutesView.svelte";
+  import KeyboardShortcutsModal from "$lib/components/KeyboardShortcutsModal.svelte";
+  import {
+    shortcutsStore,
+    matchesCombo,
+  } from "$lib/stores/shortcutsStore.svelte";
   import {
     Play,
     Pause,
@@ -64,6 +69,7 @@
     ThumbsDown,
     Timer,
     Volume2,
+    Keyboard,
   } from "lucide-svelte";
 
   // --- REFS & STATE ---
@@ -72,6 +78,15 @@
   let currentTime = $state(0);
   let duration = $state(120);
   let playbackRate = $state(1.0);
+  let showShortcutsModal = $state(false);
+  let videoOsd = $state<{
+    icon: string;
+    value: string;
+    label: string;
+    tone: "sky" | "amber" | "emerald";
+  } | null>(null);
+  let videoOsdTimer: ReturnType<typeof setTimeout> | null = null;
+  const SPEED_STEPS = [0.25, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0];
 
   // Workspace subtab: 'tagging' | 'coding_board' | 'minutes' | 'lineup'
   let workspaceSubTab = $state<
@@ -824,7 +839,7 @@
       spatialCanvasHeight = 122;
     }
     function handleKeyDown(e: KeyboardEvent) {
-      if (showTagLabelEditor || showStatsMatrix) return;
+      if (showTagLabelEditor || showStatsMatrix || showShortcutsModal) return;
       const targetTag = (e.target as HTMLElement)?.tagName;
       if (
         targetTag === "INPUT" ||
@@ -833,11 +848,8 @@
       ) {
         return;
       }
-      const hasMod = e.ctrlKey || e.metaKey;
-      if (e.code === "Space") {
-        e.preventDefault();
-        togglePlay();
-      } else if (e.key === "Escape") {
+
+      if (e.key === "Escape") {
         if (showKickoffMenu) {
           showKickoffMenu = false;
         } else if (Object.keys(activeContinuousTags).length > 0) {
@@ -846,23 +858,42 @@
         } else if (selectedClipIds.length > 0) {
           selectedClipIds = [];
         }
-      } else if (hasMod && e.key.toLowerCase() === "z" && !e.shiftKey) {
+        return;
+      }
+
+      const b = shortcutsStore.bindings;
+
+      if (matchesCombo(e, b.openShortcuts)) {
+        e.preventDefault();
+        showShortcutsModal = true;
+        return;
+      }
+      if (matchesCombo(e, b.undo)) {
         e.preventDefault();
         handleUndoLastTag();
-      } else if (
-        hasMod &&
-        (e.key.toLowerCase() === "y" ||
-          (e.key.toLowerCase() === "z" && e.shiftKey))
-      ) {
+        return;
+      }
+      if (matchesCombo(e, b.redo)) {
         e.preventDefault();
         handleRedoTags();
-      } else if (hasMod && e.key.toLowerCase() === "c") {
+        return;
+      }
+      if (matchesCombo(e, b.duplicateClip)) {
+        if (targetExistingClip) {
+          e.preventDefault();
+          handleDuplicateClip(targetExistingClip);
+        }
+        return;
+      }
+      if (matchesCombo(e, b.copyMeta)) {
         const selText = window.getSelection()?.toString();
         if (!selText && targetExistingClip) {
           e.preventDefault();
           handleCopyClipMeta(targetExistingClip);
         }
-      } else if (hasMod && e.key.toLowerCase() === "v") {
+        return;
+      }
+      if (matchesCombo(e, b.pasteMeta)) {
         if (copiedMeta) {
           const targets =
             selectedClipIds.length > 0
@@ -875,7 +906,43 @@
             handleBatchPasteMeta(targets);
           }
         }
-      } else if (e.key === "Delete" || e.key === "Backspace") {
+        return;
+      }
+      if (matchesCombo(e, b.editOrCreateClip)) {
+        e.preventDefault();
+        if (inPoint !== null) {
+          createClipFromInOut();
+        } else if (targetExistingClip) {
+          openTagEditor(targetExistingClip);
+        }
+        return;
+      }
+      if (matchesCombo(e, b.jumpBack1s)) {
+        e.preventDefault();
+        handleJumpSeconds(-1.0);
+        return;
+      }
+      if (matchesCombo(e, b.jumpForward1s)) {
+        e.preventDefault();
+        handleJumpSeconds(1.0);
+        return;
+      }
+      if (matchesCombo(e, b.frameBack)) {
+        e.preventDefault();
+        stepFrame(-1);
+        return;
+      }
+      if (matchesCombo(e, b.frameForward)) {
+        e.preventDefault();
+        stepFrame(1);
+        return;
+      }
+      if (matchesCombo(e, b.playPause)) {
+        e.preventDefault();
+        togglePlay();
+        return;
+      }
+      if (matchesCombo(e, b.deleteClip)) {
         const targets =
           selectedClipIds.length > 0
             ? selectedClipIds
@@ -886,24 +953,19 @@
           e.preventDefault();
           handleBatchDeleteClips(targets);
         }
-      } else if (e.altKey && e.key.toLowerCase() === "u") {
-        e.preventDefault();
-        if (inPoint !== null) {
-          createClipFromInOut();
-        } else if (targetExistingClip) {
-          openTagEditor(targetExistingClip);
-        }
-      } else if (e.key === "/") {
+        return;
+      }
+      if (matchesCombo(e, b.quickSearch)) {
         e.preventDefault();
         document.getElementById("quick-tag-search-input")?.focus();
-      } else if (e.key === "ArrowLeft") {
-        stepFrame(-1);
-      } else if (e.key === "ArrowRight") {
-        stepFrame(1);
-      } else {
+        return;
+      }
+
+      const hasModifier = e.ctrlKey || e.metaKey || e.altKey || e.shiftKey;
+      if (!hasModifier) {
         const keyUpper = e.key.toUpperCase();
         const boardMatch = activeBoard.buttons.find(
-          (b) => b.hotkey && b.hotkey.toUpperCase() === keyUpper,
+          (btn) => btn.hotkey && btn.hotkey.toUpperCase() === keyUpper,
         );
         if (boardMatch) {
           e.preventDefault();
@@ -912,32 +974,34 @@
           } else {
             handleDescriptorPress(boardMatch);
           }
-        } else if (keyUpper === "I") {
-          setInPoint();
-        } else if (keyUpper === "O") {
-          setOutPoint();
-        } else if (keyUpper === "S" && targetExistingClip) {
-          e.preventDefault();
-          handleSplitClipAtPlayhead(targetExistingClip);
-        } else if (keyUpper === "J" && videoEl) {
-          e.preventDefault();
-          seekTo(currentTime - 2.0);
-        } else if (keyUpper === "K" && videoEl) {
-          e.preventDefault();
-          videoEl.pause();
-          videoEl.playbackRate = 1.0;
-          playbackRate = 1.0;
-          isPlaying = false;
-        } else if (keyUpper === "L" && videoEl) {
-          e.preventDefault();
-          const rates = [1.0, 1.5, 2.0, 4.0];
-          const curIdx = rates.indexOf(playbackRate);
-          const nextRate = isPlaying ? rates[(curIdx + 1) % rates.length] : 1.0;
-          videoEl.playbackRate = nextRate;
-          playbackRate = nextRate;
-          videoEl.play().catch(() => {});
-          isPlaying = true;
+          return;
         }
+      }
+
+      if (matchesCombo(e, b.speedUp)) {
+        e.preventDefault();
+        handleSpeedUp();
+      } else if (matchesCombo(e, b.speedDown)) {
+        e.preventDefault();
+        handleSpeedDown();
+      } else if (matchesCombo(e, b.speedResetPause)) {
+        e.preventDefault();
+        handleSpeedResetAndPause();
+      } else if (matchesCombo(e, b.rewindStep)) {
+        e.preventDefault();
+        handleJumpSeconds(-2.0);
+      } else if (matchesCombo(e, b.forwardStep)) {
+        e.preventDefault();
+        handleJumpSeconds(2.0);
+      } else if (matchesCombo(e, b.setIn)) {
+        e.preventDefault();
+        setInPoint();
+      } else if (matchesCombo(e, b.setOut)) {
+        e.preventDefault();
+        setOutPoint();
+      } else if (matchesCombo(e, b.splitClip) && targetExistingClip) {
+        e.preventDefault();
+        handleSplitClipAtPlayhead(targetExistingClip);
       }
     }
 
@@ -945,12 +1009,107 @@
     return () => window.removeEventListener("keydown", handleKeyDown);
   });
 
+  function showVideoOsd(
+    icon: string,
+    value: string,
+    label: string,
+    tone: "sky" | "amber" | "emerald" = "sky",
+  ) {
+    videoOsd = { icon, value, label, tone };
+    if (videoOsdTimer) clearTimeout(videoOsdTimer);
+    videoOsdTimer = setTimeout(() => {
+      videoOsd = null;
+    }, 900);
+  }
+
+  function applyPlaybackSpeed(nextRate: number, autoPlay: boolean = true) {
+    playbackRate = nextRate;
+    if (videoEl) {
+      videoEl.playbackRate = nextRate;
+      if (autoPlay) {
+        videoEl.play().catch(() => {});
+        isPlaying = true;
+      }
+    }
+  }
+
+  function handleSpeedUp() {
+    let closestIdx = 0;
+    let bestDiff = Infinity;
+    SPEED_STEPS.forEach((s, idx) => {
+      const d = Math.abs(s - playbackRate);
+      if (d < bestDiff) {
+        bestDiff = d;
+        closestIdx = idx;
+      }
+    });
+    const nextIdx = Math.min(SPEED_STEPS.length - 1, closestIdx + 1);
+    const next = SPEED_STEPS[nextIdx];
+    applyPlaybackSpeed(next, true);
+    showVideoOsd(
+      next > 1 ? "⏩" : next < 1 ? "🐢" : "▶",
+      `${next}x`,
+      next > 1
+        ? "Dipercepat"
+        : next < 1
+          ? "Slow-Motion"
+          : "Kecepatan Normal",
+      next > 1 ? "sky" : next < 1 ? "amber" : "emerald",
+    );
+  }
+
+  function handleSpeedDown() {
+    let closestIdx = 0;
+    let bestDiff = Infinity;
+    SPEED_STEPS.forEach((s, idx) => {
+      const d = Math.abs(s - playbackRate);
+      if (d < bestDiff) {
+        bestDiff = d;
+        closestIdx = idx;
+      }
+    });
+    const nextIdx = Math.max(0, closestIdx - 1);
+    const next = SPEED_STEPS[nextIdx];
+    applyPlaybackSpeed(next, true);
+    showVideoOsd(
+      next < 1 ? "🐢" : next > 1 ? "⏩" : "▶",
+      `${next}x`,
+      next < 1
+        ? "Slow-Motion"
+        : next === 1
+          ? "Kecepatan Normal"
+          : "Diperlambat",
+      next < 1 ? "amber" : next === 1 ? "emerald" : "sky",
+    );
+  }
+
+  function handleSpeedResetAndPause() {
+    if (videoEl) {
+      videoEl.pause();
+      videoEl.playbackRate = 1.0;
+    }
+    playbackRate = 1.0;
+    isPlaying = false;
+    showVideoOsd("⏸", "1.0x", "Normal · Jeda", "emerald");
+  }
+
+  function handleJumpSeconds(delta: number) {
+    seekTo(currentTime + delta);
+    showVideoOsd(
+      delta < 0 ? "⏪" : "⏩",
+      `${delta > 0 ? "+" : ""}${delta.toFixed(1)}s`,
+      delta < 0 ? "Mundur" : "Maju",
+      "sky",
+    );
+  }
+
   function togglePlay() {
     if (!videoEl) return;
     if (isPlaying) {
       videoEl.pause();
     } else {
-      videoEl.play();
+      videoEl.playbackRate = playbackRate;
+      videoEl.play().catch(() => {});
     }
     isPlaying = !isPlaying;
   }
@@ -1016,6 +1175,7 @@
     );
     currentTime = videoEl.currentTime;
     projectStore.currentTime = currentTime;
+    showVideoOsd(step < 0 ? "◀" : "▶", `${step > 0 ? "+" : ""}${step}F`, "Frame", "sky");
   }
 
   function setInPoint() {
@@ -1837,6 +1997,16 @@
             <Edit3 size={10} />
             <span>Auto-Edit</span>
           </button>
+
+          <button
+            type="button"
+            class="hdr-tool-btn"
+            onclick={() => (showShortcutsModal = true)}
+            title="Atur Shortcut & Hotkey Keyboard (Tekan ?)"
+          >
+            <Keyboard size={11} />
+            <span>Shortcut</span>
+          </button>
         </div>
       {/if}
     </div>
@@ -2084,6 +2254,14 @@
                   >
                     Muat Video Sampel Demo
                   </button>
+                </div>
+              {/if}
+
+              {#if videoOsd}
+                <div class="video-osd-badge tone-{videoOsd.tone}">
+                  <span class="osd-icon">{videoOsd.icon}</span>
+                  <span class="osd-val">{videoOsd.value}</span>
+                  <span class="osd-lbl">{videoOsd.label}</span>
                 </div>
               {/if}
 
@@ -2537,15 +2715,20 @@
                   OUT]
                 </button>
 
-                <div class="speed-selector-group">
-                  {#each [0.5, 1.0, 1.5, 2.0] as spd}
+                <div class="speed-selector-group" title="Kecepatan Putar (J = Perlambat, K = 1.0x + Jeda, L = Percepat)">
+                  {#each [0.25, 0.5, 1.0, 1.5, 2.0, 4.0] as spd}
                     <button
                       type="button"
                       class="speed-pill"
                       class:active={playbackRate === spd}
                       onclick={() => {
-                        playbackRate = spd;
-                        if (videoEl) videoEl.playbackRate = spd;
+                        applyPlaybackSpeed(spd, isPlaying);
+                        showVideoOsd(
+                          spd > 1 ? "⏩" : spd < 1 ? "🐢" : "▶",
+                          `${spd}x`,
+                          spd === 1 ? "Kecepatan Normal" : spd < 1 ? "Slow-Motion" : "Dipercepat",
+                          spd > 1 ? "sky" : spd < 1 ? "amber" : "emerald",
+                        );
                       }}
                     >
                       {spd}x
@@ -3433,6 +3616,14 @@
       }}
     />
   {/if}
+
+  {#if showShortcutsModal}
+    <KeyboardShortcutsModal
+      isOpen={showShortcutsModal}
+      onClose={() => (showShortcutsModal = false)}
+      board={activeBoard}
+    />
+  {/if}
 </div>
 
 <style>
@@ -4042,6 +4233,57 @@
     width: 100%;
     height: 100%;
     object-fit: contain;
+  }
+
+  .video-osd-badge {
+    position: absolute;
+    top: 14px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 35;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 5px 14px;
+    border-radius: 999px;
+    background: rgba(6, 12, 23, 0.86);
+    border: 1px solid #38bdf8;
+    box-shadow: 0 6px 22px rgba(2, 6, 23, 0.75);
+    pointer-events: none;
+    backdrop-filter: blur(6px);
+  }
+
+  .video-osd-badge.tone-amber {
+    border-color: #f59e0b;
+  }
+
+  .video-osd-badge.tone-emerald {
+    border-color: #10b981;
+  }
+
+  .osd-icon {
+    font-size: 13px;
+  }
+
+  .osd-val {
+    font-family: "Fira Code", monospace;
+    font-size: 12.5px;
+    font-weight: 900;
+    color: #ffffff;
+  }
+
+  .osd-lbl {
+    font-size: 10.5px;
+    font-weight: 700;
+    color: #93c5fd;
+  }
+
+  .video-osd-badge.tone-amber .osd-lbl {
+    color: #fcd34d;
+  }
+
+  .video-osd-badge.tone-emerald .osd-lbl {
+    color: #6ee7b7;
   }
 
   .empty-video-placeholder {

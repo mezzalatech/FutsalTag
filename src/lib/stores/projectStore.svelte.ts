@@ -21,6 +21,7 @@ import type {
   TelestrationFilterMode,
   MatchKind,
   RecentProjectEntry,
+  SecondaryVideoAngle,
 } from '$lib/types';
 
 function loadInitialRecentProjects(): RecentProjectEntry[] {
@@ -180,6 +181,9 @@ class ProjectStore {
   hasUnsavedChanges = $state<boolean>(false);
   videoMissing = $state<boolean>(false);
   recentProjects = $state<RecentProjectEntry[]>(loadInitialRecentProjects());
+  secondaryAngles = $state<SecondaryVideoAngle[]>([]);
+  activeAngleId = $state<string>('main');
+  angleViewMode = $state<'single' | 'split'>('single');
 
   markDirty() {
     this.hasUnsavedChanges = true;
@@ -739,6 +743,9 @@ class ProjectStore {
     this.currentProjectFilePath = null;
     this.videoMissing = false;
     this.hasUnsavedChanges = false;
+    this.secondaryAngles = [];
+    this.activeAngleId = 'main';
+    this.angleViewMode = 'single';
     this.videoSrc = url;
     this.videoFilePath = path;
     this.videoTitle = title || 'Video Pertandingan Futsal';
@@ -777,6 +784,9 @@ class ProjectStore {
     this.hasUnsavedChanges = false;
     this.matchKind = 'match';
     this.competitionName = 'Pro Futsal League (Demo)';
+    this.secondaryAngles = [];
+    this.activeAngleId = 'main';
+    this.angleViewMode = 'single';
     this.videoSrc = null;
     this.videoFilePath = null;
     this.videoTitle = 'Sampel Demo: Pendekar United vs Blacksteel (Babak 1)';
@@ -1195,6 +1205,12 @@ class ProjectStore {
       playlists: this.playlists,
       presentationSlides: this.presentationSlides,
       clubLogoDataUrl: this.clubLogoDataUrl,
+      secondaryAngles: this.secondaryAngles.map((a) => ({
+        id: a.id,
+        name: a.name,
+        filePath: a.filePath,
+        offsetSec: a.offsetSec,
+      })),
     };
     return JSON.stringify(projectData, null, 2);
   }
@@ -1365,6 +1381,21 @@ class ProjectStore {
       }
       this.presentationSlides = Array.isArray(data.presentationSlides) ? data.presentationSlides : [];
       this.clubLogoDataUrl = typeof data.clubLogoDataUrl === 'string' ? data.clubLogoDataUrl : null;
+      this.secondaryAngles = Array.isArray(data.secondaryAngles)
+        ? data.secondaryAngles.map((a: any, idx: number) => {
+            const fp = typeof a?.filePath === 'string' ? a.filePath : null;
+            const isAbs = fp && isTauriDesktop() && (fp.startsWith('/') || /^[A-Za-z]:[\\/]/.test(fp));
+            return {
+              id: typeof a?.id === 'string' ? a.id : `cam_${Date.now()}_${idx}`,
+              name: typeof a?.name === 'string' ? a.name : `Kamera ${idx + 2}`,
+              filePath: fp,
+              videoSrc: isAbs && fp ? convertFileSrc(fp) : null,
+              offsetSec: Number(a?.offsetSec) || 0,
+            };
+          })
+        : [];
+      this.activeAngleId = 'main';
+      this.angleViewMode = 'single';
       this.periodKickoffs = Array.isArray(data.periodKickoffs) ? data.periodKickoffs : [];
       this.useMatchClock = Boolean(data.useMatchClock && this.periodKickoffs.length > 0);
       if (Array.isArray(data.startingLineupIds) && data.startingLineupIds.length > 0) {
@@ -1489,6 +1520,9 @@ class ProjectStore {
     this.competitionName = '';
     this.videoMissing = false;
     this.hasUnsavedChanges = false;
+    this.secondaryAngles = [];
+    this.activeAngleId = 'main';
+    this.angleViewMode = 'single';
     this.clearTagHistory();
     this.stage = 'hub';
   }
@@ -1811,6 +1845,64 @@ class ProjectStore {
 
   restoreExcludedClips() {
     this.clipExcludedKeys = {};
+  }
+
+  addSecondaryAngle(videoSrc: string, filePath: string | null, name?: string): SecondaryVideoAngle {
+    const angle: SecondaryVideoAngle = {
+      id: `cam_${Date.now()}`,
+      name: name?.trim() || `Kamera ${this.secondaryAngles.length + 2}`,
+      filePath,
+      videoSrc,
+      offsetSec: 0,
+    };
+    this.secondaryAngles = [...this.secondaryAngles, angle];
+    this.activeAngleId = angle.id;
+    this.angleViewMode = 'split';
+    this.markDirty();
+    return angle;
+  }
+
+  async pickSecondaryAngleFile(): Promise<boolean> {
+    if (!isTauriDesktop()) return false;
+    const { open } = await import('@tauri-apps/plugin-dialog');
+    const selected = await open({
+      title: `Pilih Video Sudut Kamera ${this.secondaryAngles.length + 2}`,
+      multiple: false,
+      filters: [{ name: 'Video Files', extensions: ['mp4', 'mov', 'mkv', 'webm', 'avi', 'm4v'] }],
+    });
+    if (!selected || typeof selected !== 'string') return false;
+    const fileName = selected.split(/[\\/]/).pop() || '';
+    const shortName = fileName.replace(/\.[^.]+$/, '').slice(0, 18) || `Kamera ${this.secondaryAngles.length + 2}`;
+    this.addSecondaryAngle(convertFileSrc(selected), selected, shortName);
+    return true;
+  }
+
+  updateSecondaryAngle(id: string, patch: { name?: string; offsetSec?: number }) {
+    this.secondaryAngles = this.secondaryAngles.map((a) =>
+      a.id === id
+        ? {
+            ...a,
+            ...(patch.name !== undefined ? { name: patch.name } : {}),
+            ...(patch.offsetSec !== undefined ? { offsetSec: Number(patch.offsetSec.toFixed(2)) } : {}),
+          }
+        : a
+    );
+    this.markDirty();
+  }
+
+  removeSecondaryAngle(id: string) {
+    this.secondaryAngles = this.secondaryAngles.filter((a) => a.id !== id);
+    if (this.activeAngleId === id) {
+      this.activeAngleId = this.secondaryAngles[0]?.id ?? 'main';
+    }
+    if (this.secondaryAngles.length === 0) {
+      this.angleViewMode = 'single';
+    }
+    this.markDirty();
+  }
+
+  setActiveAngle(id: string) {
+    this.activeAngleId = id;
   }
 }
 

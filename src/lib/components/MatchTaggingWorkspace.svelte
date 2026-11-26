@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import {
     isTauriDesktop,
@@ -75,14 +75,38 @@
     Timer,
     Volume2,
     Keyboard,
+    Camera,
+    Columns2,
   } from "lucide-svelte";
 
   // --- REFS & STATE ---
   let videoEl = $state<HTMLVideoElement | null>(null);
+  let angle2VideoEl = $state<HTMLVideoElement | null>(null);
+  let angle2InputEl = $state<HTMLInputElement | undefined>(undefined);
   let isPlaying = $state(false);
   let currentTime = $state(0);
   let duration = $state(120);
   let playbackRate = $state(1.0);
+
+  const activeSecondaryAngle = $derived(
+    projectStore.secondaryAngles.find((a) => a.id === projectStore.activeAngleId) ??
+      projectStore.secondaryAngles[0] ??
+      null,
+  );
+  const showAngle2 = $derived(
+    Boolean(
+      activeSecondaryAngle?.videoSrc &&
+        (projectStore.angleViewMode === "split" ||
+          projectStore.activeAngleId !== "main"),
+    ),
+  );
+  const hideMainAngle = $derived(
+    Boolean(
+      activeSecondaryAngle?.videoSrc &&
+        projectStore.angleViewMode === "single" &&
+        projectStore.activeAngleId !== "main",
+    ),
+  );
   let showShortcutsModal = $state(false);
   let videoOsd = $state<{
     icon: string;
@@ -1251,6 +1275,65 @@
     }, 900);
   }
 
+  function syncSecondaryAngle(forceSeek = false) {
+    if (!angle2VideoEl || !activeSecondaryAngle?.videoSrc || !showAngle2) return;
+    const target = Math.max(0, currentTime + activeSecondaryAngle.offsetSec);
+    if (
+      angle2VideoEl.readyState >= 1 &&
+      (forceSeek || Math.abs(angle2VideoEl.currentTime - target) > 0.25)
+    ) {
+      const maxDur = Number.isFinite(angle2VideoEl.duration)
+        ? angle2VideoEl.duration
+        : target;
+      angle2VideoEl.currentTime = Math.min(target, maxDur);
+    }
+    angle2VideoEl.playbackRate = playbackRate;
+    if (isPlaying && angle2VideoEl.paused) {
+      angle2VideoEl.play().catch(() => {});
+    } else if (!isPlaying && !angle2VideoEl.paused) {
+      angle2VideoEl.pause();
+    }
+  }
+
+  $effect(() => {
+    const _off = activeSecondaryAngle?.offsetSec;
+    const _show = showAngle2;
+    const _play = isPlaying;
+    void _off;
+    void _play;
+    if (_show) {
+      untrack(() => syncSecondaryAngle(true));
+    }
+  });
+
+  async function handleAddAngleClick() {
+    if (isTauriDesktop()) {
+      const ok = await projectStore.pickSecondaryAngleFile();
+      if (ok) notifyUser("Kamera sudut ke-2 ditambahkan!");
+    } else {
+      angle2InputEl?.click();
+    }
+  }
+
+  function handleAngle2FileInput(e: Event) {
+    const input = e.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    if (file) {
+      const url = URL.createObjectURL(file);
+      const shortName = file.name.replace(/\.[^.]+$/, "").slice(0, 18) || "Kamera 2";
+      projectStore.addSecondaryAngle(url, file.name, shortName);
+      notifyUser(`Kamera "${shortName}" ditambahkan!`);
+    }
+    input.value = "";
+  }
+
+  function handleAngleOffsetDelta(delta: number) {
+    if (!activeSecondaryAngle) return;
+    projectStore.updateSecondaryAngle(activeSecondaryAngle.id, {
+      offsetSec: activeSecondaryAngle.offsetSec + delta,
+    });
+  }
+
   function applyPlaybackSpeed(nextRate: number, autoPlay: boolean = true) {
     playbackRate = nextRate;
     if (videoEl) {
@@ -1260,6 +1343,7 @@
         isPlaying = true;
       }
     }
+    syncSecondaryAngle(false);
   }
 
   function handleSpeedUp() {
@@ -1341,12 +1425,14 @@
       videoEl.play().catch(() => {});
     }
     isPlaying = !isPlaying;
+    syncSecondaryAngle(true);
   }
 
   function handleTimeUpdate() {
     if (!videoEl) return;
     currentTime = videoEl.currentTime;
     projectStore.currentTime = currentTime;
+    syncSecondaryAngle(false);
 
     // Sequential Queue Playback (e.g. from Cross-Tabulation Matrix)
     if (
@@ -1391,6 +1477,7 @@
     videoEl.currentTime = Math.max(0, Math.min(seconds, duration));
     currentTime = videoEl.currentTime;
     projectStore.currentTime = currentTime;
+    syncSecondaryAngle(true);
   }
 
   function stepFrame(step: number) {
@@ -2461,13 +2548,24 @@
           <!-- CENTER COLUMN: CLEAN VIDEO + PINNED PLAYERS BAR + TRANSPORT + COLLAPSIBLE SPATIAL CANVAS -->
           <div class="player-column">
             <!-- VIDEO CONTAINER (PURE VIDEO, NO OBSTRUCTIVE OVERLAY BAR) -->
-            <div class="video-container">
+            <div
+              class="video-container"
+              class:split-angles={projectStore.angleViewMode === "split" && showAngle2}
+            >
+              <input
+                bind:this={angle2InputEl}
+                type="file"
+                accept="video/*"
+                onchange={handleAngle2FileInput}
+                style="display: none;"
+              />
               {#if projectStore.videoSrc}
                 <!-- svelte-ignore a11y_media_has_caption -->
                 <video
                   bind:this={videoEl}
                   src={projectStore.videoSrc}
                   class="match-video"
+                  class:angle-hidden={hideMainAngle}
                   ontimeupdate={handleTimeUpdate}
                   onloadedmetadata={handleLoadedMetadata}
                   onclick={togglePlay}
@@ -2489,6 +2587,20 @@
                     Muat Video Sampel Demo
                   </button>
                 </div>
+              {/if}
+
+              {#if showAngle2 && activeSecondaryAngle?.videoSrc}
+                <!-- svelte-ignore a11y_media_has_caption -->
+                <video
+                  bind:this={angle2VideoEl}
+                  src={activeSecondaryAngle.videoSrc}
+                  muted
+                  class="match-video angle2-video"
+                  onloadedmetadata={() => syncSecondaryAngle(true)}
+                  onclick={togglePlay}
+                ></video>
+                <span class="angle-badge cam1" class:hidden-badge={hideMainAngle}>Cam 1 · Utama</span>
+                <span class="angle-badge cam2">{activeSecondaryAngle.name} ({activeSecondaryAngle.offsetSec >= 0 ? "+" : ""}{activeSecondaryAngle.offsetSec.toFixed(1)}s)</span>
               {/if}
 
               {#if videoOsd}
@@ -2623,6 +2735,67 @@
                 />
               </div>
             </div>
+
+            {#if projectStore.secondaryAngles.length > 0}
+              <div class="multi-angle-bar">
+                <div class="mab-left">
+                  <span class="mab-lbl"><Camera size={11} /> SUDUT:</span>
+                  <button
+                    type="button"
+                    class="mab-pill"
+                    class:active={projectStore.angleViewMode === "single" && projectStore.activeAngleId === "main"}
+                    onclick={() => {
+                      projectStore.angleViewMode = "single";
+                      projectStore.setActiveAngle("main");
+                    }}
+                  >
+                    Cam 1 (Utama)
+                  </button>
+                  {#each projectStore.secondaryAngles as ang (ang.id)}
+                    <button
+                      type="button"
+                      class="mab-pill"
+                      class:active={projectStore.activeAngleId === ang.id && projectStore.angleViewMode === "single"}
+                      onclick={() => {
+                        projectStore.angleViewMode = "single";
+                        projectStore.setActiveAngle(ang.id);
+                      }}
+                    >
+                      {ang.name}
+                    </button>
+                  {/each}
+                  <button
+                    type="button"
+                    class="mab-pill"
+                    class:active={projectStore.angleViewMode === "split"}
+                    onclick={() => {
+                      projectStore.angleViewMode =
+                        projectStore.angleViewMode === "split" ? "single" : "split";
+                    }}
+                    title="Tampilkan Cam 1 & Cam 2 berdampingan"
+                  >
+                    <Columns2 size={11} />
+                    <span>Split 2 Cam</span>
+                  </button>
+                  <button type="button" class="mab-pill" onclick={handleAddAngleClick} title="Tambah sudut kamera lain">
+                    + Cam
+                  </button>
+                </div>
+
+                {#if activeSecondaryAngle}
+                  <div class="mab-right">
+                    <span class="mab-off-lbl">Offset Sync:</span>
+                    <button type="button" class="mab-step" onclick={() => handleAngleOffsetDelta(-1)}>-1s</button>
+                    <button type="button" class="mab-step" onclick={() => handleAngleOffsetDelta(-0.1)}>-0.1</button>
+                    <span class="mab-off-val">{activeSecondaryAngle.offsetSec >= 0 ? "+" : ""}{activeSecondaryAngle.offsetSec.toFixed(1)}s</span>
+                    <button type="button" class="mab-step" onclick={() => handleAngleOffsetDelta(0.1)}>+0.1</button>
+                    <button type="button" class="mab-step" onclick={() => handleAngleOffsetDelta(1)}>+1s</button>
+                    <button type="button" class="mab-step" onclick={() => projectStore.updateSecondaryAngle(activeSecondaryAngle.id, { offsetSec: 0 })} title="Reset offset">↺</button>
+                    <button type="button" class="mab-step del" onclick={() => projectStore.removeSecondaryAngle(activeSecondaryAngle.id)} title="Hapus kamera ini">×</button>
+                  </div>
+                {/if}
+              </div>
+            {/if}
 
             <!-- MOMEN-STYLE TRANSPORT BAR -->
             <div class="momen-transport-bar">
@@ -3003,6 +3176,16 @@
                   {/if}
                   <span>Kanvas</span>
                 </button>
+                {#if projectStore.secondaryAngles.length === 0}
+                  <button
+                    type="button"
+                    class="btn-ctrl-sm"
+                    onclick={handleAddAngleClick}
+                    title="Tambah sudut kamera ke-2 untuk sinkronisasi Multi-Angle"
+                  >
+                    + Cam 2
+                  </button>
+                {/if}
               </div>
             </div>
 
@@ -4538,10 +4721,117 @@
     overflow: hidden;
   }
 
+  .video-container.split-angles {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2px;
+  }
+
   .match-video {
     width: 100%;
     height: 100%;
     object-fit: contain;
+  }
+
+  .match-video.angle-hidden {
+    display: none;
+  }
+
+  .angle-badge {
+    position: absolute;
+    bottom: 8px;
+    z-index: 20;
+    font-size: 9.5px;
+    font-weight: 800;
+    padding: 2px 8px;
+    border-radius: 5px;
+    background: rgba(2, 6, 23, 0.78);
+    border: 1px solid #1e3b68;
+    color: #e2e8f0;
+    pointer-events: none;
+  }
+
+  .angle-badge.cam1 {
+    left: 10px;
+  }
+
+  .angle-badge.cam2 {
+    right: 10px;
+    border-color: #38bdf8;
+    color: #7dd3fc;
+  }
+
+  .angle-badge.hidden-badge {
+    display: none;
+  }
+
+  .multi-angle-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 4px 10px;
+    background: #071120;
+    border-bottom: 1px solid #1a355d;
+    font-size: 10px;
+  }
+
+  .mab-left,
+  .mab-right {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex-wrap: wrap;
+  }
+
+  .mab-lbl {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 9.5px;
+    font-weight: 800;
+    color: #38bdf8;
+  }
+
+  .mab-pill,
+  .mab-step {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: #0f172a;
+    border: 1px solid #243b61;
+    color: #cbd5e1;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 7px;
+    border-radius: 5px;
+    cursor: pointer;
+  }
+
+  .mab-pill.active {
+    background: #0284c7;
+    border-color: #38bdf8;
+    color: #ffffff;
+  }
+
+  .mab-off-lbl {
+    font-size: 9.5px;
+    color: #94a3b8;
+  }
+
+  .mab-off-val {
+    font-family: 'Fira Code', monospace;
+    font-size: 10px;
+    font-weight: 800;
+    color: #38bdf8;
+    min-width: 38px;
+    text-align: center;
+  }
+
+  .mab-step.del:hover {
+    border-color: #ef4444;
+    color: #fca5a5;
   }
 
   .video-osd-badge {

@@ -388,6 +388,14 @@ export interface ExportOptions {
 
 export type MatchKind = 'match' | 'training';
 
+export interface SecondaryVideoAngle {
+  id: string;
+  name: string;
+  filePath: string | null;
+  videoSrc: string | null;
+  offsetSec: number;
+}
+
 export interface RecentProjectEntry {
   filePath: string;
   title: string;

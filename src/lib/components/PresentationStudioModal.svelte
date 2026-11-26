@@ -53,6 +53,7 @@
   let currentSlideIdx = $state(0);
   let showSlideDrawer = $state(false);
   let showFilterPanel = $state(false);
+  let presenterAngleId = $state<string>('main');
   let isFullscreen = $state(false);
   let autoFreezeEnabled = $state(true);
   let voiceoverEnabled = $state(true);
@@ -85,8 +86,15 @@
   let activeStroke = $state<LiveStroke | null>(null);
 
   const currentSlide = $derived(slides[currentSlideIdx] ?? null);
+  const activePresenterAngle = $derived(
+    currentSlide?.kind === 'clip' &&
+      (!currentSlide.matchId || currentSlide.matchId === '__active__')
+      ? projectStore.secondaryAngles.find((a) => a.id === presenterAngleId) ?? null
+      : null
+  );
   const activeSlideVideoSrc = $derived(
-    currentSlide?.kind === 'clip' ? (currentSlide.videoSrc ?? projectStore.videoSrc) : projectStore.videoSrc
+    activePresenterAngle?.videoSrc ??
+      (currentSlide?.kind === 'clip' ? (currentSlide.videoSrc ?? projectStore.videoSrc) : projectStore.videoSrc)
   );
 
   function commitSlides(next: PresentationSlide[]) {
@@ -110,7 +118,10 @@
   }
 
   const activeCameraZoom = $derived(
-    isFreezing && currentSlide?.kind === 'clip' && currentSlide.showTelestration !== false
+    isFreezing &&
+      currentSlide?.kind === 'clip' &&
+      currentSlide.showTelestration !== false &&
+      !activePresenterAngle
       ? resolveLiveTag(currentSlide.tag, currentSlide.matchId).drawings?.find((d) => d.cameraZoomTarget)
           ?.cameraZoomTarget ?? null
       : null
@@ -227,7 +238,10 @@
         currentTime = videoEl.currentTime;
         const tag = resolveLiveTag(currentSlide.tag, currentSlide.matchId);
         const bounds = clipBounds(currentSlide);
-        const telOn = currentSlide.showTelestration !== false;
+        const angleOff = activePresenterAngle?.offsetSec ?? 0;
+        const effStart = Math.max(0, bounds.start + angleOff);
+        const effEnd = Math.max(effStart + 0.5, bounds.end + angleOff);
+        const telOn = currentSlide.showTelestration !== false && !activePresenterAngle;
 
         if (
           telOn &&
@@ -254,11 +268,11 @@
           }
         }
 
-        if (!isFreezing && currentTime >= bounds.end) {
-          if (tag.appendCleanReplay && !isReplayPass) {
+        if (!isFreezing && currentTime >= effEnd) {
+          if (telOn && tag.appendCleanReplay && !isReplayPass) {
             isReplayPass = true;
-            videoEl.currentTime = bounds.start;
-            currentTime = bounds.start;
+            videoEl.currentTime = effStart;
+            currentTime = effStart;
           } else {
             isReplayPass = false;
             if (currentSlideIdx + 1 < slides.length) {
@@ -328,7 +342,7 @@
     ctx.clearRect(0, 0, telCanvasEl.width, telCanvasEl.height);
     ctx.scale(dpr, dpr);
 
-    if (!isReplayPass && currentSlide?.kind === 'clip' && currentSlide.showTelestration !== false) {
+    if (!isReplayPass && currentSlide?.kind === 'clip' && currentSlide.showTelestration !== false && !activePresenterAngle) {
       const liveTag = resolveLiveTag(currentSlide.tag, currentSlide.matchId);
       const bounds = clipBounds(currentSlide);
       if (liveTag.drawings?.length) {
@@ -395,16 +409,18 @@
 
     if (currentSlide?.kind === 'clip') {
       const bounds = clipBounds(currentSlide);
+      const angleOff = activePresenterAngle?.offsetSec ?? 0;
+      const effStart = Math.max(0, bounds.start + angleOff);
       const liveTag = resolveLiveTag(currentSlide.tag, currentSlide.matchId);
-      const telOn = currentSlide.showTelestration !== false;
-      const srcUrl = currentSlide.videoSrc ?? projectStore.videoSrc;
-      currentTime = bounds.start;
+      const telOn = currentSlide.showTelestration !== false && !activePresenterAngle;
+      const srcUrl = activeSlideVideoSrc;
+      currentTime = effStart;
       if (videoEl) {
         const slideSpeed = currentSlide.speed ?? 1;
         const slideMuted = Boolean(currentSlide.muted);
         const startPlayback = () => {
           if (!videoEl) return;
-          videoEl.currentTime = bounds.start;
+          videoEl.currentTime = effStart;
           videoEl.playbackRate = slideSpeed;
           videoEl.muted = slideMuted;
           if (autoPlay && srcUrl) {
@@ -493,6 +509,7 @@
     const clamped = Math.max(0, Math.min(slides.length - 1, nextIdx));
     if (clamped === currentSlideIdx && currentSlide) return;
     currentSlideIdx = clamped;
+    presenterAngleId = 'main';
     liveStrokes = [];
     loadCurrentSlideMedia(true);
   }
@@ -1058,6 +1075,34 @@
           <Sparkles size={13} />
           <span>{currentSlide.showTelestration !== false ? 'Telestrasi' : 'Polos'}</span>
         </button>
+        {#if (!currentSlide.matchId || currentSlide.matchId === '__active__') && projectStore.secondaryAngles.length > 0}
+          <div class="clip-ctrl-group" title="Ganti sudut kamera untuk klip ini">
+            <button
+              type="button"
+              class="spd-pill"
+              class:active={presenterAngleId === 'main'}
+              onclick={() => {
+                presenterAngleId = 'main';
+                loadCurrentSlideMedia(isPlaying);
+              }}
+            >
+              Cam 1
+            </button>
+            {#each projectStore.secondaryAngles as ang (ang.id)}
+              <button
+                type="button"
+                class="spd-pill"
+                class:active={presenterAngleId === ang.id}
+                onclick={() => {
+                  presenterAngleId = ang.id;
+                  loadCurrentSlideMedia(isPlaying);
+                }}
+              >
+                {ang.name}
+              </button>
+            {/each}
+          </div>
+        {/if}
         <div class="trim-pill" title="Trim In / Out sementara untuk presentasi (tidak mengubah klip asli)">
           <span>In {bounds.start.toFixed(1)}s</span>
           <button type="button" class="trim-step" onclick={() => updateCurrentClipSlide({ trimStart: Math.max(0, bounds.start - 0.5) })}>-</button>

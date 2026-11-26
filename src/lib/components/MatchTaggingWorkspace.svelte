@@ -96,9 +96,12 @@
   let ytReady = $state(false);
   let ytError = $state<string | null>(null);
   let isPlaying = $state(false);
-  let currentTime = $state(0);
-  let duration = $state(120);
+  let currentTime = $state(projectStore.currentTime || 0);
+  let duration = $state(projectStore.duration || 120);
+  let hasRestoredInitialTime = projectStore.currentTime <= 0;
   let playbackRate = $state(1.0);
+  let reverseRate = $state(0);
+  const REVERSE_SPEEDS = [0.5, 1.0, 2.0, 4.0];
 
   const ytVideoId = $derived(
     projectStore.onlineSourceType === "youtube" && !projectStore.videoSrc
@@ -1349,6 +1352,12 @@
 
     window.addEventListener("keydown", handleKeyDown);
     return () => {
+      if (hasRestoredInitialTime && Number.isFinite(currentTime) && currentTime >= 0) {
+        projectStore.currentTime = currentTime;
+      }
+      reverseRate = 0;
+      videoEl?.pause();
+      angle2VideoEl?.pause();
       window.removeEventListener("keydown", handleKeyDown);
       unlistenRemoteTap?.();
     };
@@ -1456,7 +1465,32 @@
     });
   }
 
+  function startReversePlayback(rate = 1.0) {
+    if (projectStore.liveCaptureActive) return;
+    hasRestoredInitialTime = true;
+    activeLoopClip = null;
+    activeClipQueue = [];
+    videoEl?.pause();
+    angle2VideoEl?.pause();
+    ytPlayer?.pauseVideo?.();
+    isPlaying = false;
+    reverseRate = rate;
+    showVideoOsd("⏪", `-${rate}x`, "Putar Mundur", "amber");
+  }
+
+  function cycleReversePlayback() {
+    if (reverseRate === 0) {
+      startReversePlayback(1.0);
+      return;
+    }
+    const order = [1.0, 2.0, 4.0, 0.5];
+    const idx = order.indexOf(reverseRate);
+    const next = order[(idx + 1) % order.length];
+    startReversePlayback(next);
+  }
+
   function applyPlaybackSpeed(nextRate: number, autoPlay: boolean = true) {
+    reverseRate = 0;
     playbackRate = nextRate;
     if (videoEl) {
       videoEl.playbackRate = nextRate;
@@ -1479,6 +1513,16 @@
   }
 
   function handleSpeedUp() {
+    if (reverseRate > 0) {
+      const idx = REVERSE_SPEEDS.indexOf(reverseRate);
+      if (idx > 0) {
+        startReversePlayback(REVERSE_SPEEDS[idx - 1]);
+      } else {
+        applyPlaybackSpeed(1.0, true);
+        showVideoOsd("▶", "1x", "Kecepatan Normal", "emerald");
+      }
+      return;
+    }
     let closestIdx = 0;
     let bestDiff = Infinity;
     SPEED_STEPS.forEach((s, idx) => {
@@ -1504,6 +1548,16 @@
   }
 
   function handleSpeedDown() {
+    if (reverseRate > 0) {
+      const idx = REVERSE_SPEEDS.indexOf(reverseRate);
+      const next = REVERSE_SPEEDS[Math.min(REVERSE_SPEEDS.length - 1, (idx === -1 ? 1 : idx) + 1)];
+      startReversePlayback(next);
+      return;
+    }
+    if (!isPlaying || playbackRate <= SPEED_STEPS[0]) {
+      startReversePlayback(1.0);
+      return;
+    }
     let closestIdx = 0;
     let bestDiff = Infinity;
     SPEED_STEPS.forEach((s, idx) => {
@@ -1529,6 +1583,7 @@
   }
 
   function handleSpeedResetAndPause() {
+    reverseRate = 0;
     if (videoEl) {
       videoEl.pause();
       videoEl.playbackRate = 1.0;
@@ -1553,6 +1608,15 @@
 
   function togglePlay() {
     if (projectStore.liveCaptureActive) return;
+    hasRestoredInitialTime = true;
+    if (reverseRate > 0) {
+      reverseRate = 0;
+      isPlaying = false;
+      videoEl?.pause();
+      angle2VideoEl?.pause();
+      showVideoOsd("⏸", "Jeda", "Putar Mundur Berhenti", "emerald");
+      return;
+    }
     if (ytPlayer && ytReady) {
       if (isPlaying) {
         ytPlayer.pauseVideo?.();
@@ -1578,6 +1642,51 @@
     isPlaying = !isPlaying;
     syncSecondaryAngle(true);
   }
+
+  // Smooth Backward / Reverse Playback loop (Momen Sports style)
+  $effect(() => {
+    const rate = reverseRate;
+    if (rate <= 0) return;
+    let lastMs = performance.now();
+    let lastSeekMs = 0;
+    let virtualTime = untrack(() => currentTime);
+    let rafId = 0;
+
+    const tickReverse = (now: number) => {
+      const dt = Math.min(0.15, Math.max(0, (now - lastMs) / 1000));
+      lastMs = now;
+      virtualTime = Math.max(0, virtualTime - dt * rate);
+
+      if (videoEl) {
+        if (now - lastSeekMs >= 40 && !videoEl.seeking) {
+          videoEl.currentTime = virtualTime;
+          lastSeekMs = now;
+        }
+      } else if (ytPlayer && ytReady) {
+        if (now - lastSeekMs >= 140) {
+          ytPlayer.seekTo?.(virtualTime, true);
+          lastSeekMs = now;
+        }
+      }
+
+      currentTime = virtualTime;
+      projectStore.currentTime = virtualTime;
+      syncSecondaryAngle(true);
+
+      if (virtualTime <= 0.01) {
+        if (videoEl) videoEl.currentTime = 0;
+        currentTime = 0;
+        projectStore.currentTime = 0;
+        reverseRate = 0;
+        showVideoOsd("⏮", "00:00", "Awal Video", "emerald");
+        return;
+      }
+      rafId = requestAnimationFrame(tickReverse);
+    };
+
+    rafId = requestAnimationFrame(tickReverse);
+    return () => cancelAnimationFrame(rafId);
+  });
 
   // YouTube IFrame API controller & time sync when onlineSourceType === 'youtube'
   $effect(() => {
@@ -1620,6 +1729,13 @@
               duration = d;
               projectStore.duration = d;
             }
+            const saved = projectStore.currentTime;
+            if (!hasRestoredInitialTime && Number.isFinite(saved) && saved > 0) {
+              ev.target?.seekTo?.(saved, true);
+              currentTime = saved;
+              syncSecondaryAngle(true);
+            }
+            hasRestoredInitialTime = true;
           },
           onStateChange: (ev: any) => {
             if (cancelled) return;
@@ -1717,6 +1833,7 @@
 
   function handleTimeUpdate() {
     if (!videoEl) return;
+    if (!hasRestoredInitialTime) return;
     currentTime = videoEl.currentTime;
     projectStore.currentTime = currentTime;
     syncSecondaryAngle(false);
@@ -1749,11 +1866,21 @@
 
   function handleLoadedMetadata() {
     if (!videoEl) return;
-    duration = videoEl.duration || 120;
-    projectStore.duration = duration;
+    const dur = videoEl.duration || 120;
+    duration = dur;
+    projectStore.duration = dur;
+    const saved = projectStore.currentTime;
+    if (!hasRestoredInitialTime && Number.isFinite(saved) && saved > 0 && saved < dur) {
+      videoEl.currentTime = saved;
+      currentTime = saved;
+      syncSecondaryAngle(true);
+    }
+    hasRestoredInitialTime = true;
   }
 
   function seekTo(seconds: number) {
+    reverseRate = 0;
+    hasRestoredInitialTime = true;
     const target = Math.max(0, Math.min(seconds, duration));
     if (ytPlayer && ytReady) {
       activeLoopClip = null;
@@ -1778,6 +1905,7 @@
   }
 
   function stepFrame(step: number) {
+    reverseRate = 0;
     const fps = 25;
     if (ytPlayer && ytReady) {
       ytPlayer.pauseVideo?.();
@@ -2545,7 +2673,23 @@
 
           <button
             type="button"
-            class="hdr-tool-btn"
+            class="hdr-tool-btn hdr-default-btn"
+            class:is-default={projectStore.defaultBoardId === activeBoard.id}
+            onclick={() => {
+              projectStore.setDefaultBoard(activeBoard.id);
+              notifyUser(`"${activeBoard.name}" ditetapkan sebagai Coding Board default`);
+            }}
+            title={projectStore.defaultBoardId === activeBoard.id
+              ? "Papan ini sudah menjadi Coding Board default"
+              : "Tetapkan papan ini sebagai Coding Board default"}
+          >
+            <Star size={11} />
+            <span>{projectStore.defaultBoardId === activeBoard.id ? "Default" : "Set Default"}</span>
+          </button>
+
+          <button
+            type="button"
+            class="hdr-tool-btn hdr-icon-compact"
             onclick={handleHeaderImportBoard}
             title="Impor Papan Tagging Momen (.momen.json / .json)"
           >
@@ -2562,7 +2706,7 @@
 
           <button
             type="button"
-            class="hdr-tool-btn"
+            class="hdr-tool-btn hdr-icon-compact"
             onclick={handleExportBoardJson}
             title="Ekspor Papan Aktif (.momen.json)"
           >
@@ -2647,7 +2791,7 @@
 
           <button
             type="button"
-            class="hdr-tool-btn"
+            class="hdr-tool-btn hdr-icon-compact"
             disabled={projectStore.tags.length === 0}
             onclick={() => (showShiftTimesModal = true)}
             title="Geser timestamp semua klip (Shift Action Times) untuk sinkronisasi video/stopwatch"
@@ -2658,7 +2802,7 @@
 
           <button
             type="button"
-            class="hdr-tool-btn hdr-auto-btn"
+            class="hdr-tool-btn hdr-auto-btn hdr-icon-compact"
             class:active={isPhoneRemoteRunning}
             onclick={() => (showPhoneRemoteModal = true)}
             title="Tagging langsung dari HP/Tablet lewat Wi-Fi (QR Code tanpa instal aplikasi)"
@@ -2669,7 +2813,7 @@
 
           <button
             type="button"
-            class="hdr-tool-btn"
+            class="hdr-tool-btn hdr-icon-compact"
             onclick={() => (showShortcutsModal = true)}
             title="Atur Shortcut & Hotkey Keyboard (Tekan ?)"
           >
@@ -2731,11 +2875,10 @@
     </div>
   </header>
 
-  <!-- WORKSPACE BODY (CONDITIONAL ON SUBTAB) -->
+  <!-- WORKSPACE BODY (KEEP VIDEO MOUNTED ACROSS SUB-TABS SO TIME NEVER RESETS & AVOID WKWEBVIEW STREAM ABORT) -->
   <main class="workspace-main">
-    {#if workspaceSubTab === "tagging"}
       <!-- MODE 1: MOMEN SPORTS 2-TIER WORKSPACE (LEFT TAG/LABEL · CENTER VIDEO/PLAYERS/CANVAS · RIGHT CLIPS · BOTTOM 100% LINIMASA) -->
-      <div class="tagging-two-tier">
+      <div class="tagging-two-tier" class:subtab-hidden={workspaceSubTab !== "tagging"}>
         <div class="tagging-top-tier">
           <!-- LEFT SIDEBAR: SEARCH + TAG + LABEL (196px) -->
           <aside class="left-momen-sidebar">
@@ -3452,8 +3595,8 @@
                   {/if}
                 </div>
 
-                <span class="play-status-pill" class:running={isPlaying}>
-                  ● {isPlaying ? "jalan" : "jeda"}
+                <span class="play-status-pill" class:running={isPlaying || reverseRate > 0}>
+                  ● {reverseRate > 0 ? `◀ -${reverseRate}x` : isPlaying ? "jalan" : "jeda"}
                 </span>
               </div>
 
@@ -3524,12 +3667,21 @@
                   OUT]
                 </button>
 
-                <div class="speed-selector-group" title="Kecepatan Putar (J = Perlambat, K = 1.0x + Jeda, L = Percepat)">
+                <div class="speed-selector-group" title="Kecepatan Putar (J = Putar Mundur / Perlambat, K = 1.0x + Jeda, L = Percepat)">
+                  <button
+                    type="button"
+                    class="speed-pill rev-pill"
+                    class:active={reverseRate > 0}
+                    onclick={cycleReversePlayback}
+                    title="Putar Mundur / Backward (klik berulang: -1x → -2x → -4x → -0.5x; Spasi/K untuk jeda)"
+                  >
+                    {reverseRate > 0 ? `◀◀ -${reverseRate}x` : "◀◀"}
+                  </button>
                   {#each [0.25, 0.5, 1.0, 1.5, 2.0, 4.0] as spd}
                     <button
                       type="button"
                       class="speed-pill"
-                      class:active={playbackRate === spd}
+                      class:active={reverseRate === 0 && playbackRate === spd}
                       onclick={() => {
                         applyPlaybackSpeed(spd, isPlaying);
                         showVideoOsd(
@@ -3700,7 +3852,7 @@
                       <Search size={12} />
                       <input
                         type="text"
-                        placeholder="Cari klip, label, pemain..."
+                        placeholder="Cari klip / label..."
                         bind:value={searchQuery}
                         class="search-input-blue"
                       />
@@ -3783,7 +3935,7 @@
                         onclick={toggleSelectAllFiltered}
                         title="Pilih / Batal Pilih Semua Klip Terlihat (Ctrl+A)"
                       >
-                        {allFilteredSelected ? "✓ Semua" : "Pilih Semua"}
+                        {allFilteredSelected ? "✓ Semua" : "Pilih"}
                       </button>
                     {/if}
                   </div>
@@ -4223,7 +4375,7 @@
           />
         </div>
       </div>
-    {:else if workspaceSubTab === "coding_board"}
+    {#if workspaceSubTab === "coding_board"}
       <!-- MODE 2: FULLSCREEN MOMEN & ONCE SPORT ACTION PAD -->
       <div class="momen-fullscreen-pad">
         <div class="mini-transport-strip">
@@ -4271,8 +4423,13 @@
         <VisualCodingBoard
           board={activeBoard}
           boards={projectStore.boards}
+          defaultBoardId={projectStore.defaultBoardId}
           initialSelectedButtonId={codingBoardFocusButtonId}
           onSelectBoard={(id) => projectStore.selectBoard(id)}
+          onSetDefaultBoard={(id) => {
+            projectStore.setDefaultBoard(id);
+            notifyUser("Coding Board default disimpan");
+          }}
           onCreateBoard={() => projectStore.createNewBoard()}
           onDuplicateBoard={() => projectStore.duplicateActiveBoard()}
           onDeleteBoard={(id) => projectStore.deleteBoard(id)}
@@ -4581,8 +4738,14 @@
     display: flex;
     align-items: center;
     gap: 4px;
-    flex-shrink: 0;
+    flex: 1;
     min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .board-header-controls::-webkit-scrollbar {
+    display: none;
   }
 
   .hdr-board-select {
@@ -4594,7 +4757,8 @@
     padding: 2px 6px;
     border-radius: 5px;
     outline: none;
-    max-width: 175px;
+    max-width: 155px;
+    flex-shrink: 0;
   }
 
   .hdr-tool-btn {
@@ -4610,6 +4774,7 @@
     border-radius: 5px;
     cursor: pointer;
     white-space: nowrap;
+    flex-shrink: 0;
   }
 
   .hdr-tool-btn:hover:not(:disabled) {
@@ -4803,6 +4968,16 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
+  }
+
+  .tagging-two-tier.subtab-hidden {
+    display: none !important;
+  }
+
+  .hdr-default-btn.is-default {
+    border-color: #f59e0b;
+    color: #fcd34d;
+    background: rgba(245, 158, 11, 0.16);
   }
 
   .tagging-top-tier {
@@ -5581,10 +5756,15 @@
     border-bottom: 1px solid #1a355d;
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 0 8px;
+    gap: 6px;
+    padding: 0 6px;
     flex-shrink: 0;
-    overflow: hidden;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .momen-transport-bar::-webkit-scrollbar {
+    display: none;
   }
 
   .mtb-left {
@@ -5756,6 +5936,11 @@
   .speed-pill.active {
     background-color: #0284c7;
     color: #ffffff;
+  }
+
+  .speed-pill.rev-pill.active {
+    background-color: #d97706;
+    color: #060b14;
   }
 
   .btn-draw-quick {
@@ -6860,6 +7045,8 @@
     font-weight: 800;
     padding: 3px 4px;
     border-radius: 4px;
+    white-space: nowrap;
+    flex-shrink: 0;
     cursor: pointer;
     transition: all 0.12s ease;
   }
@@ -6917,6 +7104,15 @@
   .clip-star-btn:hover,
   .clip-star-btn.starred {
     color: #f59e0b;
+  }
+
+  @media (max-width: 1520px) {
+    .hdr-icon-compact span {
+      display: none;
+    }
+    .hdr-tool-btn {
+      padding: 3px 6px;
+    }
   }
 
   @media (max-width: 1220px) {

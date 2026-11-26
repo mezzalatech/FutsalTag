@@ -22,8 +22,17 @@ if command -v brew >/dev/null 2>&1; then
 fi
 bash scripts/prepare-offline-bundle-macos.sh
 
+if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ] && [ -f "$HOME/.tauri/futsaltag.key" ]; then
+    export TAURI_SIGNING_PRIVATE_KEY="$(cat "$HOME/.tauri/futsaltag.key")"
+fi
+
 echo "[2/3] Membangun bundle DMG..."
-bun run tauri build --bundles dmg
+if [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+    CI=true bun run tauri build --bundles app,dmg
+else
+    echo "[!] TAURI_SIGNING_PRIVATE_KEY tidak ditemukan; membuat DMG tanpa updater signature."
+    CI=true bun run tauri build --bundles dmg --config '{"bundle":{"createUpdaterArtifacts":false}}'
+fi
 
 echo "[3/3] Selesai! Membuka folder DMG..."
 open src-tauri/target/release/bundle/dmg/ 2>/dev/null || true

@@ -8,6 +8,9 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 jobs:
   build-macos:
     name: Build DMG (${{ matrix.arch }})
@@ -18,9 +21,11 @@ jobs:
           - arch: Apple-Silicon-M1-M4
             os: macos-14
             target: aarch64-apple-darwin
+            tauri_platform: darwin-aarch64
           - arch: Intel-Mac
             os: macos-13
             target: x86_64-apple-darwin
+            tauri_platform: darwin-x86_64
 
     runs-on: ${{ matrix.os }}
 
@@ -53,20 +58,99 @@ jobs:
           bun run check
           cargo test --manifest-path src-tauri/Cargo.toml
 
-      - name: Build ARF FutsalTag macOS DMG
-        run: bun run tauri build --target ${{ matrix.target }} --bundles dmg
+      - name: Build ARF FutsalTag macOS DMG & Updater Bundle
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            bun run tauri build --target ${{ matrix.target }} --bundles app,dmg
+          else
+            echo "::warning::TAURI_SIGNING_PRIVATE_KEY secret not set; skipping updater artifacts."
+            bun run tauri build --target ${{ matrix.target }} --bundles dmg --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          fi
 
-      - name: Upload macOS DMG Artifact
+      - name: Stage Release & Updater Assets
+        shell: bash
+        run: |
+          mkdir -p release-assets
+          cp src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg release-assets/
+          TARBALL="$(ls src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz 2>/dev/null | head -n1 || true)"
+          if [ -n "$TARBALL" ] && [ -f "${TARBALL}.sig" ]; then
+            OUT_TAR="ARF-FutsalTag-${{ matrix.arch }}.app.tar.gz"
+            cp "$TARBALL" "release-assets/${OUT_TAR}"
+            cp "${TARBALL}.sig" "release-assets/${OUT_TAR}.sig"
+            OUT_TAR="$OUT_TAR" TAURI_PLATFORM="${{ matrix.tauri_platform }}" python3 - <<'PY'
+          import json, os, pathlib
+          out_tar = os.environ["OUT_TAR"]
+          plat = os.environ["TAURI_PLATFORM"]
+          sig = pathlib.Path(f"release-assets/{out_tar}.sig").read_text().strip()
+          meta = {
+              "platform": plat,
+              "filename": out_tar,
+              "signature": sig,
+          }
+          pathlib.Path(f"release-assets/platform-{plat}.json").write_text(json.dumps(meta))
+          PY
+          fi
+
+      - name: Upload macOS DMG & Updater Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ARF-FutsalTag-macOS-${{ matrix.arch }}
-          path: src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+          path: release-assets/*
           if-no-files-found: error
 
-      - name: Release macOS DMG to GitHub Releases
-        if: startsWith(github.ref, 'refs/tags/v')
+  publish-release:
+    name: Publish GitHub Release & Updater Manifest
+    needs: build-macos
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Built Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare Release Assets & latest.json
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          mkdir -p dist-release
+          find artifacts -type f ! -name 'platform-*.json' -exec cp {} dist-release/ \;
+          python3 - <<'PY'
+          import datetime, json, os, pathlib
+
+          tag = os.environ["TAG_NAME"]
+          version = tag.lstrip("v")
+          repo = os.environ["REPO"]
+          platforms = {}
+
+          for meta_path in pathlib.Path("artifacts").rglob("platform-*.json"):
+              meta = json.loads(meta_path.read_text())
+              platforms[meta["platform"]] = {
+                  "signature": meta["signature"],
+                  "url": f"https://github.com/{repo}/releases/download/{tag}/{meta['filename']}",
+              }
+
+          if platforms:
+              manifest = {
+                  "version": version,
+                  "notes": f"ARF FutsalTag {tag}",
+                  "pub_date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                  "platforms": platforms,
+              }
+              pathlib.Path("dist-release/latest.json").write_text(json.dumps(manifest, indent=2))
+          PY
+
+      - name: Release macOS DMG & Auto-Update Manifest
         uses: softprops/action-gh-release@v2
         with:
-          files: src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+          files: dist-release/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

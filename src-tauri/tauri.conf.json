@@ -32,6 +32,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "resources": [
       "resources/models/*",
       "resources/bin/*",
@@ -56,5 +57,13 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM0MDZGNDBDNjE3NEQ3QjEKUldTeDEzUmhEUFFHTkUwbGt4VitjdmtmUkQvRU5URzRBSzQrTW9uL3J2WW5NaWZkQ0l0UEdMQ0gK",
+      "endpoints": [
+        "https://github.com/mezzalatech/FutsalTag/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

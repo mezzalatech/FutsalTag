@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick, untrack } from 'svelte';
   import { projectStore } from '$lib/stores/projectStore.svelte';
   import type {
     ClubPlayerProfile,
@@ -32,6 +33,9 @@
   let draftClub = $state<ClubProfile | null>(null);
   let statusNotice = $state<string | null>(null);
   let isSaving = $state(false);
+  let clubNameInputEl = $state<HTMLInputElement | null>(null);
+  let newPlayerNameInputEl = $state<HTMLInputElement | null>(null);
+  let rosterScrollEl = $state<HTMLDivElement | null>(null);
 
   // New player quick inputs
   let newNum = $state('#12');
@@ -41,13 +45,15 @@
 
   $effect(() => {
     if (!isOpen) return;
-    if (!projectStore.clubLibraryLoaded) {
-      projectStore.loadClubLibrary().then(() => {
+    untrack(() => {
+      if (!projectStore.clubLibraryLoaded) {
+        projectStore.loadClubLibrary().then(() => {
+          ensureSelection();
+        });
+      } else {
         ensureSelection();
-      });
-    } else {
-      ensureSelection();
-    }
+      }
+    });
   });
 
   function ensureSelection() {
@@ -66,7 +72,7 @@
     };
   }
 
-  function createNewClub() {
+  async function createNewClub() {
     const fresh: ClubProfile = {
       id: `club-${Date.now()}`,
       name: `Klub Baru ${projectStore.clubLibrary.length + 1}`,
@@ -83,13 +89,22 @@
         { id: `cp-${Date.now()}-9`, num: '#9', name: 'Pivot', role: 'Pivot', dominantFoot: 'Keduanya' },
       ],
     };
+    await projectStore.upsertClubProfile(fresh);
     selectClub(fresh);
+    await tick();
+    clubNameInputEl?.focus();
+    clubNameInputEl?.select();
+    notify('Klub baru ditambahkan! Ubah nama & roster lalu simpan.');
   }
 
-  function addPlayerToDraft() {
+  async function addPlayerToDraft() {
     if (!draftClub) return;
     const name = newName.trim();
-    if (!name) return;
+    if (!name) {
+      newPlayerNameInputEl?.focus();
+      notify('Isi nama pemain terlebih dahulu.');
+      return;
+    }
     const num = newNum.trim().startsWith('#') ? newNum.trim() : `#${newNum.trim() || draftClub.players.length + 1}`;
     const player: ClubPlayerProfile = {
       id: `cp-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
@@ -101,11 +116,19 @@
     draftClub.players = [...draftClub.players, player];
     newName = '';
     newNum = `#${draftClub.players.length + 1}`;
+    await projectStore.upsertClubProfile(draftClub);
+    await tick();
+    if (rosterScrollEl) {
+      rosterScrollEl.scrollTop = rosterScrollEl.scrollHeight;
+    }
+    newPlayerNameInputEl?.focus();
+    notify(`Pemain ${num} ${name} ditambahkan & disimpan!`);
   }
 
-  function removePlayerFromDraft(playerId: string) {
+  async function removePlayerFromDraft(playerId: string) {
     if (!draftClub) return;
     draftClub.players = draftClub.players.filter((p) => p.id !== playerId);
+    await projectStore.upsertClubProfile(draftClub);
   }
 
   function notify(msg: string) {
@@ -218,7 +241,7 @@
           <div class="club-form-grid">
             <div class="field-box">
               <label for="club-name-inp">Nama Klub</label>
-              <input id="club-name-inp" type="text" bind:value={draftClub.name} class="txt-input" />
+              <input id="club-name-inp" bind:this={clubNameInputEl} type="text" bind:value={draftClub.name} class="txt-input" />
             </div>
             <div class="field-box">
               <label for="club-short-inp">Singkatan (3-4 huruf)</label>
@@ -278,6 +301,7 @@
             <input type="text" bind:value={newNum} placeholder="#10" class="txt-input w-num" />
             <input
               type="text"
+              bind:this={newPlayerNameInputEl}
               bind:value={newName}
               placeholder="Nama lengkap / panggilan..."
               class="txt-input flex-1"
@@ -305,7 +329,7 @@
           </div>
 
           <!-- ROSTER TABLE -->
-          <div class="roster-table-scroll">
+          <div class="roster-table-scroll" bind:this={rosterScrollEl}>
             <table class="roster-edit-table">
               <thead>
                 <tr>

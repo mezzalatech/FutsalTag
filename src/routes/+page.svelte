@@ -26,7 +26,13 @@
     XCircle,
     AlertTriangle,
     Clock,
+    RefreshCw,
   } from "lucide-svelte";
+  import {
+    checkForAppUpdate,
+    installUpdateAndRelaunch,
+    type Update,
+  } from "$lib/utils/updater";
 
   let isChalkboardOpen = $state(false);
   let isHeatmapOpen = $state(false);
@@ -35,6 +41,7 @@
   let isTeamDbOpen = $state(false);
   let isSeasonAnalyticsOpen = $state(false);
   let isProjectMenuOpen = $state(false);
+  let isProMenuOpen = $state(false);
   let isEditMetaOpen = $state(false);
   let metaTitle = $state("");
   let metaKind = $state<"match" | "training">("match");
@@ -42,6 +49,11 @@
   let metaDate = $state("");
   let saveToast = $state<string | null>(null);
   let openProjectInputEl: HTMLInputElement | undefined = $state();
+  let availableUpdate = $state<Update | null>(null);
+  let isCheckingUpdate = $state(false);
+  let isInstallingUpdate = $state(false);
+  let updateProgress = $state(0);
+  let updateError = $state<string | null>(null);
   const isProjectorWindow =
     typeof window !== "undefined" &&
     new URLSearchParams(window.location.search).get("screen") === "presenter";
@@ -53,9 +65,56 @@
     }, 2800);
   }
 
+  async function handleManualCheckUpdate() {
+    isProjectMenuOpen = false;
+    if (isCheckingUpdate || isInstallingUpdate) return;
+    isCheckingUpdate = true;
+    updateError = null;
+    try {
+      const update = await checkForAppUpdate();
+      if (update) {
+        availableUpdate = update;
+      } else {
+        showSaveToast("ARF FutsalTag sudah versi terbaru");
+      }
+    } catch {
+      showSaveToast("Gagal memeriksa update (periksa koneksi internet)");
+    } finally {
+      isCheckingUpdate = false;
+    }
+  }
+
+  async function handleInstallUpdate() {
+    if (!availableUpdate || isInstallingUpdate) return;
+    if (
+      projectStore.hasUnsavedChanges &&
+      !confirm("Ada perubahan proyek yang belum disimpan. Tetap lanjutkan update & restart?")
+    ) {
+      return;
+    }
+    isInstallingUpdate = true;
+    updateProgress = 0;
+    updateError = null;
+    try {
+      await installUpdateAndRelaunch(availableUpdate, (pct) => {
+        updateProgress = pct;
+      });
+    } catch (err: any) {
+      updateError = err?.message || "Gagal mengunduh update.";
+      isInstallingUpdate = false;
+    }
+  }
+
   onMount(() => {
     if (isProjectorWindow) return;
     projectStore.checkAutoSaveRecovery();
+    const updateTimer = setTimeout(() => {
+      checkForAppUpdate()
+        .then((u) => {
+          if (u) availableUpdate = u;
+        })
+        .catch(() => {});
+    }, 3000);
     const timer = setInterval(() => {
       projectStore.runAutoSave();
     }, 60_000);
@@ -73,11 +132,13 @@
     };
     const onWindowClick = () => {
       if (isProjectMenuOpen) isProjectMenuOpen = false;
+      if (isProMenuOpen) isProMenuOpen = false;
     };
 
     window.addEventListener("keydown", onWindowKeyDown);
     window.addEventListener("click", onWindowClick);
     return () => {
+      clearTimeout(updateTimer);
       clearInterval(timer);
       window.removeEventListener("keydown", onWindowKeyDown);
       window.removeEventListener("click", onWindowClick);
@@ -211,29 +272,7 @@
       onclick={() => projectStore.setStage("hub")}
       title="Kembali ke Hub Proyek"
     >
-      <div class="brand-badge-circle" aria-hidden="true">
-        <svg
-          width="16"
-          height="16"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="#e0f2fe"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        >
-          <circle cx="12" cy="12" r="9.5" />
-          <polygon
-            points="12,7 16.5,10.2 14.8,15.5 9.2,15.5 7.5,10.2"
-            fill="rgba(56,189,248,0.28)"
-          />
-          <line x1="12" y1="2.5" x2="12" y2="7" />
-          <line x1="21" y1="9" x2="16.5" y2="10.2" />
-          <line x1="17.5" y1="19.5" x2="14.8" y2="15.5" />
-          <line x1="6.5" y1="19.5" x2="9.2" y2="15.5" />
-          <line x1="3" y1="9" x2="7.5" y2="10.2" />
-        </svg>
-      </div>
+      <img src="/logo.png" alt="ARF FutsalTag" class="brand-logo" />
       <div class="brand-text">
         <div class="brand-title-wrap">
           <span class="brand-tag">ARF</span>
@@ -241,20 +280,6 @@
         </div>
       </div>
     </button>
-
-    <!-- ACTIVE MATCH PILL -->
-    {#if projectStore.videoTitle}
-      <button
-        type="button"
-        class="active-match-pill"
-        onclick={() => projectStore.setStage("tagging")}
-        title={projectStore.videoTitle}
-      >
-        <span class="live-indicator"></span>
-        <span class="match-name">{projectStore.videoTitle}</span>
-        <span class="clips-count">{projectStore.tags.length} Klip</span>
-      </button>
-    {/if}
 
     <!-- WORKFLOW STEPPER TABS -->
     <nav class="workflow-stepper" aria-label="Alur Kerja Analisis">
@@ -267,7 +292,6 @@
         title="Hub Proyek"
       >
         <FolderOpen size={14} />
-        <span class="step-num">1</span>
         <span class="step-label">Hub</span>
       </button>
 
@@ -280,7 +304,6 @@
         title="Tagging & Klip Pertandingan"
       >
         <Scissors size={14} />
-        <span class="step-num">2</span>
         <span class="step-label">Tagging</span>
         {#if projectStore.tags.length > 0}
           <span class="tab-counter-badge">{projectStore.tags.length}</span>
@@ -296,7 +319,6 @@
         title="Studio Telestrasi & AI Tracking"
       >
         <Sparkles size={14} />
-        <span class="step-num">3</span>
         <span class="step-label">Telestrasi</span>
       </button>
 
@@ -309,7 +331,6 @@
         title="Playlist & Ekspor Video"
       >
         <Film size={14} />
-        <span class="step-num">4</span>
         <span class="step-label">Playlist</span>
       </button>
 
@@ -330,70 +351,7 @@
 
     <!-- RIGHT TOOLBAR GROUP -->
     <div class="header-right-group">
-      <!-- KILLER PRO TOOLS BAR -->
-      <div class="pro-tools-bar">
-        <button
-          type="button"
-          class="btn-pro-tool btn-klub"
-          onclick={() => (isTeamDbOpen = true)}
-          title="Library Klub, Jersey & Roster Futsal Persisten"
-        >
-          <Shield size={13} />
-          <span>Klub</span>
-        </button>
-
-        <button
-          type="button"
-          class="btn-pro-tool btn-musim"
-          onclick={() => (isSeasonAnalyticsOpen = true)}
-          title="Season & Multi-Match Analytics Hub (.futsal)"
-        >
-          <BarChart3 size={13} />
-          <span>Musim</span>
-        </button>
-
-        <button
-          type="button"
-          class="btn-pro-tool btn-presenter"
-          onclick={() => (isPresentationOpen = true)}
-          title="Fullscreen Presentation Studio (Klip + Slide Taktik 2D + Live Pen)"
-        >
-          <MonitorPlay size={13} />
-          <span>Presentasi</span>
-        </button>
-
-        <button
-          type="button"
-          class="btn-pro-tool btn-chalkboard"
-          onclick={() => (isChalkboardOpen = true)}
-          title="Buka Ruang Ganti Chalkboard (Auto-Pause Layar Sentuh & Telestrasi Kilat)"
-        >
-          <Tv size={13} />
-          <span>Ruang Ganti</span>
-        </button>
-
-        <button
-          type="button"
-          class="btn-pro-tool btn-heatmap"
-          onclick={() => (isHeatmapOpen = true)}
-          title="Peta Panas Densitas & Jaringan Operan Antar Pemain 5v5"
-        >
-          <Flame size={13} />
-          <span>Heatmap</span>
-        </button>
-
-        <button
-          type="button"
-          class="btn-pro-tool btn-whatsapp"
-          onclick={() => (isWhatsAppOpen = true)}
-          title="Ekspor Paket Klip Evaluasi Pemain Ringan untuk WhatsApp (<15MB)"
-        >
-          <MessageCircle size={13} />
-          <span>Paket WA</span>
-        </button>
-      </div>
-
-      <!-- PROJECT FILE IO -->
+      <!-- PROJECT FILE IO & PRO MENU -->
       <div class="header-badges">
         {#if projectStore.lastAutoSaveAt}
           <span class="autosave-pill" title="Cadangan otomatis proyek disimpan setiap 60 detik">
@@ -402,10 +360,25 @@
         {/if}
         <button
           type="button"
+          class="btn-header-io btn-pro-menu"
+          title="Menu Alat Pro (Klub, Musim, Presentasi, Ruang Ganti, Heatmap, Paket WA)"
+          onclick={(e) => {
+            e.stopPropagation();
+            isProjectMenuOpen = false;
+            isProMenuOpen = !isProMenuOpen;
+          }}
+        >
+          <Sparkles size={12} />
+          <span>Alat Pro</span>
+          <ChevronDown size={11} />
+        </button>
+        <button
+          type="button"
           class="btn-header-io"
           title="Menu Manajemen Proyek (Proyek Baru, Simpan Cepat, Terakhir Dibuka, Relink)"
           onclick={(e) => {
             e.stopPropagation();
+            isProMenuOpen = false;
             isProjectMenuOpen = !isProjectMenuOpen;
           }}
         >
@@ -437,6 +410,102 @@
       </div>
     </div>
   </header>
+
+  {#if isProMenuOpen}
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <div
+      class="project-dropdown pro-dropdown"
+      role="menu"
+      tabindex="-1"
+      onclick={(e) => e.stopPropagation()}
+    >
+      <div class="pd-sec-label">ALAT ANALISIS PRO</div>
+      <button
+        type="button"
+        class="pd-item pro-tool-item"
+        onclick={() => {
+          isProMenuOpen = false;
+          isTeamDbOpen = true;
+        }}
+      >
+        <Shield size={14} class="pt-sky" />
+        <div class="pro-item-text">
+          <div class="pro-item-title">Database Klub</div>
+          <div class="pro-item-sub">Jersey &amp; roster persisten</div>
+        </div>
+      </button>
+      <button
+        type="button"
+        class="pd-item pro-tool-item"
+        onclick={() => {
+          isProMenuOpen = false;
+          isSeasonAnalyticsOpen = true;
+        }}
+      >
+        <BarChart3 size={14} class="pt-amber" />
+        <div class="pro-item-text">
+          <div class="pro-item-title">Analitik Musim</div>
+          <div class="pro-item-sub">Statistik lintas pertandingan</div>
+        </div>
+      </button>
+      <button
+        type="button"
+        class="pd-item pro-tool-item"
+        onclick={() => {
+          isProMenuOpen = false;
+          isPresentationOpen = true;
+        }}
+      >
+        <MonitorPlay size={14} class="pt-purple" />
+        <div class="pro-item-text">
+          <div class="pro-item-title">Studio Presentasi</div>
+          <div class="pro-item-sub">Klip, slide taktik &amp; proyektor</div>
+        </div>
+      </button>
+      <button
+        type="button"
+        class="pd-item pro-tool-item"
+        onclick={() => {
+          isProMenuOpen = false;
+          isChalkboardOpen = true;
+        }}
+      >
+        <Tv size={14} class="pt-cyan" />
+        <div class="pro-item-text">
+          <div class="pro-item-title">Ruang Ganti Chalkboard</div>
+          <div class="pro-item-sub">Layar sentuh &amp; telestrasi kilat</div>
+        </div>
+      </button>
+      <button
+        type="button"
+        class="pd-item pro-tool-item"
+        onclick={() => {
+          isProMenuOpen = false;
+          isHeatmapOpen = true;
+        }}
+      >
+        <Flame size={14} class="pt-orange" />
+        <div class="pro-item-text">
+          <div class="pro-item-title">Heatmap &amp; Operan</div>
+          <div class="pro-item-sub">Peta panas &amp; jaringan 5v5</div>
+        </div>
+      </button>
+      <button
+        type="button"
+        class="pd-item pro-tool-item"
+        onclick={() => {
+          isProMenuOpen = false;
+          isWhatsAppOpen = true;
+        }}
+      >
+        <MessageCircle size={14} class="pt-emerald" />
+        <div class="pro-item-text">
+          <div class="pro-item-title">Ekspor Paket WA</div>
+          <div class="pro-item-sub">Klip evaluasi ringan (&lt;15MB)</div>
+        </div>
+      </button>
+    </div>
+  {/if}
 
   {#if isProjectMenuOpen}
     <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -477,6 +546,11 @@
       <button type="button" class="pd-item pd-danger" onclick={handleCloseProject}>
         <XCircle size={13} />
         <span>Tutup Proyek Aktif</span>
+      </button>
+      <div class="pd-divider"></div>
+      <button type="button" class="pd-item" disabled={isCheckingUpdate} onclick={handleManualCheckUpdate}>
+        <RefreshCw size={13} />
+        <span>{isCheckingUpdate ? "Memeriksa Update..." : "Cek Update Aplikasi"}</span>
       </button>
 
       {#if projectStore.recentProjects.length > 0}
@@ -627,6 +701,36 @@
       </div>
     </div>
   {/if}
+
+  {#if availableUpdate}
+    <div class="update-toast" role="status">
+      <div class="ut-head">
+        <RefreshCw size={14} class={isInstallingUpdate ? "ut-spin" : ""} />
+        <strong>Update v{availableUpdate.version} tersedia</strong>
+      </div>
+      {#if availableUpdate.body}
+        <p class="ut-body">{availableUpdate.body}</p>
+      {/if}
+      {#if isInstallingUpdate}
+        <div class="ut-progress-wrap">
+          <div class="ut-progress-bar" style="width: {updateProgress}%"></div>
+        </div>
+        <span class="ut-status">Mengunduh update... {updateProgress}%</span>
+      {:else}
+        {#if updateError}
+          <span class="ut-err">{updateError}</span>
+        {/if}
+        <div class="ut-actions">
+          <button type="button" class="mm-btn primary" onclick={handleInstallUpdate}>
+            Update &amp; Restart
+          </button>
+          <button type="button" class="mm-btn" onclick={() => (availableUpdate = null)}>
+            Nanti
+          </button>
+        </div>
+      {/if}
+    </div>
+  {/if}
 </div>
 {/if}
 
@@ -675,8 +779,8 @@
     box-shadow: 0 4px 20px -2px rgba(2, 6, 23, 0.8);
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 0 12px;
+    gap: 8px;
+    padding: 0 10px;
     box-sizing: border-box;
     overflow: hidden;
     z-index: 50;
@@ -702,17 +806,13 @@
     opacity: 0.92;
   }
 
-  .brand-badge-circle {
-    width: 30px;
-    height: 30px;
-    border-radius: 8px;
-    background: linear-gradient(135deg, #0284c7 0%, #1e3a8a 100%);
-    border: 1px solid #38bdf8;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    box-shadow: 0 0 12px rgba(56, 189, 248, 0.35);
+  .brand-logo {
+    width: 32px;
+    height: 32px;
+    object-fit: contain;
+    display: block;
     flex-shrink: 0;
+    filter: drop-shadow(0 1px 6px rgba(0, 0, 0, 0.45));
   }
 
   .brand-text {
@@ -745,74 +845,6 @@
     letter-spacing: 0.05em;
   }
 
-  /* ACTIVE MATCH PILL */
-  .active-match-pill {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    background-color: #0d1e38;
-    border: 1px solid #1a355d;
-    padding: 4px 10px;
-    border-radius: 20px;
-    cursor: pointer;
-    min-width: 0;
-    flex-shrink: 1;
-    transition: all 0.2s ease;
-  }
-
-  .active-match-pill:hover {
-    border-color: #38bdf8;
-    background-color: #122849;
-    box-shadow: 0 0 12px rgba(56, 189, 248, 0.2);
-  }
-
-  .live-indicator {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background-color: #10b981;
-    box-shadow: 0 0 8px #10b981;
-    flex-shrink: 0;
-    animation: pulse 2s infinite;
-  }
-
-  @keyframes pulse {
-    0% {
-      transform: scale(0.95);
-      box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
-    }
-    70% {
-      transform: scale(1);
-      box-shadow: 0 0 0 6px rgba(16, 185, 129, 0);
-    }
-    100% {
-      transform: scale(0.95);
-      box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
-    }
-  }
-
-  .match-name {
-    font-size: 11px;
-    font-weight: 600;
-    color: #f0f6fc;
-    max-width: 150px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .clips-count {
-    font-size: 10px;
-    font-weight: 700;
-    color: #38bdf8;
-    background-color: #071224;
-    padding: 1px 6px;
-    border-radius: 10px;
-    border: 1px solid #1a355d;
-    white-space: nowrap;
-    flex-shrink: 0;
-  }
-
   .tab-counter-badge {
     font-size: 9px;
     font-weight: 800;
@@ -828,6 +860,7 @@
     display: flex;
     align-items: center;
     gap: 2px;
+    margin: 0 auto;
     background-color: #0b1528;
     padding: 3px 5px;
     border-radius: 8px;
@@ -843,7 +876,7 @@
     background: transparent;
     border: 1px solid transparent;
     color: #94a3b8;
-    padding: 5px 9px;
+    padding: 4px 9px;
     border-radius: 6px;
     font-size: 11px;
     font-weight: 600;
@@ -868,28 +901,6 @@
     border: 1px solid #38bdf8;
     color: #ffffff;
     box-shadow: 0 0 14px rgba(56, 189, 248, 0.3);
-  }
-
-  .step-num {
-    width: 15px;
-    height: 15px;
-    border-radius: 50%;
-    background-color: #060b14;
-    border: 1px solid #1a355d;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 9px;
-    font-weight: 800;
-    color: #94a3b8;
-    flex-shrink: 0;
-  }
-
-  .step-btn.active .step-num {
-    background-color: #38bdf8;
-    border-color: #38bdf8;
-    color: #060b14;
-    box-shadow: 0 0 8px rgba(56, 189, 248, 0.6);
   }
 
   .stepper-mode-divider {
@@ -924,8 +935,7 @@
   .header-right-group {
     display: flex;
     align-items: center;
-    gap: 8px;
-    margin-left: auto;
+    gap: 6px;
     flex-shrink: 0;
   }
 
@@ -933,7 +943,7 @@
   .header-badges {
     display: flex;
     align-items: center;
-    gap: 5px;
+    gap: 6px;
     flex-shrink: 0;
   }
 
@@ -944,7 +954,7 @@
     background: #09172c;
     color: #93c5fd;
     border: 1px solid #1a355d;
-    padding: 5px 9px;
+    padding: 5px 10px;
     border-radius: 6px;
     font-size: 11px;
     font-weight: 700;
@@ -959,6 +969,19 @@
     color: #38bdf8;
     border-color: #38bdf8;
     box-shadow: 0 0 10px rgba(56, 189, 248, 0.25);
+  }
+
+  .btn-pro-menu {
+    background: rgba(168, 85, 247, 0.14);
+    border-color: rgba(192, 132, 252, 0.42);
+    color: #e9d5ff;
+  }
+
+  .btn-pro-menu:hover {
+    background: rgba(168, 85, 247, 0.28);
+    border-color: #c084fc;
+    color: #ffffff;
+    box-shadow: 0 0 10px rgba(168, 85, 247, 0.3);
   }
 
   .btn-io-save {
@@ -976,52 +999,39 @@
     color: #ffffff;
   }
 
-  /* PRO TOOLS BAR */
-  .pro-tools-bar {
+  .pro-dropdown {
+    right: 168px;
+    width: 268px;
+  }
+
+  .pro-item-text {
     display: flex;
-    align-items: center;
-    gap: 5px;
-    flex-shrink: 0;
+    flex-direction: column;
+    min-width: 0;
+    flex: 1;
+    gap: 1px;
   }
 
-  .btn-pro-tool {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    padding: 5px 9px;
-    border-radius: 6px;
-    font-size: 11px;
+  .pro-item-title {
+    font-size: 11.5px;
     font-weight: 700;
-    white-space: nowrap;
-    flex-shrink: 0;
-    cursor: pointer;
-    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-    border: 1px solid transparent;
+    color: #f1f5f9;
+    line-height: 1.2;
   }
 
-  @media (max-width: 1380px) {
-    .active-match-pill {
-      display: none;
-    }
+  .pro-item-sub {
+    font-size: 10px;
+    font-weight: 500;
+    color: #94a3b8;
+    line-height: 1.2;
   }
 
-  @media (max-width: 1280px) {
-    .step-num {
-      display: none;
-    }
-
-    .step-btn {
-      padding: 5px 8px;
-    }
-
-    .btn-pro-tool span {
-      display: none;
-    }
-
-    .btn-pro-tool {
-      padding: 6px 8px;
-    }
-  }
+  :global(.pt-sky) { color: #38bdf8; flex-shrink: 0; }
+  :global(.pt-amber) { color: #fbbf24; flex-shrink: 0; }
+  :global(.pt-purple) { color: #c084fc; flex-shrink: 0; }
+  :global(.pt-cyan) { color: #22d3ee; flex-shrink: 0; }
+  :global(.pt-orange) { color: #fb923c; flex-shrink: 0; }
+  :global(.pt-emerald) { color: #34d399; flex-shrink: 0; }
 
   @media (max-width: 1024px) {
     .app-header {
@@ -1063,12 +1073,10 @@
     }
 
     .step-btn,
-    .btn-pro-tool,
     .btn-header-io {
       min-height: 36px;
     }
 
-    .pro-tools-bar,
     .header-badges {
       gap: 8px;
     }
@@ -1089,80 +1097,6 @@
     }
   }
 
-  .btn-klub {
-    background: rgba(56, 189, 248, 0.12);
-    border-color: rgba(56, 189, 248, 0.35);
-    color: #38bdf8;
-  }
-
-  .btn-klub:hover {
-    background: rgba(56, 189, 248, 0.25);
-    border-color: #38bdf8;
-  }
-
-  .btn-musim {
-    background: rgba(234, 179, 8, 0.12);
-    border-color: rgba(250, 204, 21, 0.35);
-    color: #fde047;
-  }
-
-  .btn-musim:hover {
-    background: rgba(234, 179, 8, 0.25);
-    border-color: #eab308;
-  }
-
-  .btn-presenter {
-    background: rgba(168, 85, 247, 0.14);
-    border-color: rgba(192, 132, 252, 0.4);
-    color: #d8b4fe;
-  }
-
-  .btn-presenter:hover {
-    background: rgba(168, 85, 247, 0.28);
-    border-color: #a855f7;
-    box-shadow: 0 0 12px rgba(168, 85, 247, 0.35);
-    transform: translateY(-1px);
-  }
-
-  .btn-chalkboard {
-    background: rgba(14, 165, 233, 0.12);
-    border-color: rgba(56, 189, 248, 0.35);
-    color: #38bdf8;
-  }
-
-  .btn-chalkboard:hover {
-    background: rgba(14, 165, 233, 0.25);
-    border-color: #38bdf8;
-    box-shadow: 0 0 12px rgba(56, 189, 248, 0.35);
-    transform: translateY(-1px);
-  }
-
-  .btn-heatmap {
-    background: rgba(249, 115, 22, 0.12);
-    border-color: rgba(251, 146, 60, 0.35);
-    color: #fb923c;
-  }
-
-  .btn-heatmap:hover {
-    background: rgba(249, 115, 22, 0.25);
-    border-color: #f97316;
-    box-shadow: 0 0 12px rgba(249, 115, 22, 0.35);
-    transform: translateY(-1px);
-  }
-
-  .btn-whatsapp {
-    background: rgba(16, 185, 129, 0.12);
-    border-color: rgba(52, 211, 153, 0.35);
-    color: #34d399;
-  }
-
-  .btn-whatsapp:hover {
-    background: rgba(16, 185, 129, 0.25);
-    border-color: #10b981;
-    box-shadow: 0 0 12px rgba(16, 185, 129, 0.35);
-    transform: translateY(-1px);
-  }
-
   .autosave-pill {
     font-family: var(--ft-font-mono);
     font-size: 9.5px;
@@ -1175,7 +1109,7 @@
     white-space: nowrap;
   }
 
-  @media (max-width: 1120px) {
+  @media (max-width: 1280px) {
     .autosave-pill {
       display: none;
     }
@@ -1409,5 +1343,78 @@
     background: #0284c7;
     border-color: #38bdf8;
     color: #ffffff;
+  }
+
+  .update-toast {
+    position: fixed;
+    right: 16px;
+    bottom: 16px;
+    width: 290px;
+    z-index: 95;
+    background: rgba(11, 22, 41, 0.96);
+    border: 1px solid #38bdf8;
+    border-radius: 10px;
+    padding: 12px 14px;
+    color: #f0f6fc;
+    box-shadow: 0 10px 28px rgba(2, 6, 23, 0.75);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    font-size: 12px;
+  }
+
+  .ut-head {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    color: #7dd3fc;
+  }
+
+  .ut-body {
+    margin: 0;
+    font-size: 11px;
+    color: #cbd5e1;
+    line-height: 1.4;
+    max-height: 54px;
+    overflow: hidden;
+  }
+
+  .ut-progress-wrap {
+    height: 6px;
+    background: #1e293b;
+    border-radius: 999px;
+    overflow: hidden;
+  }
+
+  .ut-progress-bar {
+    height: 100%;
+    background: linear-gradient(90deg, #0284c7, #38bdf8);
+    transition: width 0.15s ease;
+  }
+
+  .ut-status {
+    font-size: 11px;
+    color: #94a3b8;
+  }
+
+  .ut-err {
+    font-size: 11px;
+    color: #fca5a5;
+  }
+
+  .ut-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+
+  :global(.ut-spin) {
+    animation: ut-rotate 1s linear infinite;
+  }
+
+  @keyframes ut-rotate {
+    to {
+      transform: rotate(360deg);
+    }
   }
 </style>

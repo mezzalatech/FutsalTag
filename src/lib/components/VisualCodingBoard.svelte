@@ -24,14 +24,17 @@
     Upload,
     X,
     Lock,
+    Star,
     Unlock,
   } from 'lucide-svelte';
 
   interface Props {
     board: TaggingBoard;
     boards: TaggingBoard[];
+    defaultBoardId?: string;
     initialSelectedButtonId?: string | null;
     onSelectBoard: (id: string) => void;
+    onSetDefaultBoard?: (id: string) => void;
     onCreateBoard: () => void;
     onDuplicateBoard?: () => void;
     onDeleteBoard?: (id: string) => void;
@@ -48,8 +51,10 @@
   let {
     board,
     boards,
+    defaultBoardId,
     initialSelectedButtonId = null,
     onSelectBoard,
+    onSetDefaultBoard,
     onCreateBoard,
     onDuplicateBoard,
     onDeleteBoard,
@@ -536,6 +541,21 @@
         <button type="button" class="vcb-btn" onclick={onDuplicateBoard} title="Duplikat papan aktif menjadi salinan baru">
           <Copy size={12} />
           <span>Duplikat</span>
+        </button>
+      {/if}
+
+      {#if onSetDefaultBoard}
+        <button
+          type="button"
+          class="vcb-btn"
+          class:vcb-btn-default={defaultBoardId === board.id}
+          onclick={() => onSetDefaultBoard(board.id)}
+          title={defaultBoardId === board.id
+            ? 'Papan ini adalah Coding Board default'
+            : 'Tetapkan papan ini sebagai Coding Board default'}
+        >
+          <Star size={12} />
+          <span>{defaultBoardId === board.id ? 'Default' : 'Jadikan Default'}</span>
         </button>
       {/if}
 
@@ -1873,6 +1893,12 @@
     border-color: #f59e0b !important;
     color: #fbbf24 !important;
     background: rgba(245, 158, 11, 0.14) !important;
+  }
+
+  .vcb-btn-default {
+    border-color: #f59e0b !important;
+    color: #fcd34d !important;
+    background: rgba(245, 158, 11, 0.16) !important;
   }
 
   .vcb-btn-danger:hover:not(:disabled) {

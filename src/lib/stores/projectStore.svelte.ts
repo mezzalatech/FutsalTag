@@ -42,6 +42,48 @@ import {
   parseMomenBoardJson,
 } from '$lib/tagging/momenBoards';
 
+const DEFAULT_BOARD_STORAGE_KEY = 'futsaltag_default_board_id_v1';
+const CUSTOM_BOARDS_STORAGE_KEY = 'futsaltag_custom_boards_v1';
+
+function loadInitialBoards(): TaggingBoard[] {
+  const base = BUILTIN_TAGGING_BOARDS.map(cloneBoard);
+  if (typeof localStorage === 'undefined') return base;
+  try {
+    const raw = localStorage.getItem(CUSTOM_BOARDS_STORAGE_KEY);
+    if (!raw) return base;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed) || parsed.length === 0) return base;
+    const merged = [...base];
+    for (const item of parsed) {
+      if (!item || typeof item.id !== 'string' || !Array.isArray(item.buttons)) continue;
+      const cloned = cloneBoard(item);
+      const idx = merged.findIndex((b) => b.id === cloned.id);
+      if (idx !== -1) {
+        merged[idx] = cloned;
+      } else {
+        merged.push(cloned);
+      }
+    }
+    return merged;
+  } catch {
+    return base;
+  }
+}
+
+function loadInitialDefaultBoardId(boards: TaggingBoard[]): string {
+  if (typeof localStorage !== 'undefined') {
+    try {
+      const saved = localStorage.getItem(DEFAULT_BOARD_STORAGE_KEY);
+      if (saved && boards.some((b) => b.id === saved)) {
+        return saved;
+      }
+    } catch {
+      // Ignore storage read errors
+    }
+  }
+  return boards[0].id;
+}
+
 export const DEFAULT_FUTSAL_ROSTER: RosterPlayer[] = [
   { id: 'r-gk', num: '#1', name: 'Kiper', role: 'Goalkeeper', color: '#0284c7' },
   { id: 'r-anc', num: '#4', name: 'Anchor', role: 'Defender / Playmaker', color: '#38bdf8' },
@@ -156,8 +198,9 @@ class ProjectStore {
   clubLibraryLoaded = $state<boolean>(false);
 
   // Momen + Once Sport Tagging Boards
-  boards = $state<TaggingBoard[]>(BUILTIN_TAGGING_BOARDS.map(cloneBoard));
-  activeBoardId = $state<string>(BUILTIN_TAGGING_BOARDS[0].id);
+  boards = $state<TaggingBoard[]>(loadInitialBoards());
+  defaultBoardId = $state<string>(loadInitialDefaultBoardId(this.boards));
+  activeBoardId = $state<string>(this.defaultBoardId);
 
   // Playlists for Stage 4
   playlists = $state<ActionPlaylist[]>([
@@ -645,6 +688,15 @@ class ProjectStore {
     }
   }
 
+  private persistBoardsLibrary() {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      localStorage.setItem(CUSTOM_BOARDS_STORAGE_KEY, JSON.stringify(this.boards));
+    } catch {
+      // Ignore storage quota errors
+    }
+  }
+
   get activeBoard(): TaggingBoard {
     return this.boards.find((b) => b.id === this.activeBoardId) || this.boards[0];
   }
@@ -653,6 +705,20 @@ class ProjectStore {
     if (this.boards.some((b) => b.id === id)) {
       this.activeBoardId = id;
     }
+  }
+
+  setDefaultBoard(id: string) {
+    if (!this.boards.some((b) => b.id === id)) return;
+    this.defaultBoardId = id;
+    this.activeBoardId = id;
+    if (typeof localStorage !== 'undefined') {
+      try {
+        localStorage.setItem(DEFAULT_BOARD_STORAGE_KEY, id);
+      } catch {
+        // Ignore storage write errors
+      }
+    }
+    this.persistBoardsLibrary();
   }
 
   importMomenBoard(jsonStr: string): TaggingBoard {
@@ -664,6 +730,7 @@ class ProjectStore {
       this.boards.push(cloneBoard(parsed));
     }
     this.activeBoardId = parsed.id;
+    this.persistBoardsLibrary();
     this.markDirty();
     return this.activeBoard;
   }
@@ -677,6 +744,7 @@ class ProjectStore {
     } else {
       board.buttons.push({ ...btn, forTags: [...btn.forTags], links: [...btn.links] });
     }
+    this.persistBoardsLibrary();
     this.markDirty();
   }
 
@@ -690,6 +758,7 @@ class ProjectStore {
         links: b.links.filter((id) => id !== buttonId),
         forTags: b.forTags.filter((id) => id !== buttonId),
       }));
+    this.persistBoardsLibrary();
     this.markDirty();
   }
 
@@ -710,6 +779,7 @@ class ProjectStore {
         if (!src.links.includes(dst.id)) src.links = [...src.links, dst.id];
         if (!dst.links.includes(src.id)) dst.links = [...dst.links, src.id];
       }
+      this.persistBoardsLibrary();
       this.markDirty();
       return;
     }
@@ -718,6 +788,7 @@ class ProjectStore {
       src.forTags = src.forTags.includes(dst.id)
         ? src.forTags.filter((id) => id !== dst.id)
         : [...src.forTags, dst.id];
+      this.persistBoardsLibrary();
       this.markDirty();
       return;
     }
@@ -726,6 +797,7 @@ class ProjectStore {
       dst.forTags = dst.forTags.includes(src.id)
         ? dst.forTags.filter((id) => id !== src.id)
         : [...dst.forTags, src.id];
+      this.persistBoardsLibrary();
       this.markDirty();
     }
   }
@@ -736,6 +808,7 @@ class ProjectStore {
     if (typeof patch.name === 'string') board.name = patch.name;
     if (patch.background) board.background = patch.background;
     if (typeof patch.color === 'string') board.color = patch.color;
+    this.persistBoardsLibrary();
     this.markDirty();
   }
 
@@ -750,6 +823,7 @@ class ProjectStore {
     };
     this.boards.push(fresh);
     this.activeBoardId = fresh.id;
+    this.persistBoardsLibrary();
     this.markDirty();
     return fresh;
   }
@@ -762,6 +836,7 @@ class ProjectStore {
     dup.locked = false;
     this.boards.push(dup);
     this.activeBoardId = dup.id;
+    this.persistBoardsLibrary();
     this.markDirty();
     return dup;
   }
@@ -771,9 +846,15 @@ class ProjectStore {
     const next = this.boards.filter((b) => b.id !== id);
     if (next.length === this.boards.length) return false;
     this.boards = next;
-    if (this.activeBoardId === id) {
-      this.activeBoardId = next[0].id;
+    if (this.defaultBoardId === id) {
+      this.setDefaultBoard(next[0].id);
     }
+    if (this.activeBoardId === id) {
+      this.activeBoardId = this.boards.some((b) => b.id === this.defaultBoardId)
+        ? this.defaultBoardId
+        : next[0].id;
+    }
+    this.persistBoardsLibrary();
     this.markDirty();
     return true;
   }
@@ -782,6 +863,7 @@ class ProjectStore {
     const board = this.activeBoard;
     if (!board) return false;
     board.locked = !board.locked;
+    this.persistBoardsLibrary();
     this.markDirty();
     return Boolean(board.locked);
   }
@@ -863,6 +945,9 @@ class ProjectStore {
     this.videoTitle = title || 'Video Pertandingan Futsal';
     this.duration = dur;
     this.currentTime = 0;
+    this.activeBoardId = this.boards.some((b) => b.id === this.defaultBoardId)
+      ? this.defaultBoardId
+      : this.boards[0].id;
 
     this.tags = [];
     this.activeClipForDrawing = null;
@@ -1570,10 +1655,25 @@ class ProjectStore {
         };
       }
       if (Array.isArray(data.boards) && data.boards.length > 0) {
-        this.boards = data.boards.map(cloneBoard);
+        const merged = [...loadInitialBoards()];
+        for (const incoming of data.boards) {
+          if (!incoming || typeof incoming.id !== 'string' || !Array.isArray(incoming.buttons)) continue;
+          const cloned = cloneBoard(incoming);
+          const idx = merged.findIndex((b) => b.id === cloned.id);
+          if (idx !== -1) {
+            merged[idx] = cloned;
+          } else {
+            merged.push(cloned);
+          }
+        }
+        this.boards = merged;
       }
       if (typeof data.activeBoardId === 'string' && this.boards.some((b) => b.id === data.activeBoardId)) {
         this.activeBoardId = data.activeBoardId;
+      } else {
+        this.activeBoardId = this.boards.some((b) => b.id === this.defaultBoardId)
+          ? this.defaultBoardId
+          : this.boards[0].id;
       }
       if (Array.isArray(data.tags)) {
         this.tags = data.tags.map((t: VideoTagEvent) => this.normalizeTagPlayers(t));
@@ -1746,6 +1846,10 @@ class ProjectStore {
     this.secondaryAngles = [];
     this.activeAngleId = 'main';
     this.angleViewMode = 'single';
+    this.currentTime = 0;
+    this.activeBoardId = this.boards.some((b) => b.id === this.defaultBoardId)
+      ? this.defaultBoardId
+      : this.boards[0].id;
     this.clearTagHistory();
     this.stage = 'hub';
   }

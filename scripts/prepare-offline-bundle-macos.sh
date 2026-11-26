@@ -20,7 +20,7 @@ for tool in ffmpeg ffprobe; do
   fi
   src="$(resolve_real "$(command -v "$tool")")"
   cp -f "$src" "$BIN_DIR/$tool"
-  chmod +x "$BIN_DIR/$tool"
+  chmod 755 "$BIN_DIR/$tool"
 done
 
 WHISPER_BIN=""
@@ -38,7 +38,7 @@ fi
 
 WHISPER_REAL="$(resolve_real "$WHISPER_BIN")"
 cp -f "$WHISPER_REAL" "$WHISPER_DIR/whisper-cli"
-chmod +x "$WHISPER_DIR/whisper-cli"
+chmod 755 "$WHISPER_DIR/whisper-cli"
 
 # Salin dylib whisper/ggml pendamping jika tersedia di prefix Homebrew / build whisper-cpp
 WHISPER_PREFIX="$(cd "$(dirname "$WHISPER_REAL")/.." && pwd)"
@@ -46,6 +46,7 @@ for search_dir in "$WHISPER_PREFIX/lib" "$WHISPER_PREFIX/libexec/lib" "$(dirname
   if [ -d "$search_dir" ]; then
     find "$search_dir" -maxdepth 2 \( -name 'libwhisper*.dylib' -o -name 'libggml*.dylib' \) -print0 | while IFS= read -r -d '' dylib; do
       cp -fL "$dylib" "$WHISPER_DIR/"
+      chmod 644 "$WHISPER_DIR/$(basename "$dylib")"
     done
   fi
 done

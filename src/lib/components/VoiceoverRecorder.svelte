@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { Mic, Square, Play, Pause, Trash2, Check, Sparkles } from 'lucide-svelte';
+  import { onMount, onDestroy } from 'svelte';
+  import { Mic, Square, Play, Pause, Trash2, Check, Sparkles, RefreshCw } from 'lucide-svelte';
 
   interface Props {
     existingAudioBase64?: string;
@@ -38,6 +39,86 @@
   let audioUrl = $state<string | null>(null);
   let audioEl = $state<HTMLAudioElement | null>(null);
   let isPlayingAudio = $state(false);
+  let audioDevices = $state<{ deviceId: string; label: string }[]>([]);
+  let selectedMicId = $state<string>(
+    typeof localStorage !== 'undefined' ? localStorage.getItem('futsaltag_mic_device_id') || '' : ''
+  );
+  let inputLevelPct = $state<number>(0);
+  let audioCtx: AudioContext | null = null;
+  let levelRaf: number | null = null;
+
+  async function refreshMicDevices() {
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.enumerateDevices) return;
+    try {
+      const list = await navigator.mediaDevices.enumerateDevices();
+      const inputs = list
+        .filter((d) => d.kind === 'audioinput')
+        .map((d, idx) => ({
+          deviceId: d.deviceId,
+          label: d.label || `Mikrofon #${idx + 1}`,
+        }));
+      audioDevices = inputs;
+      if (selectedMicId && !inputs.some((d) => d.deviceId === selectedMicId)) {
+        selectedMicId = '';
+      }
+    } catch {
+      // Ignore enumerate failure
+    }
+  }
+
+  function handleSelectMic(id: string) {
+    selectedMicId = id;
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('futsaltag_mic_device_id', id);
+    }
+  }
+
+  function stopAudioMeter() {
+    if (levelRaf !== null) {
+      cancelAnimationFrame(levelRaf);
+      levelRaf = null;
+    }
+    if (audioCtx) {
+      audioCtx.close().catch(() => {});
+      audioCtx = null;
+    }
+    inputLevelPct = 0;
+  }
+
+  function startAudioMeter(stream: MediaStream) {
+    stopAudioMeter();
+    const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!Ctx) return;
+    try {
+      audioCtx = new Ctx();
+      const source = audioCtx.createMediaStreamSource(stream);
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      const tickLevel = () => {
+        if (!isRecording || !audioCtx) return;
+        analyser.getByteFrequencyData(data);
+        let peak = 0;
+        for (let i = 0; i < data.length; i++) {
+          if (data[i] > peak) peak = data[i];
+        }
+        inputLevelPct = Math.min(100, Math.round((peak / 180) * 100));
+        levelRaf = requestAnimationFrame(tickLevel);
+      };
+      levelRaf = requestAnimationFrame(tickLevel);
+    } catch {
+      // Ignore if AudioContext unavailable
+    }
+  }
+
+  onMount(() => {
+    refreshMicDevices();
+  });
+
+  onDestroy(() => {
+    stopAudioMeter();
+  });
 
   $effect(() => {
     if (existingAudioBase64) {
@@ -51,7 +132,15 @@
 
   async function startRecording() {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: selectedMicId ? { deviceId: { exact: selectedMicId } } : true,
+        });
+      } catch {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      }
+      refreshMicDevices();
       recordedChunks = [];
       mediaRecorder = new MediaRecorder(stream);
 
@@ -60,6 +149,7 @@
       };
 
       mediaRecorder.onstop = () => {
+        stopAudioMeter();
         const blob = new Blob(recordedChunks, { type: 'audio/webm' });
         const reader = new FileReader();
         reader.onloadend = () => {
@@ -76,15 +166,18 @@
       mediaRecorder.start();
       isRecording = true;
       recordSeconds = 0;
+      startAudioMeter(stream);
       recordTimer = setInterval(() => {
         recordSeconds += 1;
       }, 1000);
     } catch {
+      stopAudioMeter();
       alert('Tidak dapat mengakses mikrofon. Pastikan izin mikrofon telah diberikan di sistem.');
     }
   }
 
   function stopRecording() {
+    stopAudioMeter();
     if (mediaRecorder && isRecording) {
       mediaRecorder.stop();
       isRecording = false;
@@ -131,6 +224,25 @@
     {/if}
   </div>
 
+  {#if !isRecording}
+    <div class="vo-mic-row">
+      <select
+        class="vo-mic-select"
+        value={selectedMicId}
+        onchange={(e) => handleSelectMic(e.currentTarget.value)}
+        title="Pilih perangkat mikrofon untuk rekaman voiceover"
+      >
+        <option value="">Mikrofon Default Sistem</option>
+        {#each audioDevices as dev (dev.deviceId)}
+          <option value={dev.deviceId}>{dev.label}</option>
+        {/each}
+      </select>
+      <button type="button" class="vo-mic-refresh" onclick={refreshMicDevices} title="Muat ulang daftar mikrofon">
+        <RefreshCw size={11} />
+      </button>
+    </div>
+  {/if}
+
   <div class="vo-controls">
     {#if !isRecording && !audioUrl}
       <button class="btn-mic-start" onclick={startRecording} title="Mulai rekam instruksi suara untuk klip ini">
@@ -141,6 +253,9 @@
       <div class="recording-indicator">
         <span class="rec-dot"></span>
         <span class="rec-time">Merekam: {formatTime(recordSeconds)}</span>
+        <span class="vo-level-track" title="Level input mikrofon">
+          <span class="vo-level-fill" style="width: {inputLevelPct}%;"></span>
+        </span>
       </div>
       <button class="btn-mic-stop" onclick={stopRecording} title="Hentikan rekaman suara">
         <Square size={13} />
@@ -437,5 +552,48 @@
     font-size: 9px;
     color: #64748b;
     line-height: 1.3;
+  }
+
+  .vo-mic-row {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .vo-mic-select {
+    flex: 1;
+    min-width: 0;
+    background: #050b16;
+    border: 1px solid #1e3b68;
+    border-radius: 5px;
+    color: #cbd5e1;
+    font-size: 10px;
+    padding: 4px 6px;
+  }
+
+  .vo-mic-refresh {
+    background: #0f172a;
+    border: 1px solid #1e3b68;
+    border-radius: 5px;
+    color: #93c5fd;
+    padding: 4px 6px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .vo-level-track {
+    flex: 1;
+    height: 4px;
+    background: rgba(15, 23, 42, 0.7);
+    border-radius: 999px;
+    overflow: hidden;
+  }
+
+  .vo-level-fill {
+    display: block;
+    height: 100%;
+    background: linear-gradient(90deg, #10b981, #f59e0b, #ef4444);
+    transition: width 0.08s linear;
   }
 </style>

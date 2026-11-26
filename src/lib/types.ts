@@ -198,6 +198,7 @@ export interface TaggingBoard {
   background: 'pitch' | 'plain';
   color: string;
   periods?: number;
+  locked?: boolean;
   buttons: TaggingButton[];
 }
 

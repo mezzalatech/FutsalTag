@@ -552,23 +552,25 @@ class ProjectStore {
       this.boards.push(cloneBoard(parsed));
     }
     this.activeBoardId = parsed.id;
+    this.markDirty();
     return this.activeBoard;
   }
 
   upsertBoardButton(btn: TaggingButton) {
     const board = this.activeBoard;
-    if (!board) return;
+    if (!board || board.locked) return;
     const idx = board.buttons.findIndex((b) => b.id === btn.id);
     if (idx !== -1) {
       board.buttons[idx] = { ...btn, forTags: [...btn.forTags], links: [...btn.links] };
     } else {
       board.buttons.push({ ...btn, forTags: [...btn.forTags], links: [...btn.links] });
     }
+    this.markDirty();
   }
 
   deleteBoardButton(buttonId: string) {
     const board = this.activeBoard;
-    if (!board) return;
+    if (!board || board.locked) return;
     board.buttons = board.buttons
       .filter((b) => b.id !== buttonId)
       .map((b) => ({
@@ -576,12 +578,13 @@ class ProjectStore {
         links: b.links.filter((id) => id !== buttonId),
         forTags: b.forTags.filter((id) => id !== buttonId),
       }));
+    this.markDirty();
   }
 
   toggleBoardButtonLink(sourceId: string, targetId: string) {
     if (!sourceId || !targetId || sourceId === targetId) return;
     const board = this.activeBoard;
-    if (!board) return;
+    if (!board || board.locked) return;
     const src = board.buttons.find((b) => b.id === sourceId);
     const dst = board.buttons.find((b) => b.id === targetId);
     if (!src || !dst) return;
@@ -595,6 +598,7 @@ class ProjectStore {
         if (!src.links.includes(dst.id)) src.links = [...src.links, dst.id];
         if (!dst.links.includes(src.id)) dst.links = [...dst.links, src.id];
       }
+      this.markDirty();
       return;
     }
 
@@ -602,6 +606,7 @@ class ProjectStore {
       src.forTags = src.forTags.includes(dst.id)
         ? src.forTags.filter((id) => id !== dst.id)
         : [...src.forTags, dst.id];
+      this.markDirty();
       return;
     }
 
@@ -609,6 +614,7 @@ class ProjectStore {
       dst.forTags = dst.forTags.includes(src.id)
         ? dst.forTags.filter((id) => id !== src.id)
         : [...dst.forTags, src.id];
+      this.markDirty();
     }
   }
 
@@ -618,6 +624,7 @@ class ProjectStore {
     if (typeof patch.name === 'string') board.name = patch.name;
     if (patch.background) board.background = patch.background;
     if (typeof patch.color === 'string') board.color = patch.color;
+    this.markDirty();
   }
 
   createNewBoard(name?: string): TaggingBoard {
@@ -631,7 +638,40 @@ class ProjectStore {
     };
     this.boards.push(fresh);
     this.activeBoardId = fresh.id;
+    this.markDirty();
     return fresh;
+  }
+
+  duplicateActiveBoard(): TaggingBoard {
+    const src = this.activeBoard;
+    const dup = cloneBoard(src);
+    dup.id = `board_${Date.now()}`;
+    dup.name = `${src.name} (Salinan)`;
+    dup.locked = false;
+    this.boards.push(dup);
+    this.activeBoardId = dup.id;
+    this.markDirty();
+    return dup;
+  }
+
+  deleteBoard(id: string): boolean {
+    if (this.boards.length <= 1) return false;
+    const next = this.boards.filter((b) => b.id !== id);
+    if (next.length === this.boards.length) return false;
+    this.boards = next;
+    if (this.activeBoardId === id) {
+      this.activeBoardId = next[0].id;
+    }
+    this.markDirty();
+    return true;
+  }
+
+  toggleActiveBoardLock(): boolean {
+    const board = this.activeBoard;
+    if (!board) return false;
+    board.locked = !board.locked;
+    this.markDirty();
+    return Boolean(board.locked);
   }
 
   private normalizeTagPlayers(tag: VideoTagEvent): VideoTagEvent {

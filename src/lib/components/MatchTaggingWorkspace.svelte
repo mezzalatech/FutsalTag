@@ -3689,6 +3689,9 @@
           initialSelectedButtonId={codingBoardFocusButtonId}
           onSelectBoard={(id) => projectStore.selectBoard(id)}
           onCreateBoard={() => projectStore.createNewBoard()}
+          onDuplicateBoard={() => projectStore.duplicateActiveBoard()}
+          onDeleteBoard={(id) => projectStore.deleteBoard(id)}
+          onToggleBoardLock={() => projectStore.toggleActiveBoardLock()}
           onUpdateBoardMeta={(patch) =>
             projectStore.updateActiveBoardMeta(patch)}
           onImportBoardJson={handleImportBoardJson}

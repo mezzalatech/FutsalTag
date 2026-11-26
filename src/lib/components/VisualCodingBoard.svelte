@@ -23,6 +23,8 @@
     Trash2,
     Upload,
     X,
+    Lock,
+    Unlock,
   } from 'lucide-svelte';
 
   interface Props {
@@ -31,6 +33,9 @@
     initialSelectedButtonId?: string | null;
     onSelectBoard: (id: string) => void;
     onCreateBoard: () => void;
+    onDuplicateBoard?: () => void;
+    onDeleteBoard?: (id: string) => void;
+    onToggleBoardLock?: () => void;
     onUpdateBoardMeta: (patch: { name?: string; background?: 'pitch' | 'plain'; color?: string }) => void;
     onImportBoardJson: (jsonStr: string) => void;
     onExportBoardJson: () => void;
@@ -46,6 +51,9 @@
     initialSelectedButtonId = null,
     onSelectBoard,
     onCreateBoard,
+    onDuplicateBoard,
+    onDeleteBoard,
+    onToggleBoardLock,
     onUpdateBoardMeta,
     onImportBoardJson,
     onExportBoardJson,
@@ -513,15 +521,57 @@
         type="text"
         class="vcb-board-name-input"
         value={board.name}
+        disabled={Boolean(board.locked)}
         oninput={(e) => onUpdateBoardMeta({ name: (e.currentTarget as HTMLInputElement).value })}
         placeholder="Nama papan..."
-        title="Ubah nama papan aktif"
+        title={board.locked ? 'Papan terkunci — buka kunci untuk mengubah' : 'Ubah nama papan aktif'}
       />
 
       <button type="button" class="vcb-btn" onclick={onCreateBoard} title="Buat Papan Tagging Kosong Baru">
         <FolderPlus size={12} />
         <span>+ Papan</span>
       </button>
+
+      {#if onDuplicateBoard}
+        <button type="button" class="vcb-btn" onclick={onDuplicateBoard} title="Duplikat papan aktif menjadi salinan baru">
+          <Copy size={12} />
+          <span>Duplikat</span>
+        </button>
+      {/if}
+
+      {#if onToggleBoardLock}
+        <button
+          type="button"
+          class="vcb-btn"
+          class:vcb-btn-locked={Boolean(board.locked)}
+          onclick={onToggleBoardLock}
+          title={board.locked ? 'Papan terkunci (klik untuk membuka)' : 'Kunci papan agar tombol tidak tergeser'}
+        >
+          {#if board.locked}
+            <Lock size={12} />
+            <span>Terkunci</span>
+          {:else}
+            <Unlock size={12} />
+            <span>Kunci</span>
+          {/if}
+        </button>
+      {/if}
+
+      {#if onDeleteBoard}
+        <button
+          type="button"
+          class="vcb-btn vcb-btn-danger"
+          disabled={boards.length <= 1 || Boolean(board.locked)}
+          onclick={() => {
+            if (confirm(`Hapus papan "${board.name}"?`)) {
+              onDeleteBoard(board.id);
+            }
+          }}
+          title={boards.length <= 1 ? 'Minimal 1 papan harus tersisa' : board.locked ? 'Buka kunci sebelum menghapus' : 'Hapus papan aktif'}
+        >
+          <Trash2 size={12} />
+        </button>
+      {/if}
 
       <button type="button" class="vcb-btn" onclick={handleImportClick} title="Impor Papan .momen.json">
         <Upload size={12} />
@@ -1817,5 +1867,21 @@
     font-size: 10px;
     color: #cbd5e1;
     line-height: 1.45;
+  }
+
+  .vcb-btn-locked {
+    border-color: #f59e0b !important;
+    color: #fbbf24 !important;
+    background: rgba(245, 158, 11, 0.14) !important;
+  }
+
+  .vcb-btn-danger:hover:not(:disabled) {
+    border-color: #ef4444 !important;
+    color: #fca5a5 !important;
+  }
+
+  .vcb-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
   }
 </style>

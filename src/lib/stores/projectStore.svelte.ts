@@ -17,6 +17,7 @@ import type {
   SpeedSegment,
   WatermarkConfig,
   PresentationSlide,
+  PresentationDeck,
   LibraryMatchSource,
   ClipLibraryFilter,
   ResolvedPlaylistClip,
@@ -143,6 +144,16 @@ export function parseYouTubeVideoId(url: string | null | undefined): string | nu
   return m ? m[1] : null;
 }
 
+function createDefaultDeck(id = 'deck-1', title = 'Presentasi 1'): PresentationDeck {
+  return {
+    id,
+    title,
+    showTitleCardBeforeClip: false,
+    titleCardDurationSec: 2,
+    slides: [],
+  };
+}
+
 class ProjectStore {
   stage = $state<WorkflowStage>('hub');
   videoSrc = $state<string | null>(null);
@@ -213,6 +224,8 @@ class ProjectStore {
     },
   ]);
   presentationSlides = $state<PresentationSlide[]>([]);
+  presentationDecks = $state<PresentationDeck[]>([createDefaultDeck()]);
+  activeDeckId = $state<string>('deck-1');
   clubLogoDataUrl = $state<string | null>(null);
   watermarkConfig = $state<WatermarkConfig>({
     enabled: true,
@@ -969,6 +982,8 @@ class ProjectStore {
       },
     ];
     this.presentationSlides = [];
+    this.presentationDecks = [createDefaultDeck()];
+    this.activeDeckId = 'deck-1';
     this.clubLogoDataUrl = null;
     this.watermarkConfig = { enabled: true, position: 'top-right', opacity: 0.78, scaleRatio: 0.09 };
     this.clearTagHistory();
@@ -1181,6 +1196,8 @@ class ProjectStore {
       },
     ];
     this.presentationSlides = [];
+    this.presentationDecks = [createDefaultDeck()];
+    this.activeDeckId = 'deck-1';
 
     this.clearTagHistory();
     this.stage = 'tagging';
@@ -1455,6 +1472,185 @@ class ProjectStore {
     }
   }
 
+  get activeDeck(): PresentationDeck {
+    return this.presentationDecks.find((d) => d.id === this.activeDeckId) || this.presentationDecks[0];
+  }
+
+  private syncActiveDeckSlides() {
+    const deck = this.activeDeck;
+    if (deck) {
+      this.presentationSlides = deck.slides;
+    }
+  }
+
+  selectPresentationDeck(id: string) {
+    if (this.presentationDecks.some((d) => d.id === id)) {
+      this.activeDeckId = id;
+      this.syncActiveDeckSlides();
+    }
+  }
+
+  createPresentationDeck(title?: string): PresentationDeck {
+    const fresh = createDefaultDeck(
+      `deck-${Date.now()}`,
+      title?.trim() || `Presentasi ${this.presentationDecks.length + 1}`
+    );
+    this.presentationDecks = [...this.presentationDecks, fresh];
+    this.activeDeckId = fresh.id;
+    this.syncActiveDeckSlides();
+    this.markDirty();
+    return fresh;
+  }
+
+  renamePresentationDeck(id: string, title: string) {
+    const clean = title.trim();
+    if (!clean) return;
+    const deck = this.presentationDecks.find((d) => d.id === id);
+    if (!deck) return;
+    deck.title = clean;
+    this.markDirty();
+  }
+
+  deletePresentationDeck(id: string): boolean {
+    if (this.presentationDecks.length <= 1) return false;
+    const next = this.presentationDecks.filter((d) => d.id !== id);
+    if (next.length === this.presentationDecks.length) return false;
+    this.presentationDecks = next;
+    if (this.activeDeckId === id) {
+      this.activeDeckId = next[0].id;
+    }
+    this.syncActiveDeckSlides();
+    this.markDirty();
+    return true;
+  }
+
+  setActiveDeckTitleCard(enabled: boolean, durationSec = 2) {
+    const deck = this.activeDeck;
+    if (!deck) return;
+    deck.showTitleCardBeforeClip = enabled;
+    deck.titleCardDurationSec = Math.max(0.5, Math.min(10, durationSec));
+    this.markDirty();
+  }
+
+  addClipsToActiveDeck(clips: ResolvedPlaylistClip[]) {
+    const deck = this.activeDeck;
+    if (!deck || clips.length === 0) return;
+    const added: PresentationSlide[] = clips.map((c, idx) => ({
+      id: `slide-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
+      kind: 'clip',
+      title: c.tag.title,
+      tag: JSON.parse(JSON.stringify(c.tag)),
+      matchId: c.matchId,
+      matchTitle: c.matchTitle,
+      videoFilePath: c.videoFilePath,
+      videoSrc: c.videoSrc,
+      chromaFloorConfig: c.chromaFloorConfig,
+      showTelestration: c.useTelestration,
+    }));
+    deck.slides = [...deck.slides, ...added];
+    this.syncActiveDeckSlides();
+    this.markDirty();
+  }
+
+  addTitleSlideToActiveDeck(title: string, subtitle = '', bgColor = '#0f172a') {
+    const deck = this.activeDeck;
+    if (!deck || !title.trim()) return;
+    deck.slides = [
+      ...deck.slides,
+      {
+        id: `title-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+        kind: 'title',
+        title: title.trim(),
+        subtitle: subtitle.trim() || undefined,
+        bgColor,
+      },
+    ];
+    this.syncActiveDeckSlides();
+    this.markDirty();
+  }
+
+  addImageSlideToActiveDeck(title: string, imageDataUrl: string, caption = '') {
+    const deck = this.activeDeck;
+    if (!deck || !imageDataUrl) return;
+    deck.slides = [
+      ...deck.slides,
+      {
+        id: `img-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+        kind: 'image',
+        title: title.trim() || 'Slide Gambar',
+        imageDataUrl,
+        caption: caption.trim() || undefined,
+      },
+    ];
+    this.syncActiveDeckSlides();
+    this.markDirty();
+  }
+
+  addExternalVideoSlideToActiveDeck(
+    title: string,
+    videoFilePath: string | null,
+    videoSrc: string,
+    durationSec: number
+  ) {
+    const deck = this.activeDeck;
+    if (!deck) return;
+    const dur = Math.max(1, durationSec || 10);
+    deck.slides = [
+      ...deck.slides,
+      {
+        id: `extvid-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+        kind: 'clip',
+        title: title.trim() || 'Video Sisipan',
+        videoFilePath,
+        videoSrc,
+        showTelestration: false,
+        tag: {
+          id: `exttag-${Date.now()}`,
+          title: title.trim() || 'Video Sisipan',
+          category: 'Video Sisipan',
+          startTime: 0,
+          endTime: dur,
+          color: '#38bdf8',
+          playerLabel: '',
+          drawings: [],
+        },
+      },
+    ];
+    this.syncActiveDeckSlides();
+    this.markDirty();
+  }
+
+  moveActiveDeckSlide(index: number, delta: -1 | 1) {
+    const deck = this.activeDeck;
+    if (!deck) return;
+    const nextIdx = index + delta;
+    if (index < 0 || index >= deck.slides.length || nextIdx < 0 || nextIdx >= deck.slides.length) return;
+    const arr = [...deck.slides];
+    const [item] = arr.splice(index, 1);
+    arr.splice(nextIdx, 0, item);
+    deck.slides = arr;
+    this.syncActiveDeckSlides();
+    this.markDirty();
+  }
+
+  removeActiveDeckSlide(slideId: string) {
+    const deck = this.activeDeck;
+    if (!deck) return;
+    deck.slides = deck.slides.filter((s) => s.id !== slideId);
+    this.syncActiveDeckSlides();
+    this.markDirty();
+  }
+
+  toggleActiveDeckClipTelestration(slideId: string) {
+    const deck = this.activeDeck;
+    if (!deck) return;
+    deck.slides = deck.slides.map((s) =>
+      s.id === slideId && s.kind === 'clip' ? { ...s, showTelestration: s.showTelestration === false } : s
+    );
+    this.syncActiveDeckSlides();
+    this.markDirty();
+  }
+
   exportProjectJson(): string {
     const projectData = {
       format: 'futsaltag-project',
@@ -1482,6 +1678,8 @@ class ProjectStore {
       tags: this.tags,
       playlists: this.playlists,
       presentationSlides: this.presentationSlides,
+      presentationDecks: this.presentationDecks,
+      activeDeckId: this.activeDeckId,
       clubLogoDataUrl: this.clubLogoDataUrl,
       watermarkConfig: this.watermarkConfig,
       secondaryAngles: this.secondaryAngles.map((a) => ({
@@ -1682,6 +1880,27 @@ class ProjectStore {
         this.playlists = data.playlists;
       }
       this.presentationSlides = Array.isArray(data.presentationSlides) ? data.presentationSlides : [];
+      if (Array.isArray(data.presentationDecks) && data.presentationDecks.length > 0) {
+        this.presentationDecks = data.presentationDecks.map((d: any, i: number) => ({
+          id: typeof d?.id === 'string' ? d.id : `deck-${i + 1}`,
+          title: typeof d?.title === 'string' ? d.title : `Presentasi ${i + 1}`,
+          showTitleCardBeforeClip: Boolean(d?.showTitleCardBeforeClip),
+          titleCardDurationSec: Number(d?.titleCardDurationSec) || 2,
+          slides: Array.isArray(d?.slides) ? d.slides : [],
+        }));
+        this.activeDeckId =
+          typeof data.activeDeckId === 'string' && this.presentationDecks.some((d) => d.id === data.activeDeckId)
+            ? data.activeDeckId
+            : this.presentationDecks[0].id;
+      } else {
+        this.presentationDecks = [
+          {
+            ...createDefaultDeck(),
+            slides: [...this.presentationSlides],
+          },
+        ];
+        this.activeDeckId = 'deck-1';
+      }
       this.clubLogoDataUrl = typeof data.clubLogoDataUrl === 'string' ? data.clubLogoDataUrl : null;
       if (data.watermarkConfig && typeof data.watermarkConfig === 'object') {
         const wc = data.watermarkConfig;
@@ -1837,6 +2056,8 @@ class ProjectStore {
       },
     ];
     this.presentationSlides = [];
+    this.presentationDecks = [createDefaultDeck()];
+    this.activeDeckId = 'deck-1';
     this.clubLogoDataUrl = null;
     this.watermarkConfig = { enabled: true, position: 'top-right', opacity: 0.78, scaleRatio: 0.09 };
     this.matchKind = 'match';

@@ -1,18 +1,19 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke, convertFileSrc } from "@tauri-apps/api/core";
   import {
     projectStore,
     isTauriDesktop,
   } from "$lib/stores/projectStore.svelte";
   import ClipFilterBar from "$lib/components/ClipFilterBar.svelte";
-  import type { ExportMode, ResolvedPlaylistClip } from "$lib/types";
+  import type { ExportMode, PresentationSlide, ResolvedPlaylistClip } from "$lib/types";
   import {
     Play,
     Pause,
     SkipForward,
     SkipBack,
     ArrowLeft,
+    ArrowRight,
     Film,
     Download,
     Layers,
@@ -31,10 +32,20 @@
     MonitorPlay,
     CloudUpload,
     Globe,
+    Plus,
+    Pencil,
+    Type,
+    Image as ImageIcon,
+    Video,
   } from "lucide-svelte";
   import { exportInteractiveHtmlStatsReport } from "$lib/export/htmlStatsReport";
   import CloudExportModal from "$lib/components/CloudExportModal.svelte";
   import { renderDrawingsToDataUrl } from "$lib/export/telestrationRenderer";
+  import {
+    renderClipTitleCardDataUrl,
+    renderTitleSlideDataUrl,
+    renderImageSlideDataUrl,
+  } from "$lib/export/slideCardRenderer";
   import {
     getEffectiveFreezeStopsForTag,
     getEffectiveSpeedSegmentsForTag,
@@ -79,7 +90,165 @@
   let presentationVideoEl = $state<HTMLVideoElement | null>(null);
   let xmlImportInputEl = $state<HTMLInputElement | undefined>(undefined);
   let wmLogoInputEl = $state<HTMLInputElement | undefined>(undefined);
+  let deckImageInputEl = $state<HTMLInputElement | undefined>(undefined);
+  let deckVideoInputEl = $state<HTMLInputElement | undefined>(undefined);
   let isCloudOpen = $state(false);
+  let selectedClipKeys = $state<string[]>([]);
+  let showTitleSlideForm = $state(false);
+  let newSlideTitle = $state("");
+  let newSlideSubtitle = $state("");
+  let newSlideBgColor = $state("#0f172a");
+
+  const activeDeck = $derived(projectStore.activeDeck);
+  const allFilteredChecked = $derived(
+    filteredClips.length > 0 &&
+      filteredClips.every((c) => selectedClipKeys.includes(c.key)),
+  );
+
+  function toggleClipSelection(key: string) {
+    if (selectedClipKeys.includes(key)) {
+      selectedClipKeys = selectedClipKeys.filter((k) => k !== key);
+    } else {
+      selectedClipKeys = [...selectedClipKeys, key];
+    }
+  }
+
+  function toggleSelectAllFiltered() {
+    if (allFilteredChecked) {
+      selectedClipKeys = [];
+    } else {
+      selectedClipKeys = filteredClips.map((c) => c.key);
+    }
+  }
+
+  function sendSelectedClipsToDeck() {
+    const toAdd =
+      selectedClipKeys.length > 0
+        ? filteredClips.filter((c) => selectedClipKeys.includes(c.key))
+        : filteredClips;
+    if (toAdd.length === 0) return;
+    projectStore.addClipsToActiveDeck(toAdd);
+    selectedClipKeys = [];
+    exportStatusMessage = `${toAdd.length} klip ditambahkan ke "${activeDeck.title}".`;
+  }
+
+  function handleCreateDeck() {
+    const title = prompt(
+      "Nama presentasi baru:",
+      `Presentasi ${projectStore.presentationDecks.length + 1}`,
+    );
+    if (title === null) return;
+    projectStore.createPresentationDeck(title);
+  }
+
+  function handleRenameDeck() {
+    const title = prompt("Ubah nama presentasi:", activeDeck.title);
+    if (title !== null && title.trim()) {
+      projectStore.renamePresentationDeck(activeDeck.id, title);
+    }
+  }
+
+  function handleDeleteDeck() {
+    if (projectStore.presentationDecks.length <= 1) return;
+    if (confirm(`Hapus presentasi "${activeDeck.title}"?`)) {
+      projectStore.deletePresentationDeck(activeDeck.id);
+    }
+  }
+
+  function handleAddTitleSlide() {
+    if (!newSlideTitle.trim()) return;
+    projectStore.addTitleSlideToActiveDeck(
+      newSlideTitle,
+      newSlideSubtitle,
+      newSlideBgColor,
+    );
+    newSlideTitle = "";
+    newSlideSubtitle = "";
+    showTitleSlideForm = false;
+  }
+
+  function handleDeckImageSelected(e: Event) {
+    const file = (e.currentTarget as HTMLInputElement).files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        const title = file.name.replace(/\.[^.]+$/, "") || "Slide Gambar";
+        projectStore.addImageSlideToActiveDeck(title, reader.result);
+      }
+    };
+    reader.readAsDataURL(file);
+    (e.currentTarget as HTMLInputElement).value = "";
+  }
+
+  function probeVideoDuration(src: string): Promise<number> {
+    return new Promise((resolve) => {
+      const v = document.createElement("video");
+      v.preload = "metadata";
+      const finish = (dur: number) => {
+        v.remove();
+        resolve(Number.isFinite(dur) && dur > 0 ? dur : 15);
+      };
+      v.onloadedmetadata = () => finish(v.duration);
+      v.onerror = () => finish(15);
+      setTimeout(() => finish(15), 2000);
+      v.src = src;
+    });
+  }
+
+  async function handleAddDeckVideoClick() {
+    if (isTauriDesktop()) {
+      try {
+        const { open } = await import("@tauri-apps/plugin-dialog");
+        const chosen = await open({
+          title: "Pilih Video Sisipan MP4 / MOV",
+          multiple: false,
+          filters: [{ name: "Video", extensions: ["mp4", "mov", "mkv", "webm"] }],
+        });
+        if (typeof chosen === "string" && chosen) {
+          const src = convertFileSrc(chosen);
+          const dur = await probeVideoDuration(src);
+          const name = chosen.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, "") || "Video Sisipan";
+          projectStore.addExternalVideoSlideToActiveDeck(name, chosen, src, dur);
+        }
+      } catch (err: any) {
+        exportStatusMessage = `Gagal memuat video sisipan: ${err?.message || err}`;
+      }
+    } else {
+      deckVideoInputEl?.click();
+    }
+  }
+
+  async function handleDeckVideoInputSelected(e: Event) {
+    const input = e.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+    const src = URL.createObjectURL(file);
+    const dur = await probeVideoDuration(src);
+    const name = file.name.replace(/\.[^.]+$/, "") || "Video Sisipan";
+    projectStore.addExternalVideoSlideToActiveDeck(name, null, src, dur);
+    input.value = "";
+  }
+
+  function handleOpenPresentationFromDeck() {
+    if (activeDeck.slides.length > 0) {
+      projectStore.presentationSlides = activeDeck.slides;
+    } else if (filteredClips.length > 0) {
+      projectStore.presentationSlides = filteredClips.map((c, idx) => ({
+        id: `pres-${idx}-${c.key}`,
+        kind: "clip",
+        title: c.tag.title,
+        tag: c.tag,
+        matchId: c.matchId,
+        matchTitle: c.matchTitle,
+        videoFilePath: c.videoFilePath,
+        videoSrc: c.videoSrc,
+        chromaFloorConfig: c.chromaFloorConfig,
+        showTelestration: c.useTelestration,
+      }));
+    }
+    onOpenPresentation?.();
+  }
 
   async function handleExportHtmlStats() {
     if (projectStore.tags.length === 0) {
@@ -229,11 +398,50 @@
 
   // Trigger Native / Web Export
   async function triggerExport() {
-    if (filteredClips.length === 0) {
+    const useDeckSource = activeDeck.slides.length > 0;
+    const sourceSlides: PresentationSlide[] = useDeckSource
+      ? activeDeck.slides
+      : filteredClips.map((c) => ({
+          id: `flt-${c.key}`,
+          kind: "clip" as const,
+          title: c.tag.title,
+          tag: c.tag,
+          matchId: c.matchId,
+          matchTitle: c.matchTitle,
+          videoFilePath: c.videoFilePath,
+          videoSrc: c.videoSrc,
+          chromaFloorConfig: c.chromaFloorConfig,
+          showTelestration: c.useTelestration,
+        }));
+
+    if (sourceSlides.length === 0) {
       exportStatusMessage =
-        "Tidak ada klip sesuai filter. Ubah filter atau buka video/proyek terlebih dahulu.";
+        "Tidak ada klip atau slide untuk diekspor. Tambahkan ke Presentasi atau sesuaikan filter.";
       return;
     }
+
+    const slideToResolvedClip = (s: Extract<PresentationSlide, { kind: "clip" }>): ResolvedPlaylistClip => {
+      const mId = s.matchId || "__active__";
+      const matchSrc =
+        mId === "__active__"
+          ? null
+          : projectStore.libraryMatches.find((m) => m.id === mId) || null;
+      return {
+        key: s.id,
+        matchId: mId,
+        matchTitle: s.matchTitle || matchSrc?.title || projectStore.videoTitle,
+        videoFilePath: s.videoFilePath ?? matchSrc?.videoFilePath ?? projectStore.videoFilePath,
+        videoSrc: s.videoSrc ?? matchSrc?.videoSrc ?? projectStore.videoSrc,
+        chromaFloorConfig: s.chromaFloorConfig ?? matchSrc?.chromaFloorConfig,
+        tag: s.tag,
+        hasTelestration: (s.tag.drawings?.length ?? 0) > 0 || Boolean(s.tag.voiceoverAudioBase64),
+        useTelestration: s.showTelestration !== false,
+      };
+    };
+
+    const clipSlides = sourceSlides.filter(
+      (s): s is Extract<PresentationSlide, { kind: "clip" }> => s.kind === "clip",
+    );
 
     isExporting = true;
     exportProgress = 5;
@@ -241,6 +449,18 @@
     exportSuccessPath = null;
 
     const targetHeight = outputResolution === "720p" ? 720 : 1080;
+    const stillH =
+      outputAspectRatio === "9:16"
+        ? targetHeight === 720
+          ? 1280
+          : 1920
+        : targetHeight;
+    const stillW =
+      outputAspectRatio === "9:16"
+        ? targetHeight
+        : targetHeight === 720
+          ? 1280
+          : 1920;
     const renderW = targetHeight === 720 ? 1280 : 1920;
     const renderH = targetHeight === 720 ? 720 : 1080;
 
@@ -249,7 +469,8 @@
         Boolean(p && (p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p)));
 
       if (isTauriDesktop()) {
-        const missingVideo = filteredClips.find(
+        const resolvedClipsForCheck = clipSlides.map(slideToResolvedClip);
+        const missingVideo = resolvedClipsForCheck.find(
           (c) => !isAbsPath(c.videoFilePath),
         );
         if (missingVideo) {
@@ -259,7 +480,7 @@
         }
 
         const { open, save } = await import("@tauri-apps/plugin-dialog");
-        const clips = filteredClips;
+        const clips = resolvedClipsForCheck;
         const watermarkPayload = await buildWatermarkExportPayload(
           projectStore.clubLogoDataUrl,
           projectStore.watermarkConfig,
@@ -489,13 +710,75 @@
             tempDir.endsWith("/") || tempDir.endsWith("\\") ? "" : "/";
           const renderedClips: string[] = [];
 
-          for (let i = 0; i < clips.length; i++) {
-            const clip = clips[i];
-            exportStatusMessage = `Merender klip ${i + 1}/${clips.length}: [${clip.matchTitle}] ${clip.tag.title}...`;
-            const tempClipPath = `${tempDir}${sep}futsaltag_pl_${i}_${Date.now()}.mp4`;
-            await renderClipToPath(clip, tempClipPath);
-            renderedClips.push(tempClipPath);
-            exportProgress = 15 + Math.floor(((i + 1) / clips.length) * 70);
+          for (let i = 0; i < sourceSlides.length; i++) {
+            const slide = sourceSlides[i];
+            if (slide.kind === "title") {
+              exportStatusMessage = `Merender slide judul ${i + 1}/${sourceSlides.length}: ${slide.title}...`;
+              const pngB64 = renderTitleSlideDataUrl({
+                title: slide.title,
+                subtitle: slide.subtitle,
+                bgColor: slide.bgColor,
+                width: stillW,
+                height: stillH,
+              });
+              const tempSlidePath = `${tempDir}${sep}futsaltag_title_${i}_${Date.now()}.mp4`;
+              await invoke<string>("render_still_slide_ffmpeg", {
+                imageBase64: pngB64,
+                outputPath: tempSlidePath,
+                durationSec: 3.0,
+                targetHeight,
+                vertical9x16: outputAspectRatio === "9:16",
+              });
+              renderedClips.push(tempSlidePath);
+            } else if (slide.kind === "image") {
+              exportStatusMessage = `Merender slide gambar ${i + 1}/${sourceSlides.length}: ${slide.title}...`;
+              const pngB64 = await renderImageSlideDataUrl({
+                imageDataUrl: slide.imageDataUrl,
+                title: slide.title,
+                caption: slide.caption,
+                width: stillW,
+                height: stillH,
+              });
+              const tempImgPath = `${tempDir}${sep}futsaltag_img_${i}_${Date.now()}.mp4`;
+              await invoke<string>("render_still_slide_ffmpeg", {
+                imageBase64: pngB64,
+                outputPath: tempImgPath,
+                durationSec: 3.5,
+                targetHeight,
+                vertical9x16: outputAspectRatio === "9:16",
+              });
+              renderedClips.push(tempImgPath);
+            } else if (slide.kind === "clip") {
+              const clip = slideToResolvedClip(slide);
+              if (activeDeck.showTitleCardBeforeClip && !slide.id.startsWith("extvid-")) {
+                exportStatusMessage = `Merender kartu judul ${i + 1}/${sourceSlides.length}: ${clip.tag.title}...`;
+                const cardB64 = renderClipTitleCardDataUrl({
+                  matchTitle: clip.matchTitle,
+                  timeLabel: `${projectStore.formatMatchClock(clip.tag.startTime)}`,
+                  category: clip.tag.category,
+                  categoryColor: clip.tag.color,
+                  clipTitle: clip.tag.title,
+                  playerLabel: clip.tag.playerLabel,
+                  labels: (clip.tag.labels ?? []).map((l) => l.name),
+                  width: stillW,
+                  height: stillH,
+                });
+                const cardPath = `${tempDir}${sep}futsaltag_card_${i}_${Date.now()}.mp4`;
+                await invoke<string>("render_still_slide_ffmpeg", {
+                  imageBase64: cardB64,
+                  outputPath: cardPath,
+                  durationSec: activeDeck.titleCardDurationSec || 2.0,
+                  targetHeight,
+                  vertical9x16: outputAspectRatio === "9:16",
+                });
+                renderedClips.push(cardPath);
+              }
+              exportStatusMessage = `Merender klip ${i + 1}/${sourceSlides.length}: [${clip.matchTitle}] ${clip.tag.title}...`;
+              const tempClipPath = `${tempDir}${sep}futsaltag_pl_${i}_${Date.now()}.mp4`;
+              await renderClipToPath(clip, tempClipPath);
+              renderedClips.push(tempClipPath);
+            }
+            exportProgress = 15 + Math.floor(((i + 1) / sourceSlides.length) * 70);
           }
 
           exportStatusMessage =
@@ -866,12 +1149,29 @@
           <div class="title-wrap">
             <Layers size={15} />
             <span class="title-text"
-              >Daftar Klip Aktif ({filteredClips.length})</span
+              >Klip Hasil Saring ({filteredClips.length})</span
             >
           </div>
-          <span class="drag-hint"
-            >Filter di atas langsung menyaring Presentasi & Ekspor MP4</span
-          >
+          <div class="items-hdr-actions">
+            {#if filteredClips.length > 0}
+              <button
+                type="button"
+                class="btn-select-all"
+                onclick={toggleSelectAllFiltered}
+              >
+                {allFilteredChecked ? "✓ Semua" : "Pilih Semua"}
+              </button>
+              <button
+                type="button"
+                class="btn-to-deck"
+                onclick={sendSelectedClipsToDeck}
+                title="Kirim klip tercentang (atau semua hasil saring) ke keranjang Presentasi aktif"
+              >
+                <ArrowRight size={12} />
+                <span>Ke Presentasi ({selectedClipKeys.length || filteredClips.length})</span>
+              </button>
+            {/if}
+          </div>
         </div>
 
         <div class="items-scroll">
@@ -896,6 +1196,16 @@
                     playPresentationItem(idx);
                 }}
               >
+                <input
+                  type="checkbox"
+                  class="clip-check-box"
+                  checked={selectedClipKeys.includes(clip.key)}
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    toggleClipSelection(clip.key);
+                  }}
+                  aria-label="Pilih klip {clip.tag.title}"
+                />
                 <div class="item-order-box">{idx + 1}</div>
 
                 <div class="item-info">
@@ -996,8 +1306,227 @@
       </div>
     </div>
 
-    <!-- RIGHT: MULTI-FORMAT EXPORT OPTIONS CARD -->
+    <!-- RIGHT: MULTI-PRESENTATION DECK + MULTI-FORMAT EXPORT OPTIONS -->
     <div class="export-column">
+      <!-- MULTI-PRESENTATION DECK BASKET (MOMEN STYLE) -->
+      <div class="export-config-card deck-basket-card">
+        <div class="deck-top-bar">
+          <select
+            class="deck-select"
+            value={activeDeck.id}
+            onchange={(e) =>
+              projectStore.selectPresentationDeck(e.currentTarget.value)}
+            aria-label="Pilih Deck Presentasi"
+          >
+            {#each projectStore.presentationDecks as deck (deck.id)}
+              <option value={deck.id}
+                >{deck.title} ({deck.slides.length})</option
+              >
+            {/each}
+          </select>
+          <button
+            type="button"
+            class="deck-icon-btn"
+            onclick={handleCreateDeck}
+            title="Buat presentasi baru"
+          >
+            <Plus size={13} />
+          </button>
+          <button
+            type="button"
+            class="deck-icon-btn"
+            onclick={handleRenameDeck}
+            title="Ubah nama presentasi"
+          >
+            <Pencil size={12} />
+          </button>
+          <button
+            type="button"
+            class="deck-icon-btn danger"
+            disabled={projectStore.presentationDecks.length <= 1}
+            onclick={handleDeleteDeck}
+            title="Hapus presentasi ini"
+          >
+            <Trash2 size={12} />
+          </button>
+        </div>
+
+        <label class="deck-title-card-toggle">
+          <div class="dtct-text">
+            <strong>Kartu judul sebelum tiap klip (2 detik)</strong>
+            <span>Pertandingan, menit, dan tag tampil 2 detik sebelum klip diputar.</span>
+          </div>
+          <input
+            type="checkbox"
+            checked={activeDeck.showTitleCardBeforeClip}
+            onchange={(e) =>
+              projectStore.setActiveDeckTitleCard(
+                e.currentTarget.checked,
+                activeDeck.titleCardDurationSec || 2,
+              )}
+          />
+        </label>
+
+        <div class="deck-slides-list">
+          {#if activeDeck.slides.length === 0}
+            <div class="deck-empty-hint">
+              Keranjang presentasi masih kosong. Klik <strong>Ke Presentasi</strong> di kiri, atau gunakan seluruh {filteredClips.length} klip terfilter saat ekspor.
+            </div>
+          {:else}
+            {#each activeDeck.slides as slide, idx (slide.id)}
+              <div class="deck-slide-row">
+                <span class="deck-kind-badge kind-{slide.kind}">
+                  {slide.kind === "title"
+                    ? "JUDUL"
+                    : slide.kind === "image"
+                      ? "GAMBAR"
+                      : slide.id.startsWith("extvid-")
+                        ? "VIDEO"
+                        : "KLIP"}
+                </span>
+                <span class="deck-slide-title">{slide.title}</span>
+                {#if slide.kind === "clip" && !slide.id.startsWith("extvid-")}
+                  <button
+                    type="button"
+                    class="btn-tel-toggle"
+                    class:active={slide.showTelestration !== false}
+                    onclick={() =>
+                      projectStore.toggleActiveDeckClipTelestration(slide.id)}
+                    title="Toggle Telestrasi untuk klip ini"
+                  >
+                    <Sparkles size={10} />
+                  </button>
+                {/if}
+                <button
+                  type="button"
+                  class="btn-order"
+                  disabled={idx === 0}
+                  onclick={() => projectStore.moveActiveDeckSlide(idx, -1)}
+                  title="Naikkan"
+                >
+                  <MoveUp size={11} />
+                </button>
+                <button
+                  type="button"
+                  class="btn-order"
+                  disabled={idx === activeDeck.slides.length - 1}
+                  onclick={() => projectStore.moveActiveDeckSlide(idx, 1)}
+                  title="Turunkan"
+                >
+                  <MoveDown size={11} />
+                </button>
+                <button
+                  type="button"
+                  class="btn-del"
+                  onclick={() => projectStore.removeActiveDeckSlide(slide.id)}
+                  title="Hapus dari presentasi"
+                >
+                  <Trash2 size={11} />
+                </button>
+              </div>
+            {/each}
+          {/if}
+        </div>
+
+        <div class="deck-insert-bar">
+          <button
+            type="button"
+            class="deck-ins-btn"
+            onclick={() => (showTitleSlideForm = !showTitleSlideForm)}
+          >
+            <Type size={12} />
+            <span>Judul</span>
+          </button>
+          <button
+            type="button"
+            class="deck-ins-btn"
+            onclick={() => deckImageInputEl?.click()}
+          >
+            <ImageIcon size={12} />
+            <span>Gambar</span>
+          </button>
+          <button
+            type="button"
+            class="deck-ins-btn"
+            onclick={handleAddDeckVideoClick}
+          >
+            <Video size={12} />
+            <span>Video</span>
+          </button>
+          <input
+            bind:this={deckImageInputEl}
+            type="file"
+            accept="image/*"
+            class="hidden"
+            onchange={handleDeckImageSelected}
+          />
+          <input
+            bind:this={deckVideoInputEl}
+            type="file"
+            accept="video/*"
+            class="hidden"
+            onchange={handleDeckVideoInputSelected}
+          />
+        </div>
+
+        {#if showTitleSlideForm}
+          <div class="deck-title-form">
+            <input
+              type="text"
+              placeholder="Judul Slide (mis. Babak 1 — Pressing)"
+              bind:value={newSlideTitle}
+              class="dtf-input"
+            />
+            <input
+              type="text"
+              placeholder="Subjudul opsional..."
+              bind:value={newSlideSubtitle}
+              class="dtf-input"
+            />
+            <div class="dtf-actions">
+              <input
+                type="color"
+                bind:value={newSlideBgColor}
+                title="Warna latar slide"
+              />
+              <button
+                type="button"
+                class="btn-res"
+                onclick={() => (showTitleSlideForm = false)}>Batal</button
+              >
+              <button
+                type="button"
+                class="btn-res active"
+                onclick={handleAddTitleSlide}>Sisipkan</button
+              >
+            </div>
+          </div>
+        {/if}
+
+        <div class="deck-bottom-ctas">
+          <button
+            type="button"
+            class="btn-deck-pres"
+            onclick={handleOpenPresentationFromDeck}
+          >
+            <MonitorPlay size={14} />
+            <span>Putar Layar Penuh</span>
+          </button>
+          <button
+            type="button"
+            class="btn-deck-merge"
+            disabled={isExporting}
+            onclick={() => {
+              exportMode = "merged_video";
+              triggerExport();
+            }}
+          >
+            <Film size={14} />
+            <span>Jadikan Satu Video</span>
+          </button>
+        </div>
+      </div>
+
       <div class="export-config-card">
         <div class="config-header">
           <Settings2 size={16} />
@@ -2169,5 +2698,235 @@
     background: rgba(2, 132, 199, 0.22);
     border-color: #38bdf8;
     color: #38bdf8;
+  }
+
+  .items-hdr-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .btn-select-all,
+  .btn-to-deck {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 4px 8px;
+    border-radius: 5px;
+    cursor: pointer;
+    border: 1px solid #1e3b68;
+    background: #0b172a;
+    color: #93c5fd;
+  }
+
+  .btn-to-deck {
+    background: #0284c7;
+    border-color: #38bdf8;
+    color: #ffffff;
+  }
+
+  .clip-check-box {
+    accent-color: #38bdf8;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  .deck-basket-card {
+    gap: 10px;
+  }
+
+  .deck-top-bar {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .deck-select {
+    flex: 1;
+    min-width: 0;
+    background: #060b14;
+    border: 1px solid #1e3b68;
+    color: #f8fafc;
+    font-size: 12px;
+    font-weight: 700;
+    padding: 5px 8px;
+    border-radius: 6px;
+  }
+
+  .deck-icon-btn {
+    background: #0b172a;
+    border: 1px solid #1e3b68;
+    color: #cbd5e1;
+    border-radius: 6px;
+    padding: 5px 7px;
+    display: inline-flex;
+    align-items: center;
+    cursor: pointer;
+  }
+
+  .deck-icon-btn.danger:hover:not(:disabled) {
+    border-color: #ef4444;
+    color: #fca5a5;
+  }
+
+  .deck-icon-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+
+  .deck-title-card-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    background: #07101f;
+    border: 1px solid #1a355d;
+    border-radius: 8px;
+    padding: 8px 10px;
+    cursor: pointer;
+  }
+
+  .dtct-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .dtct-text strong {
+    font-size: 11px;
+    color: #f1f5f9;
+  }
+
+  .dtct-text span {
+    font-size: 9.5px;
+    color: #94a3b8;
+  }
+
+  .deck-slides-list {
+    max-height: 195px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    background: #050b16;
+    border: 1px solid #1a355d;
+    border-radius: 7px;
+    padding: 6px;
+  }
+
+  .deck-empty-hint {
+    font-size: 10.5px;
+    color: #94a3b8;
+    padding: 8px 4px;
+    line-height: 1.45;
+  }
+
+  .deck-slide-row {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    background: #091529;
+    border: 1px solid #183259;
+    border-radius: 5px;
+    padding: 4px 6px;
+  }
+
+  .deck-kind-badge {
+    font-size: 8px;
+    font-weight: 800;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: #1e3a8a;
+    color: #bfdbfe;
+    flex-shrink: 0;
+  }
+
+  .deck-kind-badge.kind-title {
+    background: #7c2d12;
+    color: #fed7aa;
+  }
+
+  .deck-kind-badge.kind-image {
+    background: #065f46;
+    color: #a7f3d0;
+  }
+
+  .deck-slide-title {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: #e2e8f0;
+  }
+
+  .deck-insert-bar,
+  .deck-bottom-ctas {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+  }
+
+  .deck-bottom-ctas {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .deck-ins-btn,
+  .btn-deck-pres,
+  .btn-deck-merge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    font-size: 10.5px;
+    font-weight: 700;
+    padding: 6px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+    border: 1px solid #1e3b68;
+    background: #0b172a;
+    color: #cbd5e1;
+  }
+
+  .btn-deck-pres {
+    background: #0d1e38;
+    border-color: #38bdf8;
+    color: #7dd3fc;
+  }
+
+  .btn-deck-merge {
+    background: linear-gradient(135deg, #0284c7, #2563eb);
+    border-color: #38bdf8;
+    color: #ffffff;
+  }
+
+  .deck-title-form {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    background: #07101f;
+    border: 1px solid #1e3b68;
+    border-radius: 7px;
+    padding: 8px;
+  }
+
+  .dtf-input {
+    background: #040912;
+    border: 1px solid #1e3b68;
+    color: #f8fafc;
+    font-size: 11px;
+    padding: 5px 8px;
+    border-radius: 5px;
+  }
+
+  .dtf-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
   }
 </style>

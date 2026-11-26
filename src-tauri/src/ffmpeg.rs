@@ -814,6 +814,72 @@ pub fn render_video_clip_ffmpeg(
 }
 
 #[tauri::command]
+pub fn render_still_slide_ffmpeg(
+    image_base64: String,
+    output_path: String,
+    duration_sec: f64,
+    target_height: Option<u32>,
+    vertical_9x16: Option<bool>,
+) -> Result<String, String> {
+    if image_base64.trim().is_empty() {
+        return Err("Gambar slide kosong.".to_string());
+    }
+    ensure_parent_dir(&output_path)?;
+
+    let png_path = decode_base64_to_temp(&image_base64, "futsaltag_slide", "png")?;
+    let _cleanup = TempCleanup(vec![png_path.clone()]);
+
+    let (base_w, base_h) = target_dimensions(target_height);
+    let (out_w, out_h) = if vertical_9x16.unwrap_or(false) {
+        (base_h, base_w)
+    } else {
+        (base_w, base_h)
+    };
+    let dur = duration_sec.clamp(0.5, 30.0);
+    let (vcodec, vflags) = detect_video_encoder();
+    let vf = format!(
+        "scale={}:{}:force_original_aspect_ratio=decrease,pad={}:{}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p",
+        out_w, out_h, out_w, out_h
+    );
+
+    let mut args = vec![
+        "-y".into(),
+        "-loop".into(),
+        "1".into(),
+        "-i".into(),
+        png_path.to_string_lossy().to_string(),
+        "-f".into(),
+        "lavfi".into(),
+        "-i".into(),
+        "anullsrc=channel_layout=stereo:sample_rate=44100".into(),
+        "-t".into(),
+        format!("{:.3}", dur),
+        "-vf".into(),
+        vf,
+        "-c:v".into(),
+        vcodec.into(),
+    ];
+    for f in vflags {
+        args.push(f.into());
+    }
+    args.extend([
+        "-c:a".into(),
+        "aac".into(),
+        "-ar".into(),
+        "44100".into(),
+        "-ac".into(),
+        "2".into(),
+        "-shortest".into(),
+        "-movflags".into(),
+        "+faststart".into(),
+        output_path.clone(),
+    ]);
+
+    run_ffmpeg(&args)?;
+    Ok(output_path)
+}
+
+#[tauri::command]
 pub fn concat_playlist_ffmpeg(
     clip_paths: Vec<String>,
     output_path: String,
@@ -3076,5 +3142,71 @@ DirectShow audio devices
 
         let wm_info = probe_video_info(&out_wm_mp4.to_string_lossy()).expect("probe wm out failed");
         assert!(wm_info.duration >= 1.7, "expected watermarked clip >= 1.7s, got {:.3}s", wm_info.duration);
+    }
+
+    #[test]
+    fn test_render_still_slide_and_concat_ffmpeg() {
+        let dir = std::env::temp_dir().join(format!(
+            "futsaltag_still_slide_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let src_mp4 = dir.join("clip.mp4");
+        let slide_mp4 = dir.join("slide.mp4");
+        let merged_mp4 = dir.join("merged.mp4");
+        let _cleanup = TempCleanup(vec![src_mp4.clone(), slide_mp4.clone(), merged_mp4.clone()]);
+
+        let (vcodec, vflags) = detect_video_encoder();
+        let mut gen_args = vec![
+            "-y".into(),
+            "-f".into(),
+            "lavfi".into(),
+            "-i".into(),
+            "color=c=navy:s=1280x720:r=30:d=1.5".into(),
+            "-f".into(),
+            "lavfi".into(),
+            "-i".into(),
+            "anullsrc=channel_layout=stereo:sample_rate=44100".into(),
+            "-t".into(),
+            "1.5".into(),
+            "-c:v".into(),
+            vcodec.into(),
+        ];
+        for f in vflags {
+            gen_args.push(f.into());
+        }
+        gen_args.extend(["-pix_fmt".into(), "yuv420p".into(), "-c:a".into(), "aac".into(), "-shortest".into(), src_mp4.to_string_lossy().to_string()]);
+        run_ffmpeg(&gen_args).expect("generate sample clip failed");
+
+        let tiny_png_b64 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+        render_still_slide_ffmpeg(
+            tiny_png_b64.to_string(),
+            slide_mp4.to_string_lossy().to_string(),
+            2.0,
+            Some(720),
+            Some(false),
+        )
+        .expect("render_still_slide_ffmpeg failed");
+
+        let slide_info = probe_video_info(&slide_mp4.to_string_lossy()).expect("probe slide mp4 failed");
+        assert!(slide_info.has_audio);
+        assert!(slide_info.duration >= 1.8 && slide_info.duration <= 2.3);
+
+        concat_playlist_ffmpeg(
+            vec![
+                slide_mp4.to_string_lossy().to_string(),
+                src_mp4.to_string_lossy().to_string(),
+            ],
+            merged_mp4.to_string_lossy().to_string(),
+            Some(false),
+        )
+        .expect("concat slide + clip failed");
+
+        let merged_info = probe_video_info(&merged_mp4.to_string_lossy()).expect("probe merged mp4 failed");
+        assert!(merged_info.duration >= 3.1, "expected merged >= 3.1s, got {:.3}s", merged_info.duration);
+        let _ = fs::remove_dir_all(&dir);
     }
 }

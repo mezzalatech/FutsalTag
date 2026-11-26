@@ -488,6 +488,14 @@ export type PresentationSlide =
   | { id: string; kind: 'title'; title: string; subtitle?: string; bgColor?: string }
   | { id: string; kind: 'image'; title: string; imageDataUrl: string; caption?: string };
 
+export interface PresentationDeck {
+  id: string;
+  title: string;
+  showTitleCardBeforeClip: boolean;
+  titleCardDurationSec: number;
+  slides: PresentationSlide[];
+}
+
 export interface VideoProject {
   id: string;
   title: string;

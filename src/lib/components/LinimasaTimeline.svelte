@@ -17,6 +17,7 @@
     Plus,
   } from 'lucide-svelte';
   import TimelineClipContextMenu from '$lib/components/TimelineClipContextMenu.svelte';
+  import TimelineHoverThumbnail from './TimelineHoverThumbnail.svelte';
   import type {
     ActiveContinuousTag,
     PeriodKickoff,
@@ -26,6 +27,7 @@
   } from '$lib/types';
 
   interface Props {
+    videoSrc?: string | null;
     board: TaggingBoard;
     tags: VideoTagEvent[];
     activeContinuousTags: Record<string, ActiveContinuousTag>;
@@ -103,6 +105,7 @@
     periodKickoffs = [],
     useMatchClock = false,
     formatMatchClock,
+    videoSrc = null,
     whistleMarkers = [],
     onQuickTagWhistle,
     onSeek,
@@ -586,6 +589,39 @@
     const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     onSeek(viewStart + ratio * windowDur);
   }
+
+  // Ruler Hover Thumbnail State
+  let rulerHoverVisible = $state(false);
+  let rulerHoverTime = $state(0);
+  let rulerHoverX = $state(0);
+  let rulerHoverY = $state(0);
+  let rulerHoverActiveTag = $derived.by(() => {
+    if (!rulerHoverVisible) return null;
+    const tag = tags.find(
+      (t) => rulerHoverTime >= t.startTime && rulerHoverTime <= t.endTime,
+    );
+    if (!tag) return null;
+    const cat = board?.buttons.find((b) => b.name === tag.category);
+    return {
+      label: `${tag.category}${tag.playerLabel ? ` - ${tag.playerLabel}` : ''}`,
+      color: cat?.color || '#38bdf8',
+    };
+  });
+
+  function handleRulerMouseMove(e: MouseEvent) {
+    if (!videoSrc) return;
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    if (rect.width <= 0) return;
+    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    rulerHoverTime = viewStart + ratio * windowDur;
+    rulerHoverX = e.clientX;
+    rulerHoverY = rect.top;
+    rulerHoverVisible = true;
+  }
+
+  function handleRulerMouseLeave() {
+    rulerHoverVisible = false;
+  }
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -916,6 +952,8 @@
       <div
         class="ruler-track"
         onclick={seekFromTrackClick}
+        onmousemove={handleRulerMouseMove}
+        onmouseleave={handleRulerMouseLeave}
         role="slider"
         aria-label="Penggaris Waktu Linimasa"
         aria-valuenow={currentTime}
@@ -965,6 +1003,17 @@
           </div>
         {/if}
       </div>
+
+      <TimelineHoverThumbnail
+        videoSrc={videoSrc ?? null}
+        hoverTime={rulerHoverTime}
+        visible={rulerHoverVisible}
+        anchorX={rulerHoverX}
+        anchorY={rulerHoverY}
+        matchClockLabel={useMatchClock && formatMatchClock ? formatMatchClock(rulerHoverTime) : null}
+        activeActionLabel={rulerHoverActiveTag?.label}
+        activeActionColor={rulerHoverActiveTag?.color}
+      />
     </div>
 
     <!-- CATEGORY TRACK LANES + VERTICAL PLAYHEAD OVERLAY -->

@@ -27,6 +27,7 @@
     AlertTriangle,
     Clock,
     RefreshCw,
+    FolderSymlink,
   } from "lucide-svelte";
   import {
     checkForAppUpdate,
@@ -229,6 +230,24 @@
       if (ok) showSaveToast("Video berhasil ditautkan ulang");
     } catch (err: any) {
       alert(`Gagal menautkan video: ${err?.message || err}`);
+    }
+  }
+
+  async function handleRelinkFolderMassal() {
+    isProjectMenuOpen = false;
+    try {
+      const res = await projectStore.relinkFolderMassal();
+      if (!res) return;
+      const parts: string[] = [];
+      if (res.mainRelinked) parts.push("Video utama");
+      if (res.anglesRelinked > 0) parts.push(`${res.anglesRelinked} sudut kamera`);
+      if (parts.length > 0) {
+        showSaveToast(`Berhasil relink massal: ${parts.join(", ")}`);
+      } else {
+        showSaveToast("Tidak ditemukan file video yang cocok di folder tersebut");
+      }
+    } catch (err: any) {
+      alert(`Gagal relink folder: ${err?.message || err}`);
     }
   }
 
@@ -543,6 +562,10 @@
         <Link2 size={13} />
         <span>Tautkan Ulang Video (Relink)</span>
       </button>
+      <button type="button" class="pd-item" onclick={handleRelinkFolderMassal} title="Pindai folder untuk merelink video utama dan semua sudut kamera sekaligus">
+        <FolderSymlink size={13} />
+        <span>Relink Folder Massal</span>
+      </button>
       <button type="button" class="pd-item pd-danger" onclick={handleCloseProject}>
         <XCircle size={13} />
         <span>Tutup Proyek Aktif</span>
@@ -584,10 +607,16 @@
           Video pertandingan tidak ditemukan di path tersimpan (<code>{projectStore.videoFilePath}</code>). Klip, label, dan telestrasi tetap aman.
         </span>
       </div>
-      <button type="button" class="mvb-btn" onclick={handleRelinkVideo}>
-        <Link2 size={12} />
-        <span>Cari Videonya (Relink)</span>
-      </button>
+      <div class="mvb-actions">
+        <button type="button" class="mvb-btn" onclick={handleRelinkVideo}>
+          <Link2 size={12} />
+          <span>Cari File Video</span>
+        </button>
+        <button type="button" class="mvb-btn secondary" onclick={handleRelinkFolderMassal} title="Pilih folder untuk memindai dan merelink semua video & sudut kamera secara otomatis">
+          <FolderSymlink size={12} />
+          <span>Relink Folder Massal</span>
+        </button>
+      </div>
     </div>
   {/if}
 
@@ -1251,6 +1280,13 @@
     color: #fef3c7;
   }
 
+  .mvb-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+
   .mvb-btn {
     display: inline-flex;
     align-items: center;
@@ -1264,6 +1300,15 @@
     border-radius: 6px;
     cursor: pointer;
     white-space: nowrap;
+  }
+
+  .mvb-btn.secondary {
+    background: #0284c7;
+    border-color: #38bdf8;
+  }
+
+  .mvb-btn.secondary:hover {
+    background: #0369a1;
   }
 
   .meta-modal-backdrop {

@@ -56,6 +56,7 @@
   } from "$lib/export/telestrationRenderer";
   import VoiceoverRecorder from "$lib/components/VoiceoverRecorder.svelte";
   import TelestrationElementTimeline from "$lib/components/TelestrationElementTimeline.svelte";
+  import TimelineHoverThumbnail from "./TimelineHoverThumbnail.svelte";
   import {
     Sparkles,
     MoveRight,
@@ -146,6 +147,29 @@
     "player-ghost",
     "speed-tag",
   ];
+
+  // Scrubber Hover Thumbnail State
+  let scrubberHoverVisible = $state(false);
+  let scrubberHoverTime = $state(0);
+  let scrubberHoverX = $state(0);
+  let scrubberHoverY = $state(0);
+
+  function handleStudioScrubberMouseMove(e: MouseEvent) {
+    if (!projectStore.videoSrc) return;
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    if (rect.width <= 0) return;
+    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const start = activeClip ? activeClip.startTime : 0;
+    const end = activeClip ? activeClip.endTime : duration;
+    scrubberHoverTime = start + ratio * (end - start);
+    scrubberHoverX = e.clientX;
+    scrubberHoverY = rect.top;
+    scrubberHoverVisible = true;
+  }
+
+  function handleStudioScrubberMouseLeave() {
+    scrubberHoverVisible = false;
+  }
 
   const MULTI_PLAYER_SNAP_TOOLS: DrawingToolType[] = [
     "player-link",
@@ -4252,7 +4276,14 @@
     </div>
 
     <!-- SCRUBBER SLIDER WITH KEYFRAME PIPS -->
-    <div class="scrubber-track-container">
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="scrubber-track-container"
+      role="region"
+      aria-label="Linimasa Telestrasi"
+      onmousemove={handleStudioScrubberMouseMove}
+      onmouseleave={handleStudioScrubberMouseLeave}
+    >
       <input
         type="range"
         min={activeClip ? activeClip.startTime : 0}
@@ -4261,6 +4292,15 @@
         value={currentTime}
         oninput={handleScrub}
         class="video-scrubber-slider"
+      />
+
+      <TimelineHoverThumbnail
+        videoSrc={projectStore.videoSrc}
+        hoverTime={scrubberHoverTime}
+        visible={scrubberHoverVisible}
+        anchorX={scrubberHoverX}
+        anchorY={scrubberHoverY}
+        matchClockLabel={projectStore.useMatchClock ? projectStore.formatMatchClock(scrubberHoverTime) : null}
       />
 
       <!-- KEYFRAME DIAMOND MARKERS FOR SELECTED ELEMENT -->

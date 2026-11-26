@@ -259,6 +259,58 @@ fn delete_project_file(file_path: String) -> Result<(), String> {
     fs::remove_file(path).map_err(|e| format!("Gagal menghapus file proyek: {}", e))
 }
 
+#[tauri::command]
+fn scan_folder_for_relink(
+    folder_path: String,
+    target_filenames: Vec<String>,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    let dir = Path::new(&folder_path);
+    if !dir.is_dir() {
+        return Err(format!("Folder '{}' tidak ditemukan.", folder_path));
+    }
+    let mut targets_lower: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for target in target_filenames {
+        let name = Path::new(&target)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&target)
+            .to_string();
+        if !name.trim().is_empty() {
+            targets_lower.insert(name.to_lowercase(), name);
+        }
+    }
+    let mut found_matches: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_file() {
+                if let Some(fname) = p.file_name().and_then(|s| s.to_str()) {
+                    if let Some(orig) = targets_lower.get(&fname.to_lowercase()) {
+                        found_matches.insert(orig.clone(), p.to_string_lossy().to_string());
+                    }
+                }
+            } else if p.is_dir() {
+                if let Ok(sub) = fs::read_dir(&p) {
+                    for sub_entry in sub.flatten() {
+                        let sub_p = sub_entry.path();
+                        if sub_p.is_file() {
+                            if let Some(fname) = sub_p.file_name().and_then(|s| s.to_str()) {
+                                if let Some(orig) = targets_lower.get(&fname.to_lowercase()) {
+                                    found_matches
+                                        .entry(orig.clone())
+                                        .or_insert_with(|| sub_p.to_string_lossy().to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(found_matches)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -291,6 +343,7 @@ pub fn run() {
             scan_match_library_folder,
             check_file_exists,
             delete_project_file,
+            scan_folder_for_relink,
             ffmpeg::render_video_clip_ffmpeg,
             ffmpeg::render_still_slide_ffmpeg,
             ffmpeg::concat_playlist_ffmpeg,
@@ -341,7 +394,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{delete_project_file, scan_match_dir};
+    use super::{delete_project_file, scan_folder_for_relink, scan_match_dir};
     use std::fs;
 
     #[test]
@@ -386,6 +439,38 @@ mod tests {
 
         assert!(delete_project_file(futsal_path.to_string_lossy().to_string()).is_ok());
         assert!(!futsal_path.exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_scan_folder_for_relink_matches_case_insensitively_and_subdirs() {
+        let dir = std::env::temp_dir().join(format!(
+            "futsaltag_relink_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let sub = dir.join("kamera_sub");
+        fs::create_dir_all(&sub).unwrap();
+
+        let file_a = dir.join("Match_Babak_1.mp4");
+        let file_b = sub.join("cam_behind_Goal.MP4");
+        fs::write(&file_a, "dummy").unwrap();
+        fs::write(&file_b, "dummy").unwrap();
+
+        let targets = vec![
+            "d:\\old_path\\match_babak_1.mp4".to_string(),
+            "cam_behind_goal.mp4".to_string(),
+            "missing_video.mp4".to_string(),
+        ];
+
+        let res = scan_folder_for_relink(dir.to_string_lossy().to_string(), targets).unwrap();
+        assert_eq!(res.len(), 2);
+        assert!(res.contains_key("match_babak_1.mp4"));
+        assert!(res.contains_key("cam_behind_goal.mp4"));
+        assert!(!res.contains_key("missing_video.mp4"));
 
         let _ = fs::remove_dir_all(&dir);
     }

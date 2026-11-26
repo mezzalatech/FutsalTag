@@ -2109,8 +2109,93 @@ class ProjectStore {
     this.videoSrc = convertFileSrc(selected);
     this.onlineSourceType = null;
     this.videoMissing = false;
+
+    // Auto-scan parent folder to relink any secondary angles that match by filename
+    try {
+      const parentDir = selected.replace(/[\\/][^\\/]+$/, '');
+      if (parentDir && this.secondaryAngles.length > 0) {
+        const angleTargets = this.secondaryAngles
+          .filter((a) => a.filePath)
+          .map((a) => a.filePath!);
+        if (angleTargets.length > 0) {
+          const matches = await invoke<Record<string, string>>('scan_folder_for_relink', {
+            folderPath: parentDir,
+            targetFilenames: angleTargets,
+          });
+          this.secondaryAngles = this.secondaryAngles.map((a) => {
+            const fname = (a.filePath || '').split(/[\\/]/).pop() || '';
+            if (matches[fname]) {
+              return {
+                ...a,
+                filePath: matches[fname],
+                videoSrc: convertFileSrc(matches[fname]),
+              };
+            }
+            return a;
+          });
+        }
+      }
+    } catch {
+      // Non-blocking auto-relink fallback
+    }
+
     this.markDirty();
     return true;
+  }
+
+  async relinkFolderMassal(): Promise<{ mainRelinked: boolean; anglesRelinked: number } | null> {
+    if (!isTauriDesktop()) return null;
+    const { open } = await import('@tauri-apps/plugin-dialog');
+    const selectedDir = await open({
+      title: 'Pilih Folder yang Berisi File Video Pertandingan',
+      directory: true,
+      multiple: false,
+    });
+    if (!selectedDir || typeof selectedDir !== 'string') return null;
+
+    const targets: string[] = [];
+    if (this.videoFilePath) targets.push(this.videoFilePath);
+    for (const a of this.secondaryAngles) {
+      if (a.filePath) targets.push(a.filePath);
+    }
+
+    const matches = await invoke<Record<string, string>>('scan_folder_for_relink', {
+      folderPath: selectedDir,
+      targetFilenames: targets,
+    });
+
+    let mainRelinked = false;
+    let anglesRelinked = 0;
+
+    if (this.videoFilePath) {
+      const fname = this.videoFilePath.split(/[\\/]/).pop() || '';
+      if (matches[fname]) {
+        this.videoFilePath = matches[fname];
+        this.videoSrc = convertFileSrc(matches[fname]);
+        this.videoMissing = false;
+        this.onlineSourceType = null;
+        mainRelinked = true;
+      }
+    }
+
+    this.secondaryAngles = this.secondaryAngles.map((a) => {
+      const fname = (a.filePath || '').split(/[\\/]/).pop() || '';
+      if (matches[fname]) {
+        anglesRelinked++;
+        return {
+          ...a,
+          filePath: matches[fname],
+          videoSrc: convertFileSrc(matches[fname]),
+        };
+      }
+      return a;
+    });
+
+    if (mainRelinked || anglesRelinked > 0) {
+      this.markDirty();
+    }
+
+    return { mainRelinked, anglesRelinked };
   }
 
   async duplicateMatchFile(source: LibraryMatchSource): Promise<boolean> {

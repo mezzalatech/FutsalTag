@@ -33,6 +33,7 @@
   import LiveCameraCaptureStage from "$lib/components/LiveCameraCaptureStage.svelte";
   import PhoneRemoteModal from "$lib/components/PhoneRemoteModal.svelte";
   import ShiftActionTimesModal from "$lib/components/ShiftActionTimesModal.svelte";
+  import TimelineHoverThumbnail from "./TimelineHoverThumbnail.svelte";
   import type {
     ExportAspectRatio,
     ExportCrfPreset,
@@ -74,6 +75,7 @@
     ChevronUp,
     Check,
     Link2,
+    FolderSymlink,
     Flag,
     Star,
     ThumbsUp,
@@ -197,6 +199,55 @@
   let activeClipQueue = $state<VideoTagEvent[]>([]);
   let activeQueueIndex = $state<number>(0);
   let activeQueueTitle = $state<string>("");
+
+  // Timeline Hover Thumbnail State
+  let scrubberHoverVisible = $state(false);
+  let scrubberHoverTime = $state(0);
+  let scrubberHoverX = $state(0);
+  let scrubberHoverY = $state(0);
+  let scrubberHoverActiveTag = $derived.by(() => {
+    if (!scrubberHoverVisible) return null;
+    const tag = projectStore.tags.find(
+      (t) => scrubberHoverTime >= t.startTime && scrubberHoverTime <= t.endTime,
+    );
+    if (!tag) return null;
+    const cat = activeBoard?.buttons.find((b) => b.name === tag.category);
+    return {
+      label: `${tag.category}${tag.playerLabel ? ` - ${tag.playerLabel}` : ""}`,
+      color: cat?.color || "#38bdf8",
+    };
+  });
+
+  function handleScrubberMouseMove(e: MouseEvent) {
+    if (!projectStore.videoSrc) return;
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    scrubberHoverTime = ratio * Math.max(duration, 0.1);
+    scrubberHoverX = e.clientX;
+    scrubberHoverY = rect.top;
+    scrubberHoverVisible = true;
+  }
+
+  function handleScrubberMouseLeave() {
+    scrubberHoverVisible = false;
+  }
+
+  async function handleRelinkFolderMassal() {
+    try {
+      const res = await projectStore.relinkFolderMassal();
+      if (!res) return;
+      const parts: string[] = [];
+      if (res.mainRelinked) parts.push("Video utama");
+      if (res.anglesRelinked > 0) parts.push(`${res.anglesRelinked} sudut kamera`);
+      if (parts.length > 0) {
+        lastTaggedNotification = `Berhasil relink massal: ${parts.join(", ")}`;
+      } else {
+        lastTaggedNotification = "Tidak ditemukan file video yang cocok di folder tersebut";
+      }
+    } catch (err: any) {
+      alert(`Gagal relink folder: ${err?.message || err}`);
+    }
+  }
 
   // Filters & Search
   let searchQuery = $state("");
@@ -3120,6 +3171,10 @@
                         <Link2 size={12} />
                         <span>Tautkan Video MP4</span>
                       </button>
+                      <button type="button" class="btn-sw-sec relink" onclick={handleRelinkFolderMassal} title="Pindai folder untuk merelink video utama dan semua sudut kamera sekaligus">
+                        <FolderSymlink size={12} />
+                        <span>Relink Folder Massal</span>
+                      </button>
                     {/if}
                     {#if projectStore.tags.length === 0}
                       <button type="button" class="btn-sw-sec" onclick={() => projectStore.loadSampleDemo()}>
@@ -3596,7 +3651,11 @@
                 </span>
               </div>
 
-              <div class="mtb-scrubber">
+              <div
+                class="mtb-scrubber"
+                onmousemove={handleScrubberMouseMove}
+                onmouseleave={handleScrubberMouseLeave}
+              >
                 <input
                   type="range"
                   min="0"
@@ -3609,6 +3668,17 @@
                   aria-label="Posisi Video"
                 />
                 <span class="dur-total-lbl">{formatTime(duration)}</span>
+
+                <TimelineHoverThumbnail
+                  videoSrc={projectStore.videoSrc}
+                  hoverTime={scrubberHoverTime}
+                  visible={scrubberHoverVisible}
+                  anchorX={scrubberHoverX}
+                  anchorY={scrubberHoverY}
+                  matchClockLabel={projectStore.useMatchClock ? projectStore.formatMatchClock(scrubberHoverTime) : null}
+                  activeActionLabel={scrubberHoverActiveTag?.label}
+                  activeActionColor={scrubberHoverActiveTag?.color}
+                />
               </div>
 
               <div class="mtb-right">
@@ -4322,6 +4392,7 @@
           style="height: {isLinimasaCollapsed ? 26 : linimasaHeight}px;"
         >
           <LinimasaTimeline
+            videoSrc={projectStore.videoSrc}
             board={activeBoard}
             tags={projectStore.tags}
             {activeContinuousTags}

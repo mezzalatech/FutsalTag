@@ -14,6 +14,11 @@ import type {
   ClubProfile,
   SubtitleCue,
   FreezeStop,
+  PresentationSlide,
+  LibraryMatchSource,
+  ClipLibraryFilter,
+  ResolvedPlaylistClip,
+  TelestrationFilterMode,
 } from '$lib/types';
 import {
   BUILTIN_TAGGING_BOARDS,
@@ -135,6 +140,27 @@ class ProjectStore {
       items: [],
     },
   ]);
+  presentationSlides = $state<PresentationSlide[]>([]);
+  clubLogoDataUrl = $state<string | null>(null);
+  currentProjectFilePath = $state<string | null>(null);
+  matchLibraryFolder = $state<string>(
+    typeof localStorage !== 'undefined' ? localStorage.getItem('futsaltag_match_library_folder') || '' : ''
+  );
+  libraryMatches = $state<LibraryMatchSource[]>([]);
+  matchLibraryLoading = $state<boolean>(false);
+  matchLibraryError = $state<string | null>(null);
+  clipFilter = $state<ClipLibraryFilter>({
+    matchIds: [],
+    categories: [],
+    labels: [],
+    players: [],
+    telestration: 'all',
+    searchQuery: '',
+  });
+  globalIncludeTelestration = $state<boolean>(true);
+  clipTelestrationOverrides = $state<Record<string, boolean>>({});
+  clipCustomOrderKeys = $state<string[]>([]);
+  clipExcludedKeys = $state<Record<string, boolean>>({});
 
   // Full NLE Tag Undo/Redo History Stack
   private tagHistoryPast: { label: string; tags: VideoTagEvent[] }[] = [];
@@ -641,6 +667,7 @@ class ProjectStore {
 
   // Load a real user video: CLEARS previous tags so analyst starts fresh
   loadVideo(url: string, path: string | null, title: string, dur = 0) {
+    this.currentProjectFilePath = null;
     this.videoSrc = url;
     this.videoFilePath = path;
     this.videoTitle = title || 'Video Pertandingan Futsal';
@@ -666,12 +693,15 @@ class ProjectStore {
         items: [],
       },
     ];
+    this.presentationSlides = [];
+    this.clubLogoDataUrl = null;
     this.clearTagHistory();
     this.stage = 'tagging';
   }
 
   // Load sample demo match with pre-tagged futsal events (with real courtCoord & passing links)
   loadSampleDemo() {
+    this.currentProjectFilePath = null;
     this.videoSrc = null;
     this.videoFilePath = null;
     this.videoTitle = 'Sampel Demo: Pendekar United vs Blacksteel (Babak 1)';
@@ -799,6 +829,7 @@ class ProjectStore {
         })),
       },
     ];
+    this.presentationSlides = [];
 
     this.clearTagHistory();
     this.stage = 'tagging';
@@ -1081,6 +1112,8 @@ class ProjectStore {
       activeBoardId: this.activeBoardId,
       tags: this.tags,
       playlists: this.playlists,
+      presentationSlides: this.presentationSlides,
+      clubLogoDataUrl: this.clubLogoDataUrl,
     };
     return JSON.stringify(projectData, null, 2);
   }
@@ -1100,6 +1133,10 @@ class ProjectStore {
       });
       if (!selected) return null;
       await invoke<string>('save_project_file', { filePath: selected, content: json });
+      this.currentProjectFilePath = selected;
+      if (this.matchLibraryFolder) {
+        this.scanMatchLibrary().catch(() => {});
+      }
       return selected;
     }
 
@@ -1117,7 +1154,11 @@ class ProjectStore {
     });
     if (!selected || typeof selected !== 'string') return false;
     const content = await invoke<string>('load_project_file', { filePath: selected });
-    return this.importProjectJson(content);
+    const ok = this.importProjectJson(content);
+    if (ok) {
+      this.currentProjectFilePath = selected;
+    }
+    return ok;
   }
 
   downloadProjectFile(filename?: string) {
@@ -1174,6 +1215,8 @@ class ProjectStore {
       if (Array.isArray(data.playlists) && data.playlists.length > 0) {
         this.playlists = data.playlists;
       }
+      this.presentationSlides = Array.isArray(data.presentationSlides) ? data.presentationSlides : [];
+      this.clubLogoDataUrl = typeof data.clubLogoDataUrl === 'string' ? data.clubLogoDataUrl : null;
       this.periodKickoffs = Array.isArray(data.periodKickoffs) ? data.periodKickoffs : [];
       this.useMatchClock = Boolean(data.useMatchClock && this.periodKickoffs.length > 0);
       if (Array.isArray(data.startingLineupIds) && data.startingLineupIds.length > 0) {
@@ -1266,6 +1309,7 @@ class ProjectStore {
   }
 
   resetProject() {
+    this.currentProjectFilePath = null;
     this.videoSrc = null;
     this.videoFilePath = null;
     this.videoTitle = 'Pertandingan Futsal Baru';
@@ -1290,8 +1334,257 @@ class ProjectStore {
         items: [],
       },
     ];
+    this.presentationSlides = [];
+    this.clubLogoDataUrl = null;
     this.clearTagHistory();
     this.stage = 'hub';
+  }
+
+  tagHasTelestration(tag: VideoTagEvent): boolean {
+    return Boolean(
+      (tag.drawings?.length ?? 0) > 0 ||
+        (tag.freezeStops?.length ?? 0) > 0 ||
+        tag.voiceoverAudioBase64 ||
+        tag.burnSubtitle
+    );
+  }
+
+  private normalizePathKey(p: string | null | undefined): string {
+    return (p || '').trim().replace(/\\/g, '/').toLowerCase();
+  }
+
+  parseMatchLibraryJson(content: string, filePath: string | null, fallbackName: string): LibraryMatchSource | null {
+    try {
+      const data = JSON.parse(content);
+      if (!Array.isArray(data?.tags)) return null;
+      const videoFilePath = typeof data.matchInfo?.videoFilePath === 'string' ? data.matchInfo.videoFilePath : null;
+      const isAbs =
+        videoFilePath &&
+        isTauriDesktop() &&
+        (videoFilePath.startsWith('/') || /^[A-Za-z]:[\\/]/.test(videoFilePath));
+      const videoSrc = isAbs && videoFilePath ? convertFileSrc(videoFilePath) : null;
+      const title =
+        (typeof data.matchInfo?.title === 'string' && data.matchInfo.title.trim()) ||
+        fallbackName.replace(/\.(futsal|json)$/i, '');
+
+      return {
+        id: filePath ? `lib:${this.normalizePathKey(filePath)}` : `lib:${fallbackName}:${title}`,
+        title,
+        filePath,
+        videoFilePath,
+        videoSrc,
+        exportedAt: typeof data.exportedAt === 'string' ? data.exportedAt : undefined,
+        chromaFloorConfig: data.chromaFloorConfig,
+        tags: data.tags.map((t: VideoTagEvent) => this.normalizeTagPlayers(t)),
+        roster: Array.isArray(data.roster) ? data.roster : [],
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  async scanMatchLibrary(customFolder?: string): Promise<number> {
+    if (!isTauriDesktop()) return this.libraryMatches.length;
+    this.matchLibraryLoading = true;
+    this.matchLibraryError = null;
+    try {
+      const res = await invoke<{
+        folder_path: string;
+        files: { file_path: string; file_name: string; content: string }[];
+      }>('scan_match_library_folder', {
+        folderPath: (customFolder ?? this.matchLibraryFolder) || null,
+      });
+      this.matchLibraryFolder = res.folder_path;
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('futsaltag_match_library_folder', res.folder_path);
+      }
+      const activePathKey = this.normalizePathKey(this.currentProjectFilePath);
+      const parsed: LibraryMatchSource[] = [];
+      for (const f of res.files) {
+        if (activePathKey && this.normalizePathKey(f.file_path) === activePathKey) continue;
+        const src = this.parseMatchLibraryJson(f.content, f.file_path, f.file_name);
+        if (src) parsed.push(src);
+      }
+      this.libraryMatches = parsed;
+      return parsed.length;
+    } catch (err: any) {
+      this.matchLibraryError = err?.message || String(err);
+      return 0;
+    } finally {
+      this.matchLibraryLoading = false;
+    }
+  }
+
+  async pickMatchLibraryFolder(): Promise<number> {
+    if (!isTauriDesktop()) return 0;
+    const { open } = await import('@tauri-apps/plugin-dialog');
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      title: 'Pilih Folder Pustaka Pertandingan (.futsal)',
+    });
+    if (!selected || typeof selected !== 'string') return this.libraryMatches.length;
+    return this.scanMatchLibrary(selected);
+  }
+
+  addBrowserMatchFiles(files: FileList) {
+    for (const file of Array.from(files)) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result !== 'string') return;
+        const parsed = this.parseMatchLibraryJson(reader.result, null, file.name);
+        if (!parsed) return;
+        const idx = this.libraryMatches.findIndex((m) => m.id === parsed.id);
+        if (idx >= 0) {
+          this.libraryMatches[idx] = parsed;
+        } else {
+          this.libraryMatches = [...this.libraryMatches, parsed];
+        }
+      };
+      reader.readAsText(file);
+    }
+  }
+
+  getAllMatchSources(): LibraryMatchSource[] {
+    const activeSource: LibraryMatchSource = {
+      id: '__active__',
+      title: this.videoTitle || 'Proyek Aktif',
+      filePath: this.currentProjectFilePath,
+      videoFilePath: this.videoFilePath,
+      videoSrc: this.videoSrc,
+      chromaFloorConfig: this.chromaFloorConfig,
+      tags: this.tags,
+      roster: this.roster,
+    };
+    const activePathKey = this.normalizePathKey(this.currentProjectFilePath);
+    const extras = this.libraryMatches.filter(
+      (m) => !activePathKey || this.normalizePathKey(m.filePath) !== activePathKey
+    );
+    return [activeSource, ...extras];
+  }
+
+  getClipKey(matchId: string, tagId: string): string {
+    return `${matchId}::${tagId}`;
+  }
+
+  private getTagPlayersNormalized(tag: VideoTagEvent): string[] {
+    const raw =
+      tag.playersInvolved && tag.playersInvolved.length > 0
+        ? tag.playersInvolved
+        : tag.playerLabel
+          ? [tag.playerLabel]
+          : [];
+    return raw.map((p) => this.normalizePlayerLabel(p));
+  }
+
+  getFilteredPlaylistClips(): ResolvedPlaylistClip[] {
+    const f = this.clipFilter;
+    const q = f.searchQuery.trim().toLowerCase();
+    const sources = this.getAllMatchSources().filter(
+      (m) => f.matchIds.length === 0 || f.matchIds.includes(m.id)
+    );
+
+    const out: ResolvedPlaylistClip[] = [];
+    for (const m of sources) {
+      for (const tag of m.tags) {
+        const key = this.getClipKey(m.id, tag.id);
+        if (this.clipExcludedKeys[key]) continue;
+        if (f.categories.length > 0 && !f.categories.includes(tag.category)) continue;
+
+        if (f.labels.length > 0) {
+          const names = tag.labels?.length ? tag.labels.map((l) => l.name) : ['Tanpa Label'];
+          if (!f.labels.some((lbl) => names.includes(lbl))) continue;
+        }
+
+        if (f.players.length > 0) {
+          const players = this.getTagPlayersNormalized(tag);
+          if (!f.players.some((pl) => players.includes(pl))) continue;
+        }
+
+        const hasTelestration = this.tagHasTelestration(tag);
+        if (f.telestration === 'with_telestration' && !hasTelestration) continue;
+        if (f.telestration === 'without_telestration' && hasTelestration) continue;
+
+        if (q) {
+          const hay = [
+            tag.title,
+            tag.category,
+            tag.playerLabel || '',
+            m.title,
+            tag.notes || '',
+            ...(tag.labels?.map((l) => l.name) ?? []),
+          ]
+            .join(' ')
+            .toLowerCase();
+          if (!hay.includes(q)) continue;
+        }
+
+        out.push({
+          key,
+          matchId: m.id,
+          matchTitle: m.title,
+          videoFilePath: m.videoFilePath,
+          videoSrc: m.videoSrc,
+          chromaFloorConfig: m.chromaFloorConfig,
+          tag,
+          hasTelestration,
+          useTelestration: this.clipTelestrationOverrides[key] ?? this.globalIncludeTelestration,
+        });
+      }
+    }
+
+    if (this.clipCustomOrderKeys.length > 0) {
+      const rank = new Map(this.clipCustomOrderKeys.map((k, idx) => [k, idx]));
+      out.sort((a, b) => (rank.get(a.key) ?? 1e9) - (rank.get(b.key) ?? 1e9));
+    }
+    return out;
+  }
+
+  toggleClipFilter(field: 'matchIds' | 'categories' | 'labels' | 'players', value: string) {
+    const arr = this.clipFilter[field];
+    this.clipFilter[field] = arr.includes(value) ? arr.filter((v) => v !== value) : [...arr, value];
+  }
+
+  setTelestrationFilter(mode: TelestrationFilterMode) {
+    this.clipFilter.telestration = mode;
+  }
+
+  resetClipFilter() {
+    this.clipFilter = {
+      matchIds: [],
+      categories: [],
+      labels: [],
+      players: [],
+      telestration: 'all',
+      searchQuery: '',
+    };
+    this.clipExcludedKeys = {};
+  }
+
+  setClipTelestration(key: string, val: boolean) {
+    this.clipTelestrationOverrides = { ...this.clipTelestrationOverrides, [key]: val };
+  }
+
+  setAllClipsTelestration(val: boolean) {
+    this.globalIncludeTelestration = val;
+    this.clipTelestrationOverrides = {};
+  }
+
+  moveFilteredClip(currentKeys: string[], idx: number, dir: -1 | 1) {
+    const target = idx + dir;
+    if (idx < 0 || idx >= currentKeys.length || target < 0 || target >= currentKeys.length) return;
+    const next = [...currentKeys];
+    const [item] = next.splice(idx, 1);
+    next.splice(target, 0, item);
+    this.clipCustomOrderKeys = next;
+  }
+
+  excludeFilteredClip(key: string) {
+    this.clipExcludedKeys = { ...this.clipExcludedKeys, [key]: true };
+  }
+
+  restoreExcludedClips() {
+    this.clipExcludedKeys = {};
   }
 }
 

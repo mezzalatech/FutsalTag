@@ -37,6 +37,7 @@
   let editingStartingFive = $state<boolean>(false);
   let newSubPlayerInput = $state<string>('');
   let actionToast = $state<string | null>(null);
+  let stintLimitMin = $state<number>(4);
 
   function showToast(msg: string) {
     actionToast = msg;
@@ -127,10 +128,17 @@
     totalSec: number;
     pct: number;
     shifts: { start: number; end: number }[];
+    currentStintSec: number;
+    maxStintSec: number;
+    isFatigued: boolean;
+    avgRestSec: number;
+    minRestSec: number;
+    maxRestSec: number;
   }
 
   const playerMinutesList = $derived.by<PlayerShiftSummary[]>(() => {
     const totalMatchDur = Math.max(1, matchBounds.end - matchBounds.start);
+    const limitSec = stintLimitMin * 60;
     return squadPlayers.map((player) => {
       const merged: { start: number; end: number }[] = [];
       let totalSec = 0;
@@ -144,15 +152,38 @@
           merged.push({ start: iv.start, end: iv.end });
         }
       }
+      const isOnCourt = activeLineupIds.includes(player.id);
+      const isGk = projectStore.isGoalkeeper(player);
+      const activeShift =
+        merged.find((sh) => currentTime >= sh.start - 0.05 && currentTime <= sh.end + 0.05) ??
+        (isOnCourt ? merged[merged.length - 1] : undefined);
+      const currentStintSec = isOnCourt && activeShift ? Math.max(0, currentTime - activeShift.start) : 0;
+      const maxStintSec = merged.reduce((mx, sh) => Math.max(mx, sh.end - sh.start), 0);
+      const rests: number[] = [];
+      for (let i = 1; i < merged.length; i++) {
+        const gap = merged[i].start - merged[i - 1].end;
+        if (gap > 0.5) rests.push(gap);
+      }
+      const avgRestSec = rests.length > 0 ? rests.reduce((a, b) => a + b, 0) / rests.length : 0;
+      const minRestSec = rests.length > 0 ? Math.min(...rests) : 0;
+      const maxRestSec = rests.length > 0 ? Math.max(...rests) : 0;
       return {
         player,
-        isOnCourt: activeLineupIds.includes(player.id),
+        isOnCourt,
         totalSec,
         pct: Math.min(100, (totalSec / totalMatchDur) * 100),
         shifts: merged,
+        currentStintSec,
+        maxStintSec,
+        isFatigued: !isGk && isOnCourt && currentStintSec >= limitSec,
+        avgRestSec,
+        minRestSec,
+        maxRestSec,
       };
     });
   });
+
+  const playerSummaryById = $derived(new Map(playerMinutesList.map((s) => [s.player.id, s])));
 
   interface QuartetAnalyticsRow {
     key: string;
@@ -380,19 +411,26 @@
           {#each onCourtPlayers as p (p.id)}
             {@const isGk = projectStore.isGoalkeeper(p)}
             {@const isOutSelected = selectedOutId === p.id}
+            {@const summary = playerSummaryById.get(p.id)}
+            {@const isFatigued = Boolean(summary?.isFatigued)}
             <button
               type="button"
               class="player-sub-card on-court"
               class:selected-out={isOutSelected}
+              class:fatigued={isFatigued && !isOutSelected}
               onclick={() => handleSelectOut(p)}
             >
               <span class="psc-num" style="background-color: {p.color};">{p.num}</span>
               <div class="psc-meta">
                 <span class="psc-name">{p.name}</span>
-                <span class="psc-role">{isGk ? 'GK' : p.role}</span>
+                <span class="psc-role">
+                  {isGk ? 'GK' : p.role}{#if summary && !isGk} · {formatCompactMin(summary.currentStintSec)}{/if}
+                </span>
               </div>
               {#if isOutSelected}
                 <span class="psc-badge-out">KELUAR</span>
+              {:else if isFatigued && summary}
+                <span class="psc-badge-tired" title="Stint melebihi limit {stintLimitMin}m">GANTI ({formatCompactMin(summary.currentStintSec)})</span>
               {:else}
                 <span class="psc-badge-on">{isGk ? 'GK' : 'ON'}</span>
               {/if}
@@ -513,20 +551,29 @@
           <Clock size={13} class="text-sky-400" />
           <span>TIMELINE SHIFT & MENIT BERMAIN PEMAIN</span>
         </div>
-        <span class="ph-hint">
-          Total Rentang: {formatCompactMin(matchBounds.end - matchBounds.start)} · Klik batang shift untuk lompat ke video
-        </span>
+        <div class="stint-limit-ctrl">
+          <span>Limit Stint:</span>
+          <button type="button" class="stint-step-btn" onclick={() => (stintLimitMin = Math.max(1, stintLimitMin - 1))} title="Kurangi batas menit stint">-</button>
+          <strong>{stintLimitMin}m</strong>
+          <button type="button" class="stint-step-btn" onclick={() => (stintLimitMin = Math.min(10, stintLimitMin + 1))} title="Tambah batas menit stint">+</button>
+          <span class="ph-hint">
+            Rentang: {formatCompactMin(matchBounds.end - matchBounds.start)} · Klik batang shift untuk lompat
+          </span>
+        </div>
       </div>
 
       <div class="shifts-list">
         {#each playerMinutesList as item (item.player.id)}
           {@const totalSpan = Math.max(1, matchBounds.end - matchBounds.start)}
           {@const playheadLeft = Math.max(0, Math.min(100, ((currentTime - matchBounds.start) / totalSpan) * 100))}
+          {@const isGk = projectStore.isGoalkeeper(item.player)}
           <div class="shift-row">
             <div class="shift-player-col">
               <span class="psc-num" style="background-color: {item.player.color};">{item.player.num}</span>
               <span class="shift-pname">{item.player.name}</span>
-              {#if item.isOnCourt}
+              {#if item.isFatigued}
+                <span class="on-dot tired" title="Perlu rotasi (melebihi limit {stintLimitMin}m)"></span>
+              {:else if item.isOnCourt}
                 <span class="on-dot" title="Sedang di lapangan"></span>
               {/if}
             </div>
@@ -536,12 +583,14 @@
               {#each item.shifts as sh}
                 {@const lPct = ((sh.start - matchBounds.start) / totalSpan) * 100}
                 {@const wPct = Math.max(0.8, ((sh.end - sh.start) / totalSpan) * 100)}
+                {@const overLimit = !isGk && (sh.end - sh.start) >= stintLimitMin * 60}
                 <button
                   type="button"
                   class="shift-segment"
+                  class:over-limit={overLimit}
                   style="left: {lPct}%; width: {wPct}%; background-color: {item.player.color};"
                   onclick={() => onSeek(sh.start)}
-                  title="{item.player.num} {item.player.name}: {formatDurationMMSS(sh.start)} - {formatDurationMMSS(sh.end)} ({formatCompactMin(sh.end - sh.start)})"
+                  title="{item.player.num} {item.player.name}: {formatDurationMMSS(sh.start)} - {formatDurationMMSS(sh.end)} ({formatCompactMin(sh.end - sh.start)}){overLimit ? ' · ⚠️ Melebihi limit stint' : ''}"
                 ></button>
               {/each}
             </div>
@@ -549,6 +598,12 @@
             <div class="shift-total-col">
               <span class="shift-min">{formatCompactMin(item.totalSec)}</span>
               <span class="shift-pct">{item.pct.toFixed(0)}%</span>
+              <span
+                class="shift-rest"
+                title={item.avgRestSec > 0 ? `Rata-rata istirahat: ${formatCompactMin(item.avgRestSec)} (Min: ${formatCompactMin(item.minRestSec)} · Max: ${formatCompactMin(item.maxRestSec)})` : 'Belum ada jeda istirahat'}
+              >
+                R:{item.avgRestSec > 0 ? formatCompactMin(item.avgRestSec) : '-'}
+              </span>
             </div>
           </div>
         {/each}
@@ -1033,7 +1088,7 @@
 
   .shift-row {
     display: grid;
-    grid-template-columns: 160px 1fr 90px;
+    grid-template-columns: 160px 1fr 135px;
     align-items: center;
     gap: 10px;
   }
@@ -1245,5 +1300,71 @@
   .empty-td {
     padding: 16px;
     color: #64748b;
+  }
+
+  .stint-limit-ctrl {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10px;
+    color: #94a3b8;
+    flex-wrap: wrap;
+  }
+
+  .stint-limit-ctrl strong {
+    color: #38bdf8;
+    min-width: 24px;
+    text-align: center;
+  }
+
+  .stint-step-btn {
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    border: 1px solid #334155;
+    background: #0f172a;
+    color: #e2e8f0;
+    font-weight: 800;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .stint-step-btn:hover {
+    border-color: #38bdf8;
+  }
+
+  .player-sub-card.fatigued {
+    border-color: rgba(239, 68, 68, 0.75);
+    background: rgba(127, 29, 29, 0.28);
+  }
+
+  .psc-badge-tired {
+    font-size: 9px;
+    font-weight: 800;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: rgba(239, 68, 68, 0.25);
+    border: 1px solid #ef4444;
+    color: #fca5a5;
+    flex-shrink: 0;
+  }
+
+  .on-dot.tired {
+    background: #ef4444;
+    box-shadow: 0 0 6px #ef4444;
+  }
+
+  .shift-segment.over-limit {
+    background-color: #ef4444 !important;
+    box-shadow: 0 0 6px rgba(239, 68, 68, 0.7);
+  }
+
+  .shift-rest {
+    font-size: 9px;
+    color: #94a3b8;
+    background: #0f172a;
+    border: 1px solid #1e293b;
+    padding: 1px 4px;
+    border-radius: 4px;
   }
 </style>

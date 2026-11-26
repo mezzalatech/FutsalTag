@@ -64,8 +64,13 @@
     { id: 'special', label: '♟️ Taktik & Rotasi (3)', badge: 'Taktik' },
   ] as const;
 
-  let matrixView = $state<'tag_player' | 'tag_label'>('tag_player');
+  let matrixView = $state<'tag_player' | 'tag_label' | 'label_label' | 'charts'>('tag_player');
   let activePhaseTab = $state<'all' | 'attack' | 'defense' | 'setpiece' | 'special'>('all');
+  let crossTag = $state<string>('__all__');
+  let crossRowGroup = $state<string>('descriptor');
+  let crossColGroup = $state<string>('outcome');
+  let comparePlayerA = $state<string>('');
+  let comparePlayerB = $state<string>('');
 
   const resolvedCategories = $derived.by(() => {
     const base =
@@ -235,6 +240,225 @@
     }
   }
 
+  // MODE 3: LABEL x LABEL (CROSS-TABULATION DUA SUMBU DESKRIPTOR)
+  const descriptorGroupByName = $derived.by(() => {
+    const map = new Map<string, string>();
+    for (const btn of projectStore.activeBoard.buttons) {
+      if (btn.kind === 'descriptor' && btn.group) {
+        map.set(btn.name, btn.group);
+      }
+    }
+    return map;
+  });
+
+  const availableCrossAxes = $derived.by(() => {
+    const base: { id: string; label: string }[] = [
+      { id: 'descriptor', label: 'Semua Label / Descriptor' },
+      { id: 'outcome', label: 'Hasil Aksi (Outcome)' },
+      { id: 'zone', label: 'Zona Lapangan' },
+      { id: 'rating', label: 'Penilaian Pelatih' },
+      { id: 'player', label: 'Pemain' },
+    ];
+    const groups = new Set<string>();
+    for (const [, grp] of descriptorGroupByName) groups.add(grp);
+    for (const t of tags) {
+      for (const l of t.labels ?? []) {
+        if (l.group) groups.add(l.group);
+      }
+    }
+    for (const grp of groups) {
+      base.push({ id: `group:${grp}`, label: `Grup: ${grp}` });
+    }
+    return base;
+  });
+
+  function getValuesForAxis(tag: VideoTagEvent, axis: string): string[] {
+    if (axis === 'outcome') return [tag.outcomeLabel || 'Tanpa Hasil'];
+    if (axis === 'zone') return [tag.zoneLabel || 'Tanpa Zona'];
+    if (axis === 'rating') return [tag.rating || 'Belum Dinilai'];
+    if (axis === 'player') {
+      const list =
+        tag.playersInvolved && tag.playersInvolved.length > 0
+          ? tag.playersInvolved
+          : tag.playerLabel
+            ? [tag.playerLabel]
+            : ['Tim Lawan'];
+      return Array.from(new Set(list.map(normalizePlayerLabel)));
+    }
+    if (axis.startsWith('group:')) {
+      const grp = axis.slice(6);
+      const matched = (tag.labels ?? [])
+        .filter((l) => (l.group || descriptorGroupByName.get(l.name)) === grp)
+        .map((l) => l.name);
+      return matched.length > 0 ? Array.from(new Set(matched)) : ['Tidak Ditandai'];
+    }
+    const labels = tag.labels?.map((l) => l.name) ?? [];
+    return labels.length > 0 ? Array.from(new Set(labels)) : ['Tanpa Label'];
+  }
+
+  function collectAxisValues(clips: VideoTagEvent[], axis: string): string[] {
+    const set = new Set<string>();
+    for (const t of clips) {
+      for (const v of getValuesForAxis(t, axis)) set.add(v);
+    }
+    return Array.from(set);
+  }
+
+  const crossBaseClips = $derived(
+    crossTag === '__all__' ? tags : tags.filter((t) => t.category === crossTag)
+  );
+  const crossRows = $derived(collectAxisValues(crossBaseClips, crossRowGroup));
+  const crossCols = $derived(collectAxisValues(crossBaseClips, crossColGroup));
+
+  function getCrossClips(rowVal: string, colVal: string): VideoTagEvent[] {
+    return crossBaseClips.filter(
+      (t) =>
+        getValuesForAxis(t, crossRowGroup).includes(rowVal) &&
+        getValuesForAxis(t, crossColGroup).includes(colVal)
+    );
+  }
+
+  function getCrossRowClips(rowVal: string): VideoTagEvent[] {
+    return crossBaseClips.filter((t) => getValuesForAxis(t, crossRowGroup).includes(rowVal));
+  }
+
+  function getCrossColClips(colVal: string): VideoTagEvent[] {
+    return crossBaseClips.filter((t) => getValuesForAxis(t, crossColGroup).includes(colVal));
+  }
+
+  function playClipGroup(clips: VideoTagEvent[], title: string) {
+    if (clips.length === 0) return;
+    if (onPlayClips) {
+      onPlayClips(clips, `${title} (${clips.length} Klip)`);
+    } else if (onPlayTag) {
+      onPlayTag(clips[0]);
+    }
+    onClose();
+  }
+
+  // MODE 4: GRAFIK SVG (DONUT + BAR INTERAKTIF, RADAR KOMPARASI 2 PEMAIN & EFISIENSI FINISHING)
+  const DONUT_R = 44;
+  const DONUT_CIRC = 2 * Math.PI * DONUT_R;
+  const RADAR_LABELS = ['Gol', 'Tembakan', 'Build-up', 'Transisi', 'Pressing', 'Set Piece'] as const;
+
+  const chartCategoryStats = $derived.by(() => {
+    const total = Math.max(1, tags.length);
+    const items = resolvedCategories
+      .map((cat) => {
+        const clips = tags.filter((t) => t.category === cat.cat);
+        return { cat, clips, count: clips.length, pct: (clips.length / total) * 100 };
+      })
+      .filter((x) => x.count > 0)
+      .sort((a, b) => b.count - a.count);
+
+    let offset = 0;
+    return items.map((item) => {
+      const segLen = (item.count / total) * DONUT_CIRC;
+      const dashOffset = -offset;
+      offset += segLen;
+      return { ...item, segLen, dashOffset };
+    });
+  });
+
+  const playerMinutesSecMap = $derived.by(() => {
+    const map = new Map<string, number>();
+    const matchEnd = Math.max(
+      projectStore.duration || 0,
+      ...tags.map((t) => t.endTime),
+      ...projectStore.substitutions.map((s) => s.atTime),
+      1
+    );
+    const pts = Array.from(
+      new Set([0, matchEnd, ...projectStore.substitutions.map((s) => Math.max(0, Math.min(matchEnd, s.atTime)))])
+    ).sort((a, b) => a - b);
+
+    for (let i = 0; i < pts.length - 1; i++) {
+      const dur = pts[i + 1] - pts[i];
+      if (dur <= 0.05) continue;
+      const lineup = projectStore.getActiveLineupIdsAt((pts[i] + pts[i + 1]) / 2);
+      for (const pid of lineup) {
+        const rp = projectStore.getRosterPlayerById(pid);
+        if (!rp) continue;
+        const lbl = projectStore.getPlayerDisplayLabel(rp);
+        map.set(lbl, (map.get(lbl) ?? 0) + dur);
+      }
+    }
+    return map;
+  });
+
+  const playerAnalytics = $derived.by(() => {
+    return resolvedPlayers
+      .map((player) => {
+        const pClips = tags.filter((t) => matchesPlayer(t, player));
+        const countCats = (cats: string[]) => pClips.filter((t) => cats.includes(t.category)).length;
+        const goals = countCats(['Goal']);
+        const shotsOn = countCats(['Shot on Target']);
+        const shotsOff = countCats(['Shot Off Target']);
+        const totalShots = goals + shotsOn + shotsOff;
+        const accuracyPct = totalShots > 0 ? Math.round(((goals + shotsOn) / totalShots) * 100) : 0;
+        const minutesSec = playerMinutesSecMap.get(player) ?? 0;
+        const minPerGoal = goals > 0 && minutesSec > 0 ? `${(minutesSec / 60 / goals).toFixed(1)} mnt` : '-';
+        const radar = [
+          goals,
+          totalShots,
+          countCats(['Build-up 3-1', 'Build-up 4-0']),
+          countCats(['Transition Attack', 'Transition Defense']),
+          countCats(['Pressing High', 'Goalkeeper Save', 'Foul']),
+          countCats(['Kick-in Set Piece', 'Corner Set Piece']),
+        ];
+        return {
+          player,
+          totalClips: pClips.length,
+          goals,
+          shotsOn,
+          shotsOff,
+          totalShots,
+          accuracyPct,
+          minutesSec,
+          minPerGoal,
+          radar,
+        };
+      })
+      .filter((r) => r.totalClips > 0 || r.minutesSec > 0);
+  });
+
+  const radarMaxes = $derived.by(() => {
+    const maxes = [1, 1, 1, 1, 1, 1];
+    for (const p of playerAnalytics) {
+      for (let i = 0; i < 6; i++) {
+        if (p.radar[i] > maxes[i]) maxes[i] = p.radar[i];
+      }
+    }
+    return maxes;
+  });
+
+  const effPlayerA = $derived(
+    comparePlayerA && playerAnalytics.some((p) => p.player === comparePlayerA)
+      ? comparePlayerA
+      : playerAnalytics[0]?.player || ''
+  );
+  const effPlayerB = $derived(
+    comparePlayerB && playerAnalytics.some((p) => p.player === comparePlayerB)
+      ? comparePlayerB
+      : playerAnalytics[1]?.player || playerAnalytics[0]?.player || ''
+  );
+  const statsPlayerA = $derived(playerAnalytics.find((p) => p.player === effPlayerA));
+  const statsPlayerB = $derived(playerAnalytics.find((p) => p.player === effPlayerB));
+
+  function radarPoint(idx: number, scale: number, cx = 120, cy = 115, radius = 78): [number, number] {
+    const angle = -Math.PI / 2 + (idx * 2 * Math.PI) / 6;
+    return [cx + Math.cos(angle) * radius * scale, cy + Math.sin(angle) * radius * scale];
+  }
+
+  function buildRadarPolygon(values: number[], maxes: number[]): string {
+    return values
+      .map((val, idx) => {
+        const [x, y] = radarPoint(idx, Math.max(0.08, val / Math.max(1, maxes[idx])));
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      })
+      .join(' ');
+  }
+
   function handleCellClick(player: string, catObj: MatrixCategory) {
     const clips = getClips(player, catObj);
     if (clips.length > 0) {
@@ -300,6 +524,20 @@
       }
       const colTotals = labelColumns.map((lbl) => getTagLabelColClips(lbl).length);
       csv += `"TOTAL",` + colTotals.join(',') + `,${tags.length},${sumDurationSec(tags).toFixed(1)}\n`;
+    } else if (matrixView === 'label_label') {
+      csv = `${crossRowGroup} \\ ${crossColGroup},` + crossCols.map((c) => `"${c}"`).join(',') + ',TOTAL KLIP,DURASI (dtk)\n';
+      for (const r of crossRows) {
+        const rowCounts = crossCols.map((c) => getCrossClips(r, c).length);
+        const rowClips = getCrossRowClips(r);
+        csv += `"${r}",` + rowCounts.join(',') + `,${rowClips.length},${sumDurationSec(rowClips).toFixed(1)}\n`;
+      }
+      const colTotals = crossCols.map((c) => getCrossColClips(c).length);
+      csv += `"TOTAL",` + colTotals.join(',') + `,${crossBaseClips.length},${sumDurationSec(crossBaseClips).toFixed(1)}\n`;
+    } else if (matrixView === 'charts') {
+      csv = 'Pemain,Total Klip,Gol,Shot OT,Shot Off,Akurasi Shot (%),Menit Bermain (mnt),Menit / Gol\n';
+      for (const p of playerAnalytics) {
+        csv += `"${p.player}",${p.totalClips},${p.goals},${p.shotsOn},${p.shotsOff},${p.accuracyPct},${(p.minutesSec / 60).toFixed(1)},"${p.minPerGoal}"\n`;
+      }
     } else {
       csv = 'Pemain,' + resolvedCategories.map((c) => `"${c.label}"`).join(',') + ',TOTAL,DURASI (dtk)\n';
       for (const p of resolvedPlayers) {
@@ -391,6 +629,20 @@
           >
             Tag × Label
           </button>
+          <button
+            class="tab-pill"
+            class:active={matrixView === 'label_label'}
+            onclick={() => (matrixView = 'label_label')}
+          >
+            Label × Label
+          </button>
+          <button
+            class="tab-pill"
+            class:active={matrixView === 'charts'}
+            onclick={() => (matrixView = 'charts')}
+          >
+            Grafik & Radar
+          </button>
         </div>
         {#if matrixView === 'tag_player'}
           {#each PHASES as ph}
@@ -402,6 +654,34 @@
               <span>{ph.label}</span>
             </button>
           {/each}
+        {:else if matrixView === 'label_label'}
+          <div class="cross-controls">
+            <label class="cross-field">
+              <span>Tag:</span>
+              <select class="cross-select" bind:value={crossTag}>
+                <option value="__all__">Semua Tag ({tags.length})</option>
+                {#each labelRows as cat}
+                  <option value={cat}>{cat}</option>
+                {/each}
+              </select>
+            </label>
+            <label class="cross-field">
+              <span>Baris:</span>
+              <select class="cross-select" bind:value={crossRowGroup}>
+                {#each availableCrossAxes as ax}
+                  <option value={ax.id}>{ax.label}</option>
+                {/each}
+              </select>
+            </label>
+            <label class="cross-field">
+              <span>Kolom:</span>
+              <select class="cross-select" bind:value={crossColGroup}>
+                {#each availableCrossAxes as ax}
+                  <option value={ax.id}>{ax.label}</option>
+                {/each}
+              </select>
+            </label>
+          </div>
         {/if}
       </div>
 
@@ -563,7 +843,7 @@
               </tr>
             </tbody>
           </table>
-        {:else}
+        {:else if matrixView === 'tag_label'}
           <!-- TAG x LABEL (DESCRIPTOR) CROSS-TABULATION -->
           <table class="matrix-table">
             <thead>
@@ -649,6 +929,262 @@
               {/if}
             </tbody>
           </table>
+        {:else if matrixView === 'label_label'}
+          <!-- MODE 3: LABEL x LABEL CROSS-TABULATION -->
+          <table class="matrix-table">
+            <thead>
+              <tr>
+                <th class="th-player">Sumbu Baris \ Kolom</th>
+                {#each crossCols as colVal}
+                  <th
+                    class="th-action"
+                    onclick={() => playClipGroup(getCrossColClips(colVal), colVal)}
+                    title="Putar semua klip {colVal}"
+                  >
+                    <span class="th-label">{colVal}</span>
+                  </th>
+                {/each}
+                <th class="th-total" onclick={() => playClipGroup(crossBaseClips, 'Semua Silang Label')}>TOTAL</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#if crossRows.length === 0 || crossCols.length === 0}
+                <tr>
+                  <td colspan={Math.max(2, crossCols.length + 2)} class="cell-zero">
+                    Belum ada data yang cocok untuk kombinasi Tag & sumbu ini.
+                  </td>
+                </tr>
+              {:else}
+                {#each crossRows as rowVal}
+                  {@const rowClips = getCrossRowClips(rowVal)}
+                  <tr class="tr-player">
+                    <td
+                      class="td-player"
+                      onclick={() => playClipGroup(rowClips, rowVal)}
+                      title="Putar semua klip {rowVal}"
+                    >
+                      <span class="player-name">{rowVal}</span>
+                    </td>
+                    {#each crossCols as colVal}
+                      {@const cellClips = getCrossClips(rowVal, colVal)}
+                      <td class="td-cell" class:has-data={cellClips.length > 0}>
+                        {#if cellClips.length > 0}
+                          <button
+                            class="cell-btn"
+                            onclick={() => playClipGroup(cellClips, `${rowVal} × ${colVal}`)}
+                            title="Putar {cellClips.length} klip {rowVal} × {colVal} ({formatPhaseDuration(cellClips)})"
+                          >
+                            <Play size={10} />
+                            <span>{cellClips.length}</span>
+                          </button>
+                        {:else}
+                          <span class="cell-zero">-</span>
+                        {/if}
+                      </td>
+                    {/each}
+                    <td class="td-total">
+                      <button class="total-btn" onclick={() => playClipGroup(rowClips, rowVal)}>
+                        {rowClips.length}
+                      </button>
+                      <div class="phase-dur-hint">{formatPhaseDuration(rowClips)}</div>
+                    </td>
+                  </tr>
+                {/each}
+                <tr class="tr-footer">
+                  <td class="td-footer-label">TOTAL KOLOM</td>
+                  {#each crossCols as colVal}
+                    {@const colClips = getCrossColClips(colVal)}
+                    <td class="td-footer-cell">
+                      <button class="col-total-btn" onclick={() => playClipGroup(colClips, colVal)}>
+                        {colClips.length}
+                      </button>
+                      <div class="phase-dur-hint">{formatPhaseDuration(colClips)}</div>
+                    </td>
+                  {/each}
+                  <td class="td-grand-total">
+                    <span>{crossBaseClips.length}</span>
+                    <div class="phase-dur-hint grand">{formatPhaseDuration(crossBaseClips)}</div>
+                  </td>
+                </tr>
+              {/if}
+            </tbody>
+          </table>
+        {:else}
+          <!-- MODE 4: GRAFIK SVG, RADAR KOMPARASI PEMAIN & EFISIENSI -->
+          <div class="charts-dashboard">
+            <div class="charts-grid">
+              <!-- KARTU 1: DONUT & BAR INTERAKTIF -->
+              <section class="chart-card">
+                <div class="chart-card-hdr">
+                  <h4>Distribusi Aksi & Kategori</h4>
+                  <span>Klik segmen / bar untuk putar klip</span>
+                </div>
+                {#if chartCategoryStats.length === 0}
+                  <p class="chart-empty">Belum ada klip untuk divisualisasikan.</p>
+                {:else}
+                  <div class="donut-wrap">
+                    <svg viewBox="0 0 120 120" class="donut-svg" aria-label="Donut Distribusi Kategori">
+                      <circle cx="60" cy="60" r={DONUT_R} fill="none" stroke="#1e293b" stroke-width="18" />
+                      {#each chartCategoryStats as seg (seg.cat.id)}
+                        <circle
+                          cx="60"
+                          cy="60"
+                          r={DONUT_R}
+                          fill="none"
+                          stroke={seg.cat.color}
+                          stroke-width="18"
+                          stroke-dasharray="{seg.segLen} {DONUT_CIRC}"
+                          stroke-dashoffset={seg.dashOffset}
+                          transform="rotate(-90 60 60)"
+                          class="donut-slice"
+                          role="button"
+                          tabindex="0"
+                          aria-label="{seg.cat.label}: {seg.count} klip"
+                          onclick={() => handleColClick(seg.cat)}
+                          onkeydown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              handleColClick(seg.cat);
+                            }
+                          }}
+                        >
+                          <title>{seg.cat.label}: {seg.count} klip ({seg.pct.toFixed(0)}%)</title>
+                        </circle>
+                      {/each}
+                      <text x="60" y="57" text-anchor="middle" class="donut-total-num">{tags.length}</text>
+                      <text x="60" y="70" text-anchor="middle" class="donut-total-lbl">KLIP</text>
+                    </svg>
+
+                    <div class="bars-col">
+                      {#each chartCategoryStats.slice(0, 8) as item (item.cat.id)}
+                        <button
+                          type="button"
+                          class="bar-row"
+                          onclick={() => handleColClick(item.cat)}
+                          title="Putar {item.count} klip {item.cat.label}"
+                        >
+                          <span class="bar-name">{item.cat.icon} {item.cat.shortLabel}</span>
+                          <span class="bar-track">
+                            <span
+                              class="bar-fill"
+                              style="width: {Math.max(4, item.pct)}%; background-color: {item.cat.color};"
+                            ></span>
+                          </span>
+                          <span class="bar-val">{item.count} ({item.pct.toFixed(0)}%)</span>
+                        </button>
+                      {/each}
+                    </div>
+                  </div>
+                {/if}
+              </section>
+
+              <!-- KARTU 2: RADAR 6-SUMBU KOMPARASI 2 PEMAIN -->
+              <section class="chart-card">
+                <div class="chart-card-hdr">
+                  <h4>Radar Komparasi Pemain (6 Sumbu)</h4>
+                  <div class="radar-pickers">
+                    <select class="cross-select pick-a" value={effPlayerA} onchange={(e) => (comparePlayerA = e.currentTarget.value)}>
+                      {#each playerAnalytics as p}
+                        <option value={p.player}>{p.player}</option>
+                      {/each}
+                    </select>
+                    <span class="vs-badge">VS</span>
+                    <select class="cross-select pick-b" value={effPlayerB} onchange={(e) => (comparePlayerB = e.currentTarget.value)}>
+                      {#each playerAnalytics as p}
+                        <option value={p.player}>{p.player}</option>
+                      {/each}
+                    </select>
+                  </div>
+                </div>
+                {#if playerAnalytics.length === 0}
+                  <p class="chart-empty">Belum ada data pemain pada klip.</p>
+                {:else}
+                  <div class="radar-wrap">
+                    <svg viewBox="0 0 240 230" class="radar-svg" aria-label="Radar Komparasi Pemain">
+                      {#each [0.33, 0.66, 1] as ring}
+                        <polygon
+                          points={RADAR_LABELS.map((_, i) => radarPoint(i, ring).map((n) => n.toFixed(1)).join(',')).join(' ')}
+                          fill="none"
+                          stroke="#334155"
+                          stroke-width="1"
+                        />
+                      {/each}
+                      {#each RADAR_LABELS as lbl, i}
+                        {@const [ax, ay] = radarPoint(i, 1)}
+                        {@const [lx, ly] = radarPoint(i, 1.2)}
+                        <line x1="120" y1="115" x2={ax} y2={ay} stroke="#334155" stroke-width="1" />
+                        <text x={lx} y={ly + 3} text-anchor="middle" class="radar-axis-lbl">{lbl}</text>
+                      {/each}
+                      {#if statsPlayerB}
+                        <polygon
+                          points={buildRadarPolygon(statsPlayerB.radar, radarMaxes)}
+                          fill="rgba(245, 158, 11, 0.22)"
+                          stroke="#f59e0b"
+                          stroke-width="2"
+                        />
+                      {/if}
+                      {#if statsPlayerA}
+                        <polygon
+                          points={buildRadarPolygon(statsPlayerA.radar, radarMaxes)}
+                          fill="rgba(56, 189, 248, 0.28)"
+                          stroke="#38bdf8"
+                          stroke-width="2"
+                        />
+                      {/if}
+                    </svg>
+                    <div class="radar-legend">
+                      {#if statsPlayerA}
+                        <div class="leg-item a"><span class="leg-dot"></span><strong>{statsPlayerA.player}</strong> ({statsPlayerA.totalClips} aksi · {statsPlayerA.goals} gol)</div>
+                      {/if}
+                      {#if statsPlayerB}
+                        <div class="leg-item b"><span class="leg-dot"></span><strong>{statsPlayerB.player}</strong> ({statsPlayerB.totalClips} aksi · {statsPlayerB.goals} gol)</div>
+                      {/if}
+                    </div>
+                  </div>
+                {/if}
+              </section>
+            </div>
+
+            <!-- TABEL EFISIENSI TEMBAKAN & MENIT PER GOL -->
+            <section class="chart-card eff-card">
+              <div class="chart-card-hdr">
+                <h4>Efisiensi Finishing & Kontribusi Menit Bermain</h4>
+                <span>Akurasi Tembakan = (Gol + Shot OT) / Total Tembakan</span>
+              </div>
+              <table class="matrix-table eff-table">
+                <thead>
+                  <tr>
+                    <th class="th-player">Pemain</th>
+                    <th class="th-action">Klip</th>
+                    <th class="th-action">Gol</th>
+                    <th class="th-action">Shot OT</th>
+                    <th class="th-action">Shot Off</th>
+                    <th class="th-action">Akurasi %</th>
+                    <th class="th-action">Menit Main</th>
+                    <th class="th-total">Menit / Gol</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each playerAnalytics as row (row.player)}
+                    <tr class="tr-player">
+                      <td class="td-player" onclick={() => handleRowClick(row.player)}>
+                        <span class="player-name">{row.player}</span>
+                      </td>
+                      <td class="td-cell">{row.totalClips}</td>
+                      <td class="td-cell"><strong>{row.goals}</strong></td>
+                      <td class="td-cell">{row.shotsOn}</td>
+                      <td class="td-cell">{row.shotsOff}</td>
+                      <td class="td-cell">
+                        <span class="acc-pill" class:high={row.accuracyPct >= 60}>{row.totalShots > 0 ? `${row.accuracyPct}%` : '-'}</span>
+                      </td>
+                      <td class="td-cell">{row.minutesSec > 0 ? `${(row.minutesSec / 60).toFixed(1)} mnt` : '-'}</td>
+                      <td class="td-total">{row.minPerGoal}</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </section>
+          </div>
         {/if}
       </div>
     </div>
@@ -1163,5 +1699,256 @@
       border-right: none;
       padding-right: 0;
     }
+  }
+
+  .cross-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .cross-field {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    font-weight: 700;
+    color: #94a3b8;
+  }
+
+  .cross-select {
+    background: #0f172a;
+    color: #e2e8f0;
+    border: 1px solid #334155;
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  .charts-dashboard {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 4px;
+  }
+
+  .charts-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 14px;
+  }
+
+  .chart-card {
+    background: #0f172a;
+    border: 1px solid #1e293b;
+    border-radius: 10px;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .chart-card-hdr {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .chart-card-hdr h4 {
+    margin: 0;
+    font-size: 12.5px;
+    font-weight: 800;
+    color: #f8fafc;
+  }
+
+  .chart-card-hdr > span {
+    font-size: 10.5px;
+    color: #64748b;
+  }
+
+  .chart-empty {
+    margin: 20px 0;
+    text-align: center;
+    color: #64748b;
+    font-size: 12px;
+  }
+
+  .donut-wrap {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+  }
+
+  .donut-svg {
+    width: 148px;
+    height: 148px;
+    flex-shrink: 0;
+  }
+
+  .donut-slice {
+    cursor: pointer;
+    transition: opacity 0.15s;
+  }
+
+  .donut-slice:hover {
+    opacity: 0.8;
+  }
+
+  .donut-total-num {
+    fill: #f8fafc;
+    font-size: 20px;
+    font-weight: 900;
+  }
+
+  .donut-total-lbl {
+    fill: #64748b;
+    font-size: 8px;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+  }
+
+  .bars-col {
+    flex: 1;
+    min-width: 190px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .bar-row {
+    display: grid;
+    grid-template-columns: 105px 1fr 64px;
+    align-items: center;
+    gap: 8px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    padding: 3px 5px;
+    cursor: pointer;
+    text-align: left;
+    color: #cbd5e1;
+    font-size: 11px;
+  }
+
+  .bar-row:hover {
+    background: #1e293b;
+    border-color: #334155;
+  }
+
+  .bar-name {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-weight: 600;
+  }
+
+  .bar-track {
+    height: 7px;
+    background: #1e293b;
+    border-radius: 999px;
+    overflow: hidden;
+  }
+
+  .bar-fill {
+    display: block;
+    height: 100%;
+    border-radius: 999px;
+  }
+
+  .bar-val {
+    text-align: right;
+    font-size: 10.5px;
+    font-weight: 700;
+    color: #94a3b8;
+  }
+
+  .radar-pickers {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .pick-a {
+    border-color: #0284c7;
+  }
+
+  .pick-b {
+    border-color: #d97706;
+  }
+
+  .vs-badge {
+    font-size: 10px;
+    font-weight: 900;
+    color: #64748b;
+  }
+
+  .radar-wrap {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .radar-svg {
+    width: 230px;
+    height: 220px;
+    flex-shrink: 0;
+  }
+
+  .radar-axis-lbl {
+    fill: #94a3b8;
+    font-size: 9px;
+    font-weight: 700;
+  }
+
+  .radar-legend {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 11px;
+    color: #cbd5e1;
+  }
+
+  .leg-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .leg-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 3px;
+    display: inline-block;
+  }
+
+  .leg-item.a .leg-dot {
+    background: #38bdf8;
+  }
+
+  .leg-item.b .leg-dot {
+    background: #f59e0b;
+  }
+
+  .acc-pill {
+    display: inline-block;
+    padding: 2px 7px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+    background: #1e293b;
+    color: #94a3b8;
+  }
+
+  .acc-pill.high {
+    background: rgba(16, 185, 129, 0.18);
+    color: #34d399;
+    border: 1px solid #10b981;
   }
 </style>

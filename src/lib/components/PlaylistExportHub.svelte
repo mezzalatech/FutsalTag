@@ -1,13 +1,12 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { invoke } from '@tauri-apps/api/core';
-  import { projectStore, isTauriDesktop } from '$lib/stores/projectStore.svelte';
-  import type {
-    ActionPlaylist,
-    ActionPlaylistItem,
-    ExportMode,
-    VideoTagEvent,
-  } from '$lib/types';
+  import { onMount, tick } from "svelte";
+  import { invoke } from "@tauri-apps/api/core";
+  import {
+    projectStore,
+    isTauriDesktop,
+  } from "$lib/stores/projectStore.svelte";
+  import ClipFilterBar from "$lib/components/ClipFilterBar.svelte";
+  import type { ExportMode, ResolvedPlaylistClip } from "$lib/types";
   import {
     Play,
     Pause,
@@ -30,20 +29,20 @@
     Upload,
     FileCode2,
     MonitorPlay,
-  } from 'lucide-svelte';
-  import { renderDrawingsToDataUrl } from '$lib/export/telestrationRenderer';
+  } from "lucide-svelte";
+  import { renderDrawingsToDataUrl } from "$lib/export/telestrationRenderer";
   import {
     getEffectiveFreezeStopsForTag,
     type FreezeStopExportPayload,
-  } from '$lib/export/freezeStops';
-  import { hasAnimatedTelestration } from '$lib/tracking/playerTracker';
+  } from "$lib/export/freezeStops";
+  import { hasAnimatedTelestration } from "$lib/tracking/playerTracker";
   import {
     exportSportsCodeXml,
     importSportsCodeXml,
     exportNativeXlsxPortable,
     saveTextFilePortable,
     openTextFilePortable,
-  } from '$lib/export/interopExporters';
+  } from "$lib/export/interopExporters";
 
   interface Props {
     onOpenPresentation?: () => void;
@@ -51,40 +50,72 @@
 
   let { onOpenPresentation }: Props = $props();
 
-  let currentPlaylist = $derived(projectStore.playlists[0]);
+  const filteredClips = $derived(projectStore.getFilteredPlaylistClips());
   let selectedItemIndex = $state(0);
+  const activePreviewClip = $derived(
+    filteredClips[selectedItemIndex] ?? filteredClips[0] ?? null,
+  );
+  const activePreviewSrc = $derived(
+    activePreviewClip?.videoSrc ?? projectStore.videoSrc,
+  );
+  const hasMultiMatch = $derived(
+    new Set(filteredClips.map((c) => c.matchId)).size > 1,
+  );
   let isPlayingPresentation = $state(false);
   let presentationVideoEl = $state<HTMLVideoElement | null>(null);
   let xmlImportInputEl = $state<HTMLInputElement | undefined>(undefined);
 
   // Export Settings State
-  let exportMode = $state<ExportMode>('merged_video');
-  let includeDrawings = $state(true);
-  let outputResolution = $state<'1080p' | '720p'>('1080p');
+  let exportMode = $state<ExportMode>("merged_video");
+  let outputResolution = $state<"1080p" | "720p">("1080p");
   let isExporting = $state(false);
   let exportProgress = $state(0);
-  let exportStatusMessage = $state('');
+  let exportStatusMessage = $state("");
   let exportSuccessPath = $state<string | null>(null);
 
-  function playPresentationItem(idx: number) {
-    if (!currentPlaylist || currentPlaylist.items.length === 0) return;
+  onMount(() => {
+    if (isTauriDesktop() && projectStore.libraryMatches.length === 0) {
+      projectStore.scanMatchLibrary();
+    }
+  });
+
+  $effect(() => {
+    if (filteredClips.length === 0) {
+      selectedItemIndex = 0;
+    } else if (selectedItemIndex >= filteredClips.length) {
+      selectedItemIndex = filteredClips.length - 1;
+    }
+  });
+
+  async function playPresentationItem(idx: number) {
+    if (filteredClips.length === 0 || idx < 0 || idx >= filteredClips.length)
+      return;
     selectedItemIndex = idx;
-    const item = currentPlaylist.items[idx];
-    if (presentationVideoEl) {
-      presentationVideoEl.currentTime = item.tagEvent.startTime;
-      presentationVideoEl.play();
+    const clip = filteredClips[idx];
+    await tick();
+    if (!presentationVideoEl) return;
+    const seekAndPlay = () => {
+      if (!presentationVideoEl) return;
+      presentationVideoEl.currentTime = clip.tag.startTime;
+      presentationVideoEl.play().catch(() => {});
       isPlayingPresentation = true;
+    };
+    if (presentationVideoEl.readyState < 1) {
+      presentationVideoEl.addEventListener("loadedmetadata", seekAndPlay, {
+        once: true,
+      });
+    } else {
+      seekAndPlay();
     }
   }
 
   function handlePresentationTimeUpdate() {
-    if (!presentationVideoEl || !currentPlaylist) return;
-    const item = currentPlaylist.items[selectedItemIndex];
-    if (!item) return;
+    if (!presentationVideoEl) return;
+    const clip = filteredClips[selectedItemIndex];
+    if (!clip) return;
 
-    if (presentationVideoEl.currentTime >= item.tagEvent.endTime) {
-      // Step to next item in playlist
-      if (selectedItemIndex + 1 < currentPlaylist.items.length) {
+    if (presentationVideoEl.currentTime >= clip.tag.endTime) {
+      if (selectedItemIndex + 1 < filteredClips.length) {
         playPresentationItem(selectedItemIndex + 1);
       } else {
         presentationVideoEl.pause();
@@ -94,132 +125,158 @@
     }
   }
 
-  function moveItem(index: number, direction: 'up' | 'down') {
-    if (!currentPlaylist) return;
-    const items = currentPlaylist.items;
-    const targetIdx = direction === 'up' ? index - 1 : index + 1;
-    if (targetIdx < 0 || targetIdx >= items.length) return;
-
-    const temp = items[index];
-    items[index] = items[targetIdx];
-    items[targetIdx] = temp;
-
-    // re-assign order numbers
-    items.forEach((item, idx) => (item.order = idx + 1));
+  function moveItem(index: number, direction: "up" | "down") {
+    projectStore.moveFilteredClip(
+      filteredClips.map((c) => c.key),
+      index,
+      direction === "up" ? -1 : 1,
+    );
   }
 
   function removeItem(index: number) {
-    if (!currentPlaylist) return;
-    currentPlaylist.items.splice(index, 1);
-    currentPlaylist.items.forEach((item, idx) => (item.order = idx + 1));
+    const clip = filteredClips[index];
+    if (clip) projectStore.excludeFilteredClip(clip.key);
   }
 
   // Trigger Native / Web Export
   async function triggerExport() {
-    if (!currentPlaylist || currentPlaylist.items.length === 0) {
-      exportStatusMessage = 'Playlist masih kosong. Tambahkan klip terlebih dahulu.';
+    if (filteredClips.length === 0) {
+      exportStatusMessage =
+        "Tidak ada klip sesuai filter. Ubah filter atau buka video/proyek terlebih dahulu.";
       return;
     }
 
     isExporting = true;
     exportProgress = 5;
-    exportStatusMessage = 'Menyiapkan klip dan parameter render FFmpeg...';
+    exportStatusMessage = "Menyiapkan klip dan parameter render FFmpeg...";
     exportSuccessPath = null;
 
-    const targetHeight = outputResolution === '720p' ? 720 : 1080;
+    const targetHeight = outputResolution === "720p" ? 720 : 1080;
     const renderW = targetHeight === 720 ? 1280 : 1920;
     const renderH = targetHeight === 720 ? 720 : 1080;
 
     try {
-      const hasAbsVideo =
-        projectStore.videoFilePath &&
-        (projectStore.videoFilePath.startsWith('/') || /^[A-Za-z]:[\\/]/.test(projectStore.videoFilePath));
+      const isAbsPath = (p: string | null | undefined) =>
+        Boolean(p && (p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p)));
 
       if (isTauriDesktop()) {
-        if (!hasAbsVideo || !projectStore.videoFilePath) {
+        const missingVideo = filteredClips.find(
+          (c) => !isAbsPath(c.videoFilePath),
+        );
+        if (missingVideo) {
           throw new Error(
-            'Path video absolut tidak ditemukan. Buka video lewat tombol "Pilih Video" di Hub Proyek.'
+            `Path video absolut tidak ditemukan untuk "${missingVideo.matchTitle}". Simpan ulang proyek dengan video terbuka di Hub Proyek.`,
           );
         }
 
-        const { open, save } = await import('@tauri-apps/plugin-dialog');
-        const items = currentPlaylist.items;
+        const { open, save } = await import("@tauri-apps/plugin-dialog");
+        const clips = filteredClips;
 
-        const renderItemToPath = async (item: ActionPlaylistItem, outPath: string) => {
-          const tag = projectStore.tags.find((t) => t.id === item.tagEvent.id) ?? item.tagEvent;
-          const drawings = includeDrawings ? tag.drawings || [] : [];
+        const renderClipToPath = async (
+          clip: ResolvedPlaylistClip,
+          outPath: string,
+        ) => {
+          const tag = clip.tag;
+          const inputPath = clip.videoFilePath!;
+          const chromaConfig =
+            clip.chromaFloorConfig ?? projectStore.chromaFloorConfig;
+          const useTel = clip.useTelestration;
+          const drawings = useTel ? tag.drawings || [] : [];
           const hasDrawings = drawings.length > 0;
-          const hasVoice = Boolean(tag.voiceoverAudioBase64);
+          const hasVoice = useTel && Boolean(tag.voiceoverAudioBase64);
           const hasSubtitle =
-            includeDrawings &&
+            useTel &&
             Boolean(
               tag.burnSubtitle &&
-                (tag.voiceoverTranscript?.trim() || (tag.subtitleCues?.length ?? 0) > 0)
+                (tag.voiceoverTranscript?.trim() ||
+                  (tag.subtitleCues?.length ?? 0) > 0),
             );
-          const effectiveStops = includeDrawings
-            ? getEffectiveFreezeStopsForTag(tag, item.pauseDuration)
+          const effectiveStops = useTel
+            ? getEffectiveFreezeStopsForTag(tag, tag.pauseDuration ?? 3.0)
             : [];
-          const appendCleanReplay = Boolean(tag.appendCleanReplay);
+          const appendCleanReplay = useTel && Boolean(tag.appendCleanReplay);
           const clipDur = Math.max(0.2, tag.endTime - tag.startTime);
           const freezeSec =
             effectiveStops[0]?.time ??
             tag.freezeTimestamp ??
             (tag.startTime + tag.endTime) / 2;
           const cameraZoomEl = drawings.find((d) => d.cameraZoomTarget);
-          const cameraZoomTuple: [number, number, number] | null = cameraZoomEl?.cameraZoomTarget
-            ? [
-                cameraZoomEl.cameraZoomTarget.x,
-                cameraZoomEl.cameraZoomTarget.y,
-                cameraZoomEl.cameraZoomTarget.scale,
-              ]
-            : null;
+          const cameraZoomTuple: [number, number, number] | null =
+            cameraZoomEl?.cameraZoomTarget
+              ? [
+                  cameraZoomEl.cameraZoomTarget.x,
+                  cameraZoomEl.cameraZoomTarget.y,
+                  cameraZoomEl.cameraZoomTarget.scale,
+                ]
+              : null;
 
-          const freezeStopsPayload: FreezeStopExportPayload[] = effectiveStops.map((st) => ({
-            time: st.time,
-            duration: st.duration,
-            overlay_base64:
-              hasDrawings || hasSubtitle
-                ? renderDrawingsToDataUrl(drawings, renderW, renderH, st.time, {
-                    chromaConfig: projectStore.chromaFloorConfig,
+          const freezeStopsPayload: FreezeStopExportPayload[] =
+            effectiveStops.map((st) => ({
+              time: st.time,
+              duration: st.duration,
+              overlay_base64:
+                hasDrawings || hasSubtitle
+                  ? renderDrawingsToDataUrl(
+                      drawings,
+                      renderW,
+                      renderH,
+                      st.time,
+                      {
+                        chromaConfig,
+                        clipStartTime: tag.startTime,
+                        clipEndTime: tag.endTime,
+                        subtitleText: tag.voiceoverTranscript,
+                        subtitleCues: tag.subtitleCues,
+                        burnSubtitle: tag.burnSubtitle,
+                        animElapsedSec: 1.0,
+                      },
+                    ) || null
+                  : null,
+            }));
+
+          const isAnimated =
+            hasDrawings &&
+            hasAnimatedTelestration(drawings, tag.startTime, tag.endTime);
+
+          if (isAnimated) {
+            const tempDir = await invoke<string>("get_temp_dir");
+            const seqSep =
+              tempDir.endsWith("/") || tempDir.endsWith("\\") ? "" : "/";
+            const seqDir = `${tempDir}${seqSep}futsaltag_pl_anim_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+            const overlayFps = 12;
+            const totalFrames = Math.max(
+              2,
+              Math.min(240, Math.ceil(clipDur * overlayFps)),
+            );
+            try {
+              for (let fi = 0; fi < totalFrames; fi++) {
+                const t = Math.min(
+                  tag.endTime,
+                  tag.startTime + fi / overlayFps,
+                );
+                const pngBase64 = renderDrawingsToDataUrl(
+                  drawings,
+                  renderW,
+                  renderH,
+                  t,
+                  {
+                    chromaConfig,
                     clipStartTime: tag.startTime,
                     clipEndTime: tag.endTime,
                     subtitleText: tag.voiceoverTranscript,
                     subtitleCues: tag.subtitleCues,
                     burnSubtitle: tag.burnSubtitle,
-                    animElapsedSec: 1.0,
-                  }) || null
-                : null,
-          }));
-
-          const isAnimated =
-            hasDrawings && hasAnimatedTelestration(drawings, tag.startTime, tag.endTime);
-
-          if (isAnimated) {
-            const tempDir = await invoke<string>('get_temp_dir');
-            const seqSep = tempDir.endsWith('/') || tempDir.endsWith('\\') ? '' : '/';
-            const seqDir = `${tempDir}${seqSep}futsaltag_pl_anim_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-            const overlayFps = 12;
-            const totalFrames = Math.max(2, Math.min(240, Math.ceil(clipDur * overlayFps)));
-            try {
-              for (let fi = 0; fi < totalFrames; fi++) {
-                const t = Math.min(tag.endTime, tag.startTime + fi / overlayFps);
-                const pngBase64 = renderDrawingsToDataUrl(drawings, renderW, renderH, t, {
-                  chromaConfig: projectStore.chromaFloorConfig,
-                  clipStartTime: tag.startTime,
-                  clipEndTime: tag.endTime,
-                  subtitleText: tag.voiceoverTranscript,
-                  subtitleCues: tag.subtitleCues,
-                  burnSubtitle: tag.burnSubtitle,
-                });
-                await invoke<string>('save_overlay_frame_png', {
+                  },
+                );
+                await invoke<string>("save_overlay_frame_png", {
                   dirPath: seqDir,
                   frameIndex: fi + 1,
                   pngBase64,
                 });
               }
 
-              await invoke<string>('burn_animated_telestration_clip_ffmpeg', {
-                inputPath: projectStore.videoFilePath,
+              await invoke<string>("burn_animated_telestration_clip_ffmpeg", {
+                inputPath,
                 outputPath: outPath,
                 startSec: tag.startTime,
                 durationSec: clipDur,
@@ -227,15 +284,21 @@
                 overlayFps,
                 freezeSec,
                 pauseDuration: effectiveStops[0]?.duration ?? 0,
-                freezeOverlayBase64: freezeStopsPayload[0]?.overlay_base64 ?? null,
+                freezeOverlayBase64:
+                  freezeStopsPayload[0]?.overlay_base64 ?? null,
                 cameraZoom: cameraZoomTuple,
-                voiceoverBase64: tag.voiceoverAudioBase64 || null,
+                voiceoverBase64: useTel
+                  ? tag.voiceoverAudioBase64 || null
+                  : null,
                 targetHeight,
-                freezeStops: freezeStopsPayload.length > 0 ? freezeStopsPayload : null,
+                freezeStops:
+                  freezeStopsPayload.length > 0 ? freezeStopsPayload : null,
                 appendCleanReplay,
               });
             } finally {
-              await invoke('cleanup_temp_dir', { dirPath: seqDir }).catch(() => {});
+              await invoke("cleanup_temp_dir", { dirPath: seqDir }).catch(
+                () => {},
+              );
             }
           } else if (
             hasDrawings ||
@@ -244,37 +307,38 @@
             freezeStopsPayload.length > 0 ||
             appendCleanReplay
           ) {
-            await invoke<string>('burn_telestration_clip_ffmpeg', {
-              inputPath: projectStore.videoFilePath,
+            await invoke<string>("burn_telestration_clip_ffmpeg", {
+              inputPath,
               outputPath: outPath,
               startSec: tag.startTime,
               durationSec: clipDur,
               freezeSec,
               pauseDuration: effectiveStops[0]?.duration ?? 0,
               overlayBase64: freezeStopsPayload[0]?.overlay_base64 ?? null,
-              voiceoverBase64: tag.voiceoverAudioBase64 || null,
+              voiceoverBase64: useTel ? tag.voiceoverAudioBase64 || null : null,
               targetHeight,
               cameraZoom: cameraZoomTuple,
-              freezeStops: freezeStopsPayload.length > 0 ? freezeStopsPayload : null,
+              freezeStops:
+                freezeStopsPayload.length > 0 ? freezeStopsPayload : null,
               appendCleanReplay,
             });
           } else {
-            await invoke<string>('render_video_clip_ffmpeg', {
-              inputPath: projectStore.videoFilePath,
+            await invoke<string>("render_video_clip_ffmpeg", {
+              inputPath,
               outputPath: outPath,
               startSec: tag.startTime,
               durationSec: clipDur,
-              fastCopy: exportMode !== 'merged_video',
+              fastCopy: exportMode !== "merged_video",
               targetHeight,
             });
           }
         };
 
-        if (exportMode === 'merged_video') {
+        if (exportMode === "merged_video") {
           const finalPath = await save({
-            title: 'Simpan Video Kompilasi Playlist',
+            title: "Simpan Video Kompilasi Playlist",
             defaultPath: `FutsalTag_Pro_Playlist_${Date.now()}.mp4`,
-            filters: [{ name: 'MP4 Video', extensions: ['mp4'] }],
+            filters: [{ name: "MP4 Video", extensions: ["mp4"] }],
           });
           if (!finalPath) {
             isExporting = false;
@@ -282,21 +346,23 @@
             return;
           }
 
-          const tempDir = await invoke<string>('get_temp_dir');
-          const sep = tempDir.endsWith('/') || tempDir.endsWith('\\') ? '' : '/';
+          const tempDir = await invoke<string>("get_temp_dir");
+          const sep =
+            tempDir.endsWith("/") || tempDir.endsWith("\\") ? "" : "/";
           const renderedClips: string[] = [];
 
-          for (let i = 0; i < items.length; i++) {
-            const item = items[i];
-            exportStatusMessage = `Merender klip ${i + 1}/${items.length}: ${item.title}...`;
+          for (let i = 0; i < clips.length; i++) {
+            const clip = clips[i];
+            exportStatusMessage = `Merender klip ${i + 1}/${clips.length}: [${clip.matchTitle}] ${clip.tag.title}...`;
             const tempClipPath = `${tempDir}${sep}futsaltag_pl_${i}_${Date.now()}.mp4`;
-            await renderItemToPath(item, tempClipPath);
+            await renderClipToPath(clip, tempClipPath);
             renderedClips.push(tempClipPath);
-            exportProgress = 15 + Math.floor(((i + 1) / items.length) * 70);
+            exportProgress = 15 + Math.floor(((i + 1) / clips.length) * 70);
           }
 
-          exportStatusMessage = 'Menggabungkan seluruh klip menjadi 1 video presentasi...';
-          await invoke<string>('concat_playlist_ffmpeg', {
+          exportStatusMessage =
+            "Menggabungkan seluruh klip menjadi 1 video presentasi...";
+          await invoke<string>("concat_playlist_ffmpeg", {
             clipPaths: renderedClips,
             outputPath: finalPath,
             cleanupInputs: true,
@@ -306,54 +372,63 @@
           exportStatusMessage = `Selesai! Kompilasi video tersimpan di: ${finalPath}`;
           exportSuccessPath = finalPath;
         } else {
-          // separate_clips OR grouped_folders
           const targetDir = await open({
             title:
-              exportMode === 'grouped_folders'
-                ? 'Pilih Folder Utama (Subfolder Kategori Otomatis)'
-                : 'Pilih Folder Tujuan Klip Terpisah',
+              exportMode === "grouped_folders"
+                ? "Pilih Folder Utama (Subfolder Kategori Otomatis)"
+                : "Pilih Folder Tujuan Klip Terpisah",
             directory: true,
             multiple: false,
           });
-          if (!targetDir || typeof targetDir !== 'string') {
+          if (!targetDir || typeof targetDir !== "string") {
             isExporting = false;
             exportProgress = 0;
             return;
           }
 
-          const sep = targetDir.endsWith('/') || targetDir.endsWith('\\') ? '' : '/';
-          for (let i = 0; i < items.length; i++) {
-            const item = items[i];
-            const safeCat = item.tagEvent.category.replace(/[^a-zA-Z0-9_-]/g, '_');
-            const safeTitle = item.title.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 48);
-            const idxStr = String(i + 1).padStart(2, '0');
+          const sep =
+            targetDir.endsWith("/") || targetDir.endsWith("\\") ? "" : "/";
+          for (let i = 0; i < clips.length; i++) {
+            const clip = clips[i];
+            const safeCat = clip.tag.category.replace(/[^a-zA-Z0-9_-]/g, "_");
+            const safeTitle = clip.tag.title
+              .replace(/[^a-zA-Z0-9_-]/g, "_")
+              .slice(0, 42);
+            const safeMatch = clip.matchTitle
+              .replace(/[^a-zA-Z0-9_-]/g, "_")
+              .slice(0, 22);
+            const matchPrefix = hasMultiMatch ? `${safeMatch}_` : "";
+            const idxStr = String(i + 1).padStart(2, "0");
             let outPath: string;
-            if (exportMode === 'grouped_folders') {
+            if (exportMode === "grouped_folders") {
               const subDir = `${targetDir}${sep}${safeCat}`;
-              await invoke('ensure_dir', { path: subDir });
-              outPath = `${subDir}${sep}${idxStr}_${safeTitle}.mp4`;
+              await invoke("ensure_dir", { path: subDir });
+              outPath = `${subDir}${sep}${idxStr}_${matchPrefix}${safeTitle}.mp4`;
             } else {
-              outPath = `${targetDir}${sep}${idxStr}_${safeCat}_${safeTitle}.mp4`;
+              outPath = `${targetDir}${sep}${idxStr}_${matchPrefix}${safeCat}_${safeTitle}.mp4`;
             }
 
-            exportStatusMessage = `Merender klip ${i + 1}/${items.length}: ${item.title}...`;
-            await renderItemToPath(item, outPath);
-            exportProgress = 10 + Math.floor(((i + 1) / items.length) * 90);
+            exportStatusMessage = `Merender klip ${i + 1}/${clips.length}: [${clip.matchTitle}] ${clip.tag.title}...`;
+            await renderClipToPath(clip, outPath);
+            exportProgress = 10 + Math.floor(((i + 1) / clips.length) * 90);
           }
 
           exportProgress = 100;
-          exportStatusMessage = `Selesai! ${items.length} klip tersimpan di folder: ${targetDir}`;
+          exportStatusMessage = `Selesai! ${clips.length} klip tersimpan di folder: ${targetDir}`;
           exportSuccessPath = targetDir;
         }
       } else {
-        // Browser-only demo preview mode
         for (let p = 20; p <= 100; p += 20) {
           await new Promise((r) => setTimeout(r, 250));
           exportProgress = p;
-          if (p === 40) exportStatusMessage = 'Simulasi Web: menyiapkan preview...';
-          if (p === 80) exportStatusMessage = 'Gunakan aplikasi desktop Tauri untuk render MP4 FFmpeg asli.';
+          if (p === 40)
+            exportStatusMessage = "Simulasi Web: menyiapkan preview...";
+          if (p === 80)
+            exportStatusMessage =
+              "Gunakan aplikasi desktop Tauri untuk render MP4 FFmpeg asli.";
         }
-        exportStatusMessage = 'Mode Web Demo selesai (render MP4 nyata hanya aktif di Tauri Desktop).';
+        exportStatusMessage =
+          "Mode Web Demo selesai (render MP4 nyata hanya aktif di Tauri Desktop).";
         exportSuccessPath = `Web_Preview_${exportMode}`;
       }
     } catch (err: any) {
@@ -365,24 +440,38 @@
 
   function exportCSVStats() {
     const rows = [
-      ['ID', 'Kategori Aksi', 'Mulai (s)', 'Selesai (s)', 'Pemain', 'Hasil', 'Rating', 'Pause Jeda (s)'],
-      ...projectStore.tags.map((t) => [
-        t.id,
-        t.category,
-        t.startTime.toFixed(2),
-        t.endTime.toFixed(2),
-        t.playerLabel || '-',
-        t.outcomeLabel || '-',
-        t.rating || '-',
-        (t.pauseDuration ?? 3.0).toFixed(1),
+      [
+        "Pertandingan",
+        "ID",
+        "Kategori Aksi",
+        "Mulai (s)",
+        "Selesai (s)",
+        "Pemain",
+        "Label",
+        "Telestrasi",
+        "Hasil",
+        "Rating",
+      ],
+      ...filteredClips.map((c) => [
+        `"${c.matchTitle.replace(/"/g, '""')}"`,
+        c.tag.id,
+        `"${c.tag.category}"`,
+        c.tag.startTime.toFixed(2),
+        c.tag.endTime.toFixed(2),
+        `"${c.tag.playerLabel || "-"}"`,
+        `"${(c.tag.labels ?? []).map((l) => l.name).join("; ") || "-"}"`,
+        c.useTelestration ? "Telestrasi" : "Polos",
+        `"${c.tag.outcomeLabel || "-"}"`,
+        `"${c.tag.rating || "-"}"`,
       ]),
     ];
 
-    const csvContent = 'data:text/csv;charset=utf-8,' + rows.map((e) => e.join(',')).join('\n');
+    const csvContent =
+      "data:text/csv;charset=utf-8," + rows.map((e) => e.join(",")).join("\n");
     const encodedUri = encodeURI(csvContent);
-    const link = document.createElement('a');
-    link.setAttribute('href', encodedUri);
-    link.setAttribute('download', `FutsalTag_Pro_Statistik_${Date.now()}.csv`);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `FutsalTag_Pro_Statistik_${Date.now()}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -390,11 +479,14 @@
 
   async function handleExportMatchPdf() {
     if (projectStore.tags.length === 0) {
-      exportStatusMessage = 'Belum ada klip momen untuk dicetak ke Laporan PDF.';
+      exportStatusMessage =
+        "Belum ada klip momen untuk dicetak ke Laporan PDF.";
       return;
     }
     try {
-      const { exportExecutiveMatchPdfReport } = await import('$lib/export/matchPdfReport');
+      const { exportExecutiveMatchPdfReport } = await import(
+        "$lib/export/matchPdfReport"
+      );
       const saved = await exportExecutiveMatchPdfReport({
         matchTitle: projectStore.videoTitle,
         durationSec: projectStore.duration,
@@ -414,19 +506,19 @@
 
   async function handleExportSportsCodeXml() {
     if (projectStore.tags.length === 0) {
-      exportStatusMessage = 'Belum ada klip untuk diekspor ke XML.';
+      exportStatusMessage = "Belum ada klip untuk diekspor ke XML.";
       return;
     }
     const xml = exportSportsCodeXml(projectStore.tags, projectStore.videoTitle);
-    const safeName = (projectStore.videoTitle || 'futsaltag')
-      .replace(/[^a-zA-Z0-9_-]/g, '_')
+    const safeName = (projectStore.videoTitle || "futsaltag")
+      .replace(/[^a-zA-Z0-9_-]/g, "_")
       .toLowerCase();
     const saved = await saveTextFilePortable(
       `${safeName}_sportscode.xml`,
       xml,
-      'application/xml;charset=utf-8',
-      'SportsCode / Once Sport XML',
-      ['xml']
+      "application/xml;charset=utf-8",
+      "SportsCode / Once Sport XML",
+      ["xml"],
     );
     if (saved) {
       exportSuccessPath = saved;
@@ -451,9 +543,9 @@
     if (isTauriDesktop()) {
       try {
         const res = await openTextFilePortable(
-          'Impor XML SportsCode / Once Sport (.xml)',
-          'XML Files',
-          ['xml']
+          "Impor XML SportsCode / Once Sport (.xml)",
+          "XML Files",
+          ["xml"],
         );
         if (res) applyImportedXml(res.content, res.name);
       } catch (err: any) {
@@ -480,12 +572,12 @@
       }
     };
     reader.readAsText(file);
-    input.value = '';
+    input.value = "";
   }
 
   async function handleExportExcelWorkbook() {
-    const safeName = (projectStore.videoTitle || 'laporan_futsal')
-      .replace(/[^a-zA-Z0-9_-]/g, '_')
+    const safeName = (projectStore.videoTitle || "laporan_futsal")
+      .replace(/[^a-zA-Z0-9_-]/g, "_")
       .toLowerCase();
     const saved = await exportNativeXlsxPortable(
       {
@@ -501,7 +593,7 @@
         normalizePlayerLabel: (lbl) => projectStore.normalizePlayerLabel(lbl),
         isGoalkeeper: (p) => projectStore.isGoalkeeper(p),
       },
-      `${safeName}_5sheet.xlsx`
+      `${safeName}_5sheet.xlsx`,
     );
     if (saved) {
       exportSuccessPath = saved;
@@ -514,19 +606,25 @@
   <!-- TOP SUB-HEADER -->
   <header class="hub-header">
     <div class="header-left">
-      <button class="btn-back" onclick={() => projectStore.setStage('tagging')}>
+      <button class="btn-back" onclick={() => projectStore.setStage("tagging")}>
         <ArrowLeft size={16} />
         <span>Kembali ke Tagging</span>
       </button>
       <div class="header-title-wrap">
         <span class="hub-main-title">Pusat Playlist & Ekspor Multi-Format</span>
-        <span class="hub-sub-title">Susun urutan klip presentasi dan ekspor video siaran tim</span>
+        <span class="hub-sub-title"
+          >Susun urutan klip presentasi dan ekspor video siaran tim</span
+        >
       </div>
     </div>
 
     <div class="header-right">
       {#if onOpenPresentation}
-        <button class="btn-csv" onclick={onOpenPresentation} title="Buka Studio Presentasi Fullscreen Ruang Ganti">
+        <button
+          class="btn-csv"
+          onclick={onOpenPresentation}
+          title="Buka Studio Presentasi Fullscreen Ruang Ganti"
+        >
           <MonitorPlay size={15} />
           <span>Presenter Fullscreen</span>
         </button>
@@ -535,41 +633,53 @@
         <FileSpreadsheet size={15} />
         <span>Ekspor Rekap CSV</span>
       </button>
-      <button class="btn-csv" onclick={handleExportMatchPdf} title="Cetak Laporan Pertandingan PDF 1-Klik (A4 Landscape)">
+      <button
+        class="btn-csv"
+        onclick={handleExportMatchPdf}
+        title="Cetak Laporan Pertandingan PDF 1-Klik (A4 Landscape)"
+      >
         <Download size={15} />
         <span>Laporan PDF</span>
       </button>
-      <button class="btn-primary-export" onclick={triggerExport} disabled={isExporting}>
+      <button
+        class="btn-primary-export"
+        onclick={triggerExport}
+        disabled={isExporting}
+      >
         <Download size={15} />
-        <span>{isExporting ? 'Sedang Merender...' : 'Mulai Ekspor Video'}</span>
+        <span>{isExporting ? "Sedang Merender..." : "Mulai Ekspor Video"}</span>
       </button>
     </div>
   </header>
 
   <!-- MAIN BODY: 2 COLUMNS (LEFT: PRESENTATION PLAYER & PLAYLIST, RIGHT: EXPORT SETTINGS) -->
   <div class="hub-grid">
-    <!-- LEFT: TV PRESENTATION PLAYER & REORDERABLE PLAYLIST -->
+    <!-- LEFT: FILTER + TV PRESENTATION PLAYER & REORDERABLE PLAYLIST -->
     <div class="playlist-column">
+      <ClipFilterBar />
+
       <!-- TV PRESENTATION PLAYER -->
       <div class="presentation-player-card">
         <div class="card-bar">
           <div class="bar-title">
             <Tv size={15} />
-            <span>Mode Simulasi Siaran Presentasi TV (Auto-Play Sequencer)</span>
+            <span>Mode Simulasi Siaran Presentasi TV (Auto-Play Sequencer)</span
+            >
           </div>
-          {#if currentPlaylist && currentPlaylist.items[selectedItemIndex]}
+          {#if activePreviewClip}
             <span class="now-playing-badge">
-              Memutar Klip #{selectedItemIndex + 1}: {currentPlaylist.items[selectedItemIndex].title}
+              [{activePreviewClip.matchTitle}] Klip #{selectedItemIndex + 1}: {activePreviewClip
+                .tag.title}
             </span>
           {/if}
         </div>
 
         <div class="video-frame">
-          {#if projectStore.videoSrc}
+          {#if activePreviewSrc}
             <!-- svelte-ignore a11y_media_has_caption -->
             <video
               bind:this={presentationVideoEl}
-              src={projectStore.videoSrc}
+              src={activePreviewSrc}
               class="pres-video"
               ontimeupdate={handlePresentationTimeUpdate}
             ></video>
@@ -577,7 +687,10 @@
             <div class="mock-pres-screen">
               <Film size={36} />
               <p>Simulasi Presentasi TV Berurutan Aktif</p>
-              <span>Setiap klip akan diputar berurutan dengan jeda freeze frame telestrasi secara otomatis.</span>
+              <span
+                >Setiap klip akan diputar berurutan lintas pertandingan sesuai
+                filter aktif.</span
+              >
             </div>
           {/if}
         </div>
@@ -604,7 +717,7 @@
           </button>
 
           <span class="pres-counter">
-            Total {currentPlaylist ? currentPlaylist.items.length : 0} Klip dalam Presentasi
+            Total {filteredClips.length} Klip Terfilter
           </span>
         </div>
       </div>
@@ -614,62 +727,103 @@
         <div class="items-header">
           <div class="title-wrap">
             <Layers size={15} />
-            <span class="title-text">Urutan Klip Playlist ({currentPlaylist ? currentPlaylist.items.length : 0})</span>
+            <span class="title-text"
+              >Daftar Klip Aktif ({filteredClips.length})</span
+            >
           </div>
-          <span class="drag-hint">Gunakan tombol panah untuk mengatur urutan tayang klip</span>
+          <span class="drag-hint"
+            >Filter di atas langsung menyaring Presentasi & Ekspor MP4</span
+          >
         </div>
 
         <div class="items-scroll">
-          {#if !currentPlaylist || currentPlaylist.items.length === 0}
+          {#if filteredClips.length === 0}
             <div class="empty-playlist">
-              <p>Belum ada klip di playlist ini.</p>
-              <span>Silakan tambahkan klip dari Tahap 2 (Tagging).</span>
+              <p>Belum ada klip sesuai filter.</p>
+              <span
+                >Ubah filter Tag/Label/Pemain di atas, atau Scan folder pustaka
+                `.futsal`.</span
+              >
             </div>
           {:else}
-            {#each currentPlaylist.items as item, idx}
+            {#each filteredClips as clip, idx (clip.key)}
               <div
                 class="playlist-item-row"
                 class:active-row={selectedItemIndex === idx}
                 onclick={() => playPresentationItem(idx)}
                 role="button"
                 tabindex="0"
-                onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') playPresentationItem(idx); }}
+                onkeydown={(e) => {
+                  if (e.key === "Enter" || e.key === " ")
+                    playPresentationItem(idx);
+                }}
               >
                 <div class="item-order-box">{idx + 1}</div>
 
                 <div class="item-info">
                   <div class="item-title-row">
-                    <span class="item-title">{item.title}</span>
-                    <span class="item-cat" style="background-color: {item.tagEvent.color}">
-                      {item.tagEvent.category}
+                    <span class="match-pill-tag">{clip.matchTitle}</span>
+                    <span class="item-title">{clip.tag.title}</span>
+                    <span
+                      class="item-cat"
+                      style="background-color: {clip.tag.color}"
+                    >
+                      {clip.tag.category}
                     </span>
                   </div>
                   <div class="item-meta">
                     <span class="meta-time">
-                      [{item.tagEvent.startTime.toFixed(1)}s - {item.tagEvent.endTime.toFixed(1)}s]
+                      [{clip.tag.startTime.toFixed(1)}s - {clip.tag.endTime.toFixed(
+                        1,
+                      )}s]
                     </span>
-                    {#if item.tagEvent.playerLabel}
-                      <span class="meta-badge">{item.tagEvent.playerLabel}</span>
+                    {#if clip.tag.playerLabel}
+                      <span class="meta-badge">{clip.tag.playerLabel}</span>
                     {/if}
+                    {#each (clip.tag.labels ?? []).slice(0, 3) as lbl}
+                      <span class="meta-lbl-pill">{lbl.name}</span>
+                    {/each}
                     <span class="meta-freeze">
-                      {#if (item.tagEvent.freezeStops?.length ?? 0) > 1}
-                        {item.tagEvent.freezeStops?.length} Jeda
+                      {#if (clip.tag.freezeStops?.length ?? 0) > 1}
+                        {clip.tag.freezeStops?.length} Jeda
                       {:else}
-                        Jeda Freeze: {(item.tagEvent.freezeStops?.[0]?.duration ?? item.tagEvent.pauseDuration ?? item.pauseDuration).toFixed(1)}s
+                        Jeda: {(
+                          clip.tag.freezeStops?.[0]?.duration ??
+                          clip.tag.pauseDuration ??
+                          3.0
+                        ).toFixed(1)}s
                       {/if}
-                      {item.tagEvent.appendCleanReplay ? ' + Replay' : ''}
+                      {clip.tag.appendCleanReplay ? " + Replay" : ""}
                     </span>
                   </div>
                 </div>
 
-                <!-- REORDER & DELETE ACTIONS -->
+                <!-- TELESTRATION PER-CLIP TOGGLE & REORDER -->
                 <div class="item-actions">
+                  <button
+                    type="button"
+                    class="btn-tel-toggle"
+                    class:active={clip.useTelestration}
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      projectStore.setClipTelestration(
+                        clip.key,
+                        !clip.useTelestration,
+                      );
+                    }}
+                    title={clip.hasTelestration
+                      ? "Klik untuk pilih ekspor/tayang Dengan Telestrasi atau Video Polos"
+                      : "Klip ini polos (belum ada telestrasi)"}
+                  >
+                    <Sparkles size={11} />
+                    <span>{clip.useTelestration ? "Telestrasi" : "Polos"}</span>
+                  </button>
                   <button
                     class="btn-order"
                     disabled={idx === 0}
                     onclick={(e) => {
                       e.stopPropagation();
-                      moveItem(idx, 'up');
+                      moveItem(idx, "up");
                     }}
                     title="Pindahkan ke atas"
                   >
@@ -677,10 +831,10 @@
                   </button>
                   <button
                     class="btn-order"
-                    disabled={idx === currentPlaylist.items.length - 1}
+                    disabled={idx === filteredClips.length - 1}
                     onclick={(e) => {
                       e.stopPropagation();
-                      moveItem(idx, 'down');
+                      moveItem(idx, "down");
                     }}
                     title="Pindahkan ke bawah"
                   >
@@ -692,7 +846,7 @@
                       e.stopPropagation();
                       removeItem(idx);
                     }}
-                    title="Hapus dari playlist"
+                    title="Keluarkan sementara dari ekspor"
                   >
                     <Trash2 size={13} />
                   </button>
@@ -714,32 +868,55 @@
 
         <!-- 3 ONCE SPORT EXPORT MODES -->
         <div class="mode-select-group">
-          <label class="mode-option" class:selected={exportMode === 'merged_video'}>
+          <label
+            class="mode-option"
+            class:selected={exportMode === "merged_video"}
+          >
             <input type="radio" bind:group={exportMode} value="merged_video" />
             <div class="mode-text">
-              <span class="mode-title">1. Gabung Menjadi 1 Video Utuh (Merge)</span>
+              <span class="mode-title"
+                >1. Gabung Menjadi 1 Video Utuh (Merge)</span
+              >
               <span class="mode-desc">
-                Menggabungkan seluruh klip playlist menjadi 1 file video MP4 bersambung. Sangat cocok untuk rapat analisis tim.
+                Menggabungkan seluruh klip playlist menjadi 1 file video MP4
+                bersambung. Sangat cocok untuk rapat analisis tim.
               </span>
             </div>
           </label>
 
-          <label class="mode-option" class:selected={exportMode === 'separate_clips'}>
-            <input type="radio" bind:group={exportMode} value="separate_clips" />
+          <label
+            class="mode-option"
+            class:selected={exportMode === "separate_clips"}
+          >
+            <input
+              type="radio"
+              bind:group={exportMode}
+              value="separate_clips"
+            />
             <div class="mode-text">
-              <span class="mode-title">2. Ekspor Klip Terpisah di 1 Folder</span>
+              <span class="mode-title">2. Ekspor Klip Terpisah di 1 Folder</span
+              >
               <span class="mode-desc">
-                Merender setiap aksi ke file mandiri: Klip_01_Gol.mp4, Klip_02_Pressing.mp4, dll.
+                Merender setiap aksi ke file mandiri: Klip_01_Gol.mp4,
+                Klip_02_Pressing.mp4, dll.
               </span>
             </div>
           </label>
 
-          <label class="mode-option" class:selected={exportMode === 'grouped_folders'}>
-            <input type="radio" bind:group={exportMode} value="grouped_folders" />
+          <label
+            class="mode-option"
+            class:selected={exportMode === "grouped_folders"}
+          >
+            <input
+              type="radio"
+              bind:group={exportMode}
+              value="grouped_folders"
+            />
             <div class="mode-text">
               <span class="mode-title">3. Kelompokkan ke Folder Aksi</span>
               <span class="mode-desc">
-                Otomatis membuat subfolder sesuai nama aksi: folder Gol/, folder Set_Piece/, folder Transisi/.
+                Otomatis membuat subfolder sesuai nama aksi: folder Gol/, folder
+                Set_Piece/, folder Transisi/.
               </span>
             </div>
           </label>
@@ -748,8 +925,15 @@
         <!-- DRAWINGS & PAUSE CHECKBOX -->
         <div class="options-checklist">
           <label class="check-label">
-            <input type="checkbox" bind:checked={includeDrawings} />
-            <span>Sertakan Anotasi Telestrasi & Waktu Jeda Freeze-Frame</span>
+            <input
+              type="checkbox"
+              checked={projectStore.globalIncludeTelestration}
+              onchange={(e) =>
+                projectStore.setAllClipsTelestration(e.currentTarget.checked)}
+            />
+            <span
+              >Sertakan Anotasi Telestrasi & Waktu Jeda Freeze-Frame (Global)</span
+            >
           </label>
 
           <div class="res-row">
@@ -757,15 +941,15 @@
             <div class="res-buttons">
               <button
                 class="btn-res"
-                class:active={outputResolution === '1080p'}
-                onclick={() => (outputResolution = '1080p')}
+                class:active={outputResolution === "1080p"}
+                onclick={() => (outputResolution = "1080p")}
               >
                 1080p (Full HD)
               </button>
               <button
                 class="btn-res"
-                class:active={outputResolution === '720p'}
-                onclick={() => (outputResolution = '720p')}
+                class:active={outputResolution === "720p"}
+                onclick={() => (outputResolution = "720p")}
               >
                 720p (HD)
               </button>
@@ -777,7 +961,10 @@
         {#if isExporting || exportProgress > 0}
           <div class="progress-wrap">
             <div class="progress-bar-bg">
-              <div class="progress-bar-fill" style="width: {exportProgress}%"></div>
+              <div
+                class="progress-bar-fill"
+                style="width: {exportProgress}%"
+              ></div>
             </div>
             <div class="progress-meta">
               <span class="status-msg">{exportStatusMessage}</span>
@@ -799,7 +986,11 @@
           disabled={isExporting}
         >
           <Film size={16} />
-          <span>{isExporting ? 'Sedang Memproses Render...' : 'Render & Simpan Video'}</span>
+          <span
+            >{isExporting
+              ? "Sedang Memproses Render..."
+              : "Render & Simpan Video"}</span
+          >
         </button>
       </div>
 
@@ -810,7 +1001,11 @@
           <span>Interoperabilitas & Laporan Industri</span>
         </div>
         <div class="interop-grid">
-          <button type="button" class="btn-interop" onclick={handleImportSportsCodeXmlClick}>
+          <button
+            type="button"
+            class="btn-interop"
+            onclick={handleImportSportsCodeXmlClick}
+          >
             <Upload size={13} />
             <span>Impor XML (Once/SportsCode)</span>
           </button>
@@ -821,15 +1016,27 @@
             onchange={handleXmlFileChange}
             style="display: none;"
           />
-          <button type="button" class="btn-interop" onclick={handleExportSportsCodeXml}>
+          <button
+            type="button"
+            class="btn-interop"
+            onclick={handleExportSportsCodeXml}
+          >
             <Download size={13} />
             <span>Ekspor XML SportsCode</span>
           </button>
-          <button type="button" class="btn-interop btn-interop-excel" onclick={handleExportExcelWorkbook}>
+          <button
+            type="button"
+            class="btn-interop btn-interop-excel"
+            onclick={handleExportExcelWorkbook}
+          >
             <FileSpreadsheet size={13} />
             <span>Ekspor Excel (.xlsx)</span>
           </button>
-          <button type="button" class="btn-interop btn-interop-pdf" onclick={handleExportMatchPdf}>
+          <button
+            type="button"
+            class="btn-interop btn-interop-pdf"
+            onclick={handleExportMatchPdf}
+          >
             <Download size={13} />
             <span>Laporan PDF 1-Klik (A4)</span>
           </button>
@@ -1605,5 +1812,48 @@
       flex-wrap: wrap;
       gap: 8px;
     }
+  }
+
+  .match-pill-tag {
+    font-size: 9.5px;
+    font-weight: 800;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: #0f766e;
+    color: #ccfbf1;
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .meta-lbl-pill {
+    font-size: 9.5px;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: #1e293b;
+    border: 1px solid #334155;
+    color: #cbd5e1;
+  }
+
+  .btn-tel-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 7px;
+    border-radius: 5px;
+    font-size: 10px;
+    font-weight: 700;
+    background: #0f172a;
+    border: 1px solid #334155;
+    color: #94a3b8;
+    cursor: pointer;
+  }
+
+  .btn-tel-toggle.active {
+    background: rgba(2, 132, 199, 0.22);
+    border-color: #38bdf8;
+    color: #38bdf8;
   }
 </style>

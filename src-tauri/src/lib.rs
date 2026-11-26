@@ -7,8 +7,9 @@ mod whisper_asr;
 mod xlsx_export;
 
 use base64::prelude::*;
+use serde::Serialize;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tauri::Manager;
 
 #[tauri::command]
@@ -143,6 +144,77 @@ fn save_binary_file(file_path: String, base64_content: String) -> Result<String,
     Ok(file_path)
 }
 
+#[derive(Serialize)]
+struct ScannedMatchFile {
+    file_path: String,
+    file_name: String,
+    content: String,
+}
+
+#[derive(Serialize)]
+struct ScanMatchFolderResult {
+    folder_path: String,
+    files: Vec<ScannedMatchFile>,
+}
+
+fn scan_match_dir(dir: &Path) -> Result<Vec<ScannedMatchFile>, String> {
+    fs::create_dir_all(dir)
+        .map_err(|e| format!("Gagal menyiapkan folder pustaka '{}': {}", dir.display(), e))?;
+    let entries = fs::read_dir(dir)
+        .map_err(|e| format!("Gagal membaca folder pustaka '{}': {}", dir.display(), e))?;
+
+    let mut files = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        let lower_name = file_name.to_lowercase();
+        if lower_name == "autosave_project.futsal" || lower_name == "club_library.json" {
+            continue;
+        }
+        let ext = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_lowercase())
+            .unwrap_or_default();
+        if ext != "futsal" && ext != "json" {
+            continue;
+        }
+        if let Ok(content) = fs::read_to_string(&path) {
+            files.push(ScannedMatchFile {
+                file_path: path.to_string_lossy().to_string(),
+                file_name,
+                content,
+            });
+        }
+    }
+    files.sort_by(|a, b| a.file_name.to_lowercase().cmp(&b.file_name.to_lowercase()));
+    Ok(files)
+}
+
+#[tauri::command]
+fn scan_match_library_folder(
+    app: tauri::AppHandle,
+    folder_path: Option<String>,
+) -> Result<ScanMatchFolderResult, String> {
+    let dir = match folder_path.filter(|p| !p.trim().is_empty()) {
+        Some(p) => PathBuf::from(p),
+        None => app
+            .path()
+            .document_dir()
+            .map(|d| d.join("FutsalTag_Matches"))
+            .or_else(|_| app.path().app_data_dir().map(|d| d.join("match_library")))
+            .map_err(|e| format!("Gagal menentukan folder pustaka default: {}", e))?,
+    };
+    let files = scan_match_dir(&dir)?;
+    Ok(ScanMatchFolderResult {
+        folder_path: dir.to_string_lossy().to_string(),
+        files,
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -170,6 +242,7 @@ pub fn run() {
             load_autosave_project,
             clear_autosave_project,
             save_binary_file,
+            scan_match_library_folder,
             ffmpeg::render_video_clip_ffmpeg,
             ffmpeg::concat_playlist_ffmpeg,
             ffmpeg::burn_telestration_clip_ffmpeg,
@@ -196,4 +269,32 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scan_match_dir;
+    use std::fs;
+
+    #[test]
+    fn test_scan_match_dir_filters_and_sorts() {
+        let dir = std::env::temp_dir().join(format!(
+            "futsaltag_scan_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("match_b.futsal"), "{\"tags\":[]}").unwrap();
+        fs::write(dir.join("match_a.json"), "{\"tags\":[]}").unwrap();
+        fs::write(dir.join("autosave_project.futsal"), "{}").unwrap();
+        fs::write(dir.join("notes.txt"), "ignore").unwrap();
+
+        let scanned = scan_match_dir(&dir).unwrap();
+        let names: Vec<&str> = scanned.iter().map(|f| f.file_name.as_str()).collect();
+        assert_eq!(names, vec!["match_a.json", "match_b.futsal"]);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

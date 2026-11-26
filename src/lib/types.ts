@@ -385,6 +385,63 @@ export interface ExportOptions {
   includeAudio: boolean;
 }
 
+export type TelestrationFilterMode = 'all' | 'with_telestration' | 'without_telestration';
+
+export interface LibraryMatchSource {
+  id: string;
+  title: string;
+  filePath: string | null;
+  videoFilePath: string | null;
+  videoSrc: string | null;
+  exportedAt?: string;
+  chromaFloorConfig?: ChromaFloorConfig;
+  tags: VideoTagEvent[];
+  roster: RosterPlayer[];
+}
+
+export interface ClipLibraryFilter {
+  matchIds: string[];
+  categories: string[];
+  labels: string[];
+  players: string[];
+  telestration: TelestrationFilterMode;
+  searchQuery: string;
+}
+
+export interface ResolvedPlaylistClip {
+  key: string;
+  matchId: string;
+  matchTitle: string;
+  videoFilePath: string | null;
+  videoSrc: string | null;
+  chromaFloorConfig?: ChromaFloorConfig;
+  tag: VideoTagEvent;
+  hasTelestration: boolean;
+  useTelestration: boolean;
+}
+
+export type PresentationSlide =
+  | {
+      id: string;
+      kind: 'clip';
+      title: string;
+      tag: VideoTagEvent;
+      matchId?: string;
+      matchTitle?: string;
+      videoFilePath?: string | null;
+      videoSrc?: string | null;
+      chromaFloorConfig?: ChromaFloorConfig;
+      showTelestration?: boolean;
+      speed?: number;
+      muted?: boolean;
+      caption?: string;
+      trimStart?: number;
+      trimEnd?: number;
+    }
+  | { id: string; kind: 'tactical'; title: string }
+  | { id: string; kind: 'title'; title: string; subtitle?: string; bgColor?: string }
+  | { id: string; kind: 'image'; title: string; imageDataUrl: string; caption?: string };
+
 export interface VideoProject {
   id: string;
   title: string;

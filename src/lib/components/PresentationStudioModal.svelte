@@ -1,10 +1,11 @@
 <script lang="ts">
   import { tick } from 'svelte';
-  import { projectStore } from '$lib/stores/projectStore.svelte';
-  import type { FreezeStop, Point2D, VideoTagEvent } from '$lib/types';
+  import { projectStore, isTauriDesktop } from '$lib/stores/projectStore.svelte';
+  import type { FreezeStop, Point2D, PresentationSlide, VideoTagEvent } from '$lib/types';
   import { renderDrawingsToCanvas } from '$lib/export/telestrationRenderer';
   import { getEffectiveFreezeStopsForTag } from '$lib/export/freezeStops';
   import TacticalBoard from '$lib/components/TacticalBoard.svelte';
+  import ClipFilterBar from '$lib/components/ClipFilterBar.svelte';
   import {
     Play,
     Pause,
@@ -22,6 +23,14 @@
     Plus,
     Trash2,
     Undo2,
+    Type,
+    Image as ImageIcon,
+    RefreshCw,
+    ArrowUp,
+    ArrowDown,
+    Shield,
+    Filter,
+    Sparkles,
   } from 'lucide-svelte';
 
   interface Props {
@@ -31,10 +40,6 @@
 
   let { isOpen, onClose }: Props = $props();
 
-  type PresentationSlide =
-    | { id: string; kind: 'clip'; title: string; tag: VideoTagEvent }
-    | { id: string; kind: 'tactical'; title: string };
-
   interface LiveStroke {
     color: string;
     width: number;
@@ -42,13 +47,17 @@
   }
 
   const PEN_COLORS = ['#00f0ff', '#f59e0b', '#ef4444', '#10b981', '#ffffff'];
+  const TITLE_BG_COLORS = ['#0f172a', '#0c4a6e', '#064e3b', '#7f1d1d', '#312e81'];
 
   let slides = $state<PresentationSlide[]>([]);
   let currentSlideIdx = $state(0);
   let showSlideDrawer = $state(false);
+  let showFilterPanel = $state(false);
   let isFullscreen = $state(false);
   let autoFreezeEnabled = $state(true);
   let voiceoverEnabled = $state(true);
+  let imageInputEl = $state<HTMLInputElement | null>(null);
+  let logoInputEl = $state<HTMLInputElement | null>(null);
 
   // Video & telestration playback state
   let videoEl = $state<HTMLVideoElement | null>(null);
@@ -76,34 +85,88 @@
   let activeStroke = $state<LiveStroke | null>(null);
 
   const currentSlide = $derived(slides[currentSlideIdx] ?? null);
+  const activeSlideVideoSrc = $derived(
+    currentSlide?.kind === 'clip' ? (currentSlide.videoSrc ?? projectStore.videoSrc) : projectStore.videoSrc
+  );
+
+  function commitSlides(next: PresentationSlide[]) {
+    slides = next;
+    projectStore.presentationSlides = next;
+  }
+
+  function resolveLiveTag(tag: VideoTagEvent, matchId?: string): VideoTagEvent {
+    if (matchId) {
+      const srcMatch = projectStore.getAllMatchSources().find((m) => m.id === matchId);
+      const found = srcMatch?.tags.find((t) => t.id === tag.id);
+      if (found) return found;
+    }
+    return projectStore.tags.find((t) => t.id === tag.id) ?? tag;
+  }
+
+  function clipBounds(slide: Extract<PresentationSlide, { kind: 'clip' }>): { start: number; end: number } {
+    const start = Math.max(0, slide.trimStart ?? slide.tag.startTime);
+    const end = Math.max(start + 0.5, slide.trimEnd ?? slide.tag.endTime);
+    return { start, end };
+  }
 
   const activeCameraZoom = $derived(
-    isFreezing && currentSlide?.kind === 'clip'
-      ? currentSlide.tag.drawings?.find((d) => d.cameraZoomTarget)?.cameraZoomTarget ?? null
+    isFreezing && currentSlide?.kind === 'clip' && currentSlide.showTelestration !== false
+      ? resolveLiveTag(currentSlide.tag, currentSlide.matchId).drawings?.find((d) => d.cameraZoomTarget)
+          ?.cameraZoomTarget ?? null
       : null
   );
 
-  // Initialize slides whenever modal opens
+  function buildFilteredSlides(existingSource: PresentationSlide[]): PresentationSlide[] {
+    const resolved = projectStore.getFilteredPlaylistClips();
+    const existingClipsByKey = new Map<string, Extract<PresentationSlide, { kind: 'clip' }>>();
+    const nonClipSlides: PresentationSlide[] = [];
+    for (const s of existingSource) {
+      if (s.kind === 'clip') {
+        const k = s.matchId ? `${s.matchId}::${s.tag.id}` : `__active__::${s.tag.id}`;
+        existingClipsByKey.set(k, s);
+      } else {
+        nonClipSlides.push(s);
+      }
+    }
+    const clipSlides: PresentationSlide[] = resolved.map((c) => {
+      const prev = existingClipsByKey.get(c.key);
+      return {
+        ...(prev ?? {}),
+        id: prev?.id || `clip-${c.key}`,
+        kind: 'clip',
+        title: c.tag.title,
+        tag: c.tag,
+        matchId: c.matchId,
+        matchTitle: c.matchTitle,
+        videoFilePath: c.videoFilePath,
+        videoSrc: c.videoSrc,
+        chromaFloorConfig: c.chromaFloorConfig,
+        showTelestration: c.useTelestration,
+      };
+    });
+    return [...clipSlides, ...nonClipSlides];
+  }
+
+  // Initialize slides from filtered library clips + preserved custom slides whenever modal opens
   $effect(() => {
     if (!isOpen) {
       cleanupMediaAndTimers();
       return;
     }
-    const sourceClips =
-      projectStore.playlists[0]?.items.length > 0
-        ? projectStore.playlists[0].items.map((item) => item.tagEvent)
-        : projectStore.tags;
-
-    slides = sourceClips.map((tag, idx) => ({
-      id: `clip-${tag.id}-${idx}`,
-      kind: 'clip',
-      title: tag.title,
-      tag,
-    }));
+    const baseSource = projectStore.presentationSlides.length > 0 ? projectStore.presentationSlides : slides;
+    commitSlides(buildFilteredSlides(baseSource));
     currentSlideIdx = 0;
     liveStrokes = [];
     isDrawMode = false;
     loadCurrentSlideMedia(true);
+
+    if (isTauriDesktop() && projectStore.libraryMatches.length === 0) {
+      projectStore.scanMatchLibrary().then(() => {
+        if (isOpen) {
+          commitSlides(buildFilteredSlides(slides));
+        }
+      });
+    }
   });
 
   // Render loop & keyboard bindings while open
@@ -162,9 +225,12 @@
       if (!active) return;
       if (currentSlide?.kind === 'clip' && videoEl && !videoEl.paused) {
         currentTime = videoEl.currentTime;
-        const tag = currentSlide.tag;
+        const tag = resolveLiveTag(currentSlide.tag, currentSlide.matchId);
+        const bounds = clipBounds(currentSlide);
+        const telOn = currentSlide.showTelestration !== false;
 
         if (
+          telOn &&
           autoFreezeEnabled &&
           !isFreezing &&
           !isReplayPass &&
@@ -175,6 +241,8 @@
           const hit = stops.find(
             (s) =>
               !triggeredStopIds.has(s.id) &&
+              s.time >= bounds.start - 0.1 &&
+              s.time <= bounds.end + 0.1 &&
               currentTime >= s.time &&
               currentTime < s.time + 0.35
           );
@@ -186,11 +254,11 @@
           }
         }
 
-        if (!isFreezing && currentTime >= tag.endTime) {
+        if (!isFreezing && currentTime >= bounds.end) {
           if (tag.appendCleanReplay && !isReplayPass) {
             isReplayPass = true;
-            videoEl.currentTime = tag.startTime;
-            currentTime = tag.startTime;
+            videoEl.currentTime = bounds.start;
+            currentTime = bounds.start;
           } else {
             isReplayPass = false;
             if (currentSlideIdx + 1 < slides.length) {
@@ -260,24 +328,28 @@
     ctx.clearRect(0, 0, telCanvasEl.width, telCanvasEl.height);
     ctx.scale(dpr, dpr);
 
-    if (!isReplayPass && currentSlide?.kind === 'clip' && currentSlide.tag.drawings?.length) {
-      renderDrawingsToCanvas(ctx, currentSlide.tag.drawings, w, h, currentTime, {
-        videoEl,
-        chromaConfig: projectStore.chromaFloorConfig,
-        clipStartTime: currentSlide.tag.startTime,
-        clipEndTime: currentSlide.tag.endTime,
-        subtitleText: currentSlide.tag.voiceoverTranscript,
-        subtitleCues: currentSlide.tag.subtitleCues,
-        burnSubtitle: currentSlide.tag.burnSubtitle,
-        animElapsedSec: isFreezing
-          ? Math.max(
-              0.05,
-              freezeStartedAtMs > 0
-                ? (performance.now() - freezeStartedAtMs) / 1000
-                : activeFreezeDuration - freezeRemaining
-            )
-          : undefined,
-      });
+    if (!isReplayPass && currentSlide?.kind === 'clip' && currentSlide.showTelestration !== false) {
+      const liveTag = resolveLiveTag(currentSlide.tag, currentSlide.matchId);
+      const bounds = clipBounds(currentSlide);
+      if (liveTag.drawings?.length) {
+        renderDrawingsToCanvas(ctx, liveTag.drawings, w, h, currentTime, {
+          videoEl,
+          chromaConfig: currentSlide.chromaFloorConfig ?? projectStore.chromaFloorConfig,
+          clipStartTime: bounds.start,
+          clipEndTime: bounds.end,
+          subtitleText: liveTag.voiceoverTranscript,
+          subtitleCues: liveTag.subtitleCues,
+          burnSubtitle: liveTag.burnSubtitle,
+          animElapsedSec: isFreezing
+            ? Math.max(
+                0.05,
+                freezeStartedAtMs > 0
+                  ? (performance.now() - freezeStartedAtMs) / 1000
+                  : activeFreezeDuration - freezeRemaining
+              )
+            : undefined,
+        });
+      }
     }
     ctx.restore();
   }
@@ -322,20 +394,37 @@
     syncCanvases();
 
     if (currentSlide?.kind === 'clip') {
-      currentTime = currentSlide.tag.startTime;
+      const bounds = clipBounds(currentSlide);
+      const liveTag = resolveLiveTag(currentSlide.tag, currentSlide.matchId);
+      const telOn = currentSlide.showTelestration !== false;
+      const srcUrl = currentSlide.videoSrc ?? projectStore.videoSrc;
+      currentTime = bounds.start;
       if (videoEl) {
-        videoEl.currentTime = currentSlide.tag.startTime;
-        if (autoPlay && projectStore.videoSrc) {
-          videoEl.play().catch(() => {});
-          isPlaying = true;
+        const slideSpeed = currentSlide.speed ?? 1;
+        const slideMuted = Boolean(currentSlide.muted);
+        const startPlayback = () => {
+          if (!videoEl) return;
+          videoEl.currentTime = bounds.start;
+          videoEl.playbackRate = slideSpeed;
+          videoEl.muted = slideMuted;
+          if (autoPlay && srcUrl) {
+            videoEl.play().catch(() => {});
+            isPlaying = true;
+          }
+        };
+        if (videoEl.readyState < 1) {
+          videoEl.addEventListener('loadedmetadata', startPlayback, { once: true });
+        } else {
+          startPlayback();
         }
       }
       if (
+        telOn &&
         voiceoverEnabled &&
-        currentSlide.tag.voiceoverAudioBase64 &&
-        (!autoFreezeEnabled || getEffectiveFreezeStopsForTag(currentSlide.tag).length === 0)
+        liveTag.voiceoverAudioBase64 &&
+        (!autoFreezeEnabled || getEffectiveFreezeStopsForTag(liveTag).length === 0)
       ) {
-        playSlideVoiceover(currentSlide.tag);
+        playSlideVoiceover(liveTag);
       }
     }
   }
@@ -408,28 +497,127 @@
     loadCurrentSlideMedia(true);
   }
 
+  function insertSlideAfterCurrent(newSlide: PresentationSlide, autoPlay = false) {
+    const insertAt = slides.length === 0 ? 0 : currentSlideIdx + 1;
+    commitSlides([...slides.slice(0, insertAt), newSlide, ...slides.slice(insertAt)]);
+    currentSlideIdx = insertAt;
+    liveStrokes = [];
+    loadCurrentSlideMedia(autoPlay);
+  }
+
   function insertTacticalSlide() {
     const tacCount = slides.filter((s) => s.kind === 'tactical').length + 1;
-    const newSlide: PresentationSlide = {
+    insertSlideAfterCurrent({
       id: `tac-${Date.now()}`,
       kind: 'tactical',
       title: `Papan Taktik 2D #${tacCount}`,
+    });
+  }
+
+  function insertTitleSlide() {
+    insertSlideAfterCurrent({
+      id: `title-${Date.now()}`,
+      kind: 'title',
+      title: 'BABAK / POIN TAKTIK',
+      subtitle: projectStore.videoTitle || 'Briefing Ruang Ganti',
+      bgColor: '#0f172a',
+    });
+  }
+
+  function readImageAsDataUrl(file: File, onReady: (dataUrl: string) => void) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') onReady(reader.result);
     };
-    const insertAt = slides.length === 0 ? 0 : currentSlideIdx + 1;
-    slides = [...slides.slice(0, insertAt), newSlide, ...slides.slice(insertAt)];
-    currentSlideIdx = insertAt;
-    liveStrokes = [];
+    reader.readAsDataURL(file);
+  }
+
+  function onImageFileSelected(e: Event) {
+    const input = e.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+    readImageAsDataUrl(file, (dataUrl) => {
+      insertSlideAfterCurrent({
+        id: `img-${Date.now()}`,
+        kind: 'image',
+        title: file.name.replace(/\.[^.]+$/, '') || 'Diagram Taktik',
+        imageDataUrl: dataUrl,
+      });
+    });
+    input.value = '';
+  }
+
+  function onLogoFileSelected(e: Event) {
+    const input = e.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+    readImageAsDataUrl(file, (dataUrl) => {
+      projectStore.clubLogoDataUrl = dataUrl;
+    });
+    input.value = '';
+  }
+
+  function syncFilteredClipsToSlides() {
+    const next = buildFilteredSlides(slides);
+    commitSlides(next);
+    currentSlideIdx = Math.min(currentSlideIdx, Math.max(0, next.length - 1));
     loadCurrentSlideMedia(false);
+  }
+
+  function toggleCurrentSlideTelestration() {
+    if (currentSlide?.kind !== 'clip') return;
+    const nextVal = !(currentSlide.showTelestration !== false);
+    if (!nextVal && isFreezing) {
+      resumeFromFreeze();
+    }
+    updateCurrentClipSlide({ showTelestration: nextVal });
+    if (currentSlide.matchId) {
+      projectStore.setClipTelestration(
+        projectStore.getClipKey(currentSlide.matchId, currentSlide.tag.id),
+        nextVal
+      );
+    }
+  }
+
+  function moveSlide(idx: number, dir: -1 | 1) {
+    const target = idx + dir;
+    if (idx < 0 || idx >= slides.length || target < 0 || target >= slides.length) return;
+    const next = [...slides];
+    const [item] = next.splice(idx, 1);
+    next.splice(target, 0, item);
+    if (currentSlideIdx === idx) currentSlideIdx = target;
+    else if (currentSlideIdx === target) currentSlideIdx = idx;
+    commitSlides(next);
   }
 
   function removeSlideAt(idx: number) {
     if (idx < 0 || idx >= slides.length) return;
-    slides = slides.filter((_, i) => i !== idx);
-    if (currentSlideIdx >= slides.length) {
-      currentSlideIdx = Math.max(0, slides.length - 1);
+    const next = slides.filter((_, i) => i !== idx);
+    commitSlides(next);
+    if (currentSlideIdx >= next.length) {
+      currentSlideIdx = Math.max(0, next.length - 1);
     }
     liveStrokes = [];
     loadCurrentSlideMedia(false);
+  }
+
+  function updateSlideAt(idx: number, updater: (s: PresentationSlide) => PresentationSlide) {
+    if (idx < 0 || idx >= slides.length) return;
+    const next = slides.map((s, i) => (i === idx ? updater(s) : s));
+    commitSlides(next);
+  }
+
+  function updateCurrentClipSlide(patch: Partial<Extract<PresentationSlide, { kind: 'clip' }>>) {
+    if (currentSlide?.kind !== 'clip') return;
+    updateSlideAt(currentSlideIdx, (s) => (s.kind === 'clip' ? { ...s, ...patch } : s));
+    if (videoEl) {
+      if (patch.speed !== undefined) videoEl.playbackRate = patch.speed;
+      if (patch.muted !== undefined) videoEl.muted = patch.muted;
+      if (patch.trimStart !== undefined && videoEl.currentTime < patch.trimStart) {
+        videoEl.currentTime = patch.trimStart;
+        currentTime = patch.trimStart;
+      }
+    }
   }
 
   // Live Pen Pointer Handlers
@@ -505,6 +693,9 @@
       <span class="pth-badge">PRESENTER STUDIO</span>
       <span class="pth-match">{projectStore.videoTitle}</span>
       {#if currentSlide}
+        {#if currentSlide.kind === 'clip' && currentSlide.matchTitle}
+          <span class="pth-match-badge">{currentSlide.matchTitle}</span>
+        {/if}
         <span class="pth-slide-pill">
           Slide {currentSlideIdx + 1}/{slides.length}: <strong>{currentSlide.title}</strong>
         </span>
@@ -517,14 +708,53 @@
     </div>
 
     <div class="pth-right">
+      <input
+        bind:this={imageInputEl}
+        type="file"
+        accept="image/*"
+        class="hidden-file-input"
+        onchange={onImageFileSelected}
+      />
+      <input
+        bind:this={logoInputEl}
+        type="file"
+        accept="image/*"
+        class="hidden-file-input"
+        onchange={onLogoFileSelected}
+      />
+      <button type="button" class="hud-btn" class:active-draw={showFilterPanel} onclick={() => (showFilterPanel = !showFilterPanel)} title="Filter Klip Lintas Pertandingan (Tag × Label × Pemain × Telestrasi)">
+        <Filter size={13} />
+        <span>Filter Klip</span>
+      </button>
       <button type="button" class="hud-btn" onclick={() => (showSlideDrawer = !showSlideDrawer)}>
         <List size={14} />
-        <span>Daftar Slide ({slides.length})</span>
+        <span>Slide ({slides.length})</span>
+      </button>
+      <button type="button" class="hud-btn" onclick={syncFilteredClipsToSlides} title="Sinkronkan ulang klip sesuai filter aktif">
+        <RefreshCw size={13} />
+        <span>Sinkron Klip</span>
+      </button>
+      <button type="button" class="hud-btn" onclick={insertTitleSlide} title="Sisipkan Kartu Judul / Pemisah Babak">
+        <Type size={13} />
+        <span>+ Judul</span>
+      </button>
+      <button type="button" class="hud-btn" onclick={() => imageInputEl?.click()} title="Sisipkan Slide Gambar / Diagram Pelatih">
+        <ImageIcon size={13} />
+        <span>+ Gambar</span>
       </button>
       <button type="button" class="hud-btn" onclick={insertTacticalSlide} title="Sisipkan Slide Papan Taktik 2D">
         <Plus size={14} />
         <span>+ Taktik 2D</span>
       </button>
+      <button type="button" class="hud-btn" onclick={() => logoInputEl?.click()} title="Pasang Logo Klub sebagai Watermark Presentasi">
+        <Shield size={13} />
+        <span>{projectStore.clubLogoDataUrl ? 'Ganti Logo' : '+ Logo'}</span>
+      </button>
+      {#if projectStore.clubLogoDataUrl}
+        <button type="button" class="hud-btn" onclick={() => (projectStore.clubLogoDataUrl = null)} title="Hapus Logo Watermark">
+          <X size={12} />
+        </button>
+      {/if}
       <button type="button" class="hud-btn" onclick={toggleFullscreen} title="Toggle Layar Penuh (F)">
         {#if isFullscreen}
           <Minimize2 size={14} />
@@ -538,6 +768,10 @@
       </button>
     </div>
   </div>
+
+  {#if showFilterPanel}
+    <ClipFilterBar compact={true} onFilterChange={syncFilteredClipsToSlides} />
+  {/if}
 
   <!-- STAGE AREA -->
   <div class="presenter-stage-wrap">
@@ -554,14 +788,25 @@
             <div class="sd-row" class:active={idx === currentSlideIdx}>
               <button type="button" class="sd-select" onclick={() => goToSlide(idx)}>
                 <span class="sd-num">{idx + 1}</span>
-                <span class="sd-kind">{s.kind === 'tactical' ? '2D' : 'VID'}</span>
-                <span class="sd-title">{s.title}</span>
+                <span class="sd-kind">
+                  {s.kind === 'tactical' ? '2D' : s.kind === 'title' ? 'JDL' : s.kind === 'image' ? 'IMG' : 'VID'}
+                </span>
+                <span class="sd-title">
+                  {s.title}
+                  {#if s.kind === 'clip' && s.matchTitle}
+                    <small class="sd-match-sub">{s.matchTitle}</small>
+                  {/if}
+                </span>
               </button>
-              {#if s.kind === 'tactical'}
-                <button type="button" class="sd-del" onclick={() => removeSlideAt(idx)} title="Hapus slide taktik">
-                  <Trash2 size={12} />
-                </button>
-              {/if}
+              <button type="button" class="sd-act" disabled={idx === 0} onclick={() => moveSlide(idx, -1)} title="Geser ke atas">
+                <ArrowUp size={11} />
+              </button>
+              <button type="button" class="sd-act" disabled={idx === slides.length - 1} onclick={() => moveSlide(idx, 1)} title="Geser ke bawah">
+                <ArrowDown size={11} />
+              </button>
+              <button type="button" class="sd-del" onclick={() => removeSlideAt(idx)} title="Hapus slide dari briefing">
+                <Trash2 size={12} />
+              </button>
             </div>
           {/each}
         </div>
@@ -569,14 +814,72 @@
     {/if}
 
     <div class="stage-viewport" bind:this={stageBoxEl}>
+      {#if projectStore.clubLogoDataUrl}
+        <img src={projectStore.clubLogoDataUrl} alt="Logo Klub" class="club-watermark" />
+      {/if}
+
       {#if !currentSlide}
         <div class="empty-stage">
           <h3>Belum Ada Klip atau Slide Presentasi</h3>
-          <p>Tambahkan klip ke Playlist di workspace Tagging, atau klik <strong>+ Taktik 2D</strong> untuk membuka papan taktik.</p>
-          <button type="button" class="hud-btn hud-primary" onclick={insertTacticalSlide}>
-            <LayoutGrid size={15} />
-            <span>Buka Papan Taktik 2D</span>
-          </button>
+          <p>Tambahkan klip ke Playlist, klik <strong>Sinkron Klip</strong>, atau sisipkan <strong>+ Judul</strong> / <strong>+ Gambar</strong> / <strong>+ Taktik 2D</strong>.</p>
+          <div class="empty-actions">
+            <button type="button" class="hud-btn hud-primary" onclick={insertTitleSlide}>
+              <Type size={14} />
+              <span>+ Kartu Judul</span>
+            </button>
+            <button type="button" class="hud-btn" onclick={insertTacticalSlide}>
+              <LayoutGrid size={14} />
+              <span>+ Papan Taktik 2D</span>
+            </button>
+          </div>
+        </div>
+      {:else if currentSlide.kind === 'title'}
+        <div
+          class="title-card-stage"
+          style="background: radial-gradient(circle at top right, rgba(56,189,248,0.18), transparent 55%), linear-gradient(135deg, {currentSlide.bgColor || '#0f172a'}, #020617);"
+        >
+          {#if projectStore.clubLogoDataUrl}
+            <img src={projectStore.clubLogoDataUrl} alt="Logo Klub" class="title-card-logo" />
+          {/if}
+          <input
+            type="text"
+            class="title-card-heading"
+            value={currentSlide.title}
+            oninput={(e) => {
+              const val = e.currentTarget.value;
+              updateSlideAt(currentSlideIdx, (s) => (s.kind === 'title' ? { ...s, title: val } : s));
+            }}
+            placeholder="Judul Babak / Fokus Taktik..."
+          />
+          <input
+            type="text"
+            class="title-card-sub"
+            value={currentSlide.subtitle || ''}
+            oninput={(e) => {
+              const val = e.currentTarget.value;
+              updateSlideAt(currentSlideIdx, (s) => (s.kind === 'title' ? { ...s, subtitle: val } : s));
+            }}
+            placeholder="Subjudul / Catatan Pelatih..."
+          />
+          <div class="title-bg-swatches">
+            {#each TITLE_BG_COLORS as bg}
+              <button
+                type="button"
+                class="bg-swatch"
+                class:selected={(currentSlide.bgColor || '#0f172a') === bg}
+                style="background-color: {bg};"
+                onclick={() => updateSlideAt(currentSlideIdx, (s) => (s.kind === 'title' ? { ...s, bgColor: bg } : s))}
+                aria-label="Warna latar {bg}"
+              ></button>
+            {/each}
+          </div>
+        </div>
+      {:else if currentSlide.kind === 'image'}
+        <div class="image-slide-stage">
+          <img src={currentSlide.imageDataUrl} alt={currentSlide.title} class="image-slide-img" />
+          {#if currentSlide.caption}
+            <div class="slide-caption-banner">{currentSlide.caption}</div>
+          {/if}
         </div>
       {:else if currentSlide.kind === 'tactical'}
         <div class="tactical-slide-host">
@@ -589,11 +892,11 @@
             ? `transform: scale(${activeCameraZoom.scale}); transform-origin: ${activeCameraZoom.x * 100}% ${activeCameraZoom.y * 100}%;`
             : ''}
         >
-          {#if projectStore.videoSrc}
+          {#if activeSlideVideoSrc}
             <!-- svelte-ignore a11y_media_has_caption -->
             <video
               bind:this={videoEl}
-              src={projectStore.videoSrc}
+              src={activeSlideVideoSrc}
               crossorigin="anonymous"
               class="presenter-video"
               onclick={togglePlayPause}
@@ -612,6 +915,10 @@
 
           <canvas bind:this={telCanvasEl} class="tel-overlay-canvas"></canvas>
         </div>
+
+        {#if currentSlide.caption}
+          <div class="slide-caption-banner">{currentSlide.caption}</div>
+        {/if}
 
         {#if isFreezing}
           <div class="freeze-pill-hud">
@@ -713,6 +1020,75 @@
     </div>
 
     <div class="pbh-group">
+      {#if currentSlide?.kind === 'clip'}
+        {@const bounds = clipBounds(currentSlide)}
+        <div class="clip-ctrl-group" title="Kecepatan putar non-destruktif">
+          {#each [0.5, 1, 1.5] as spd}
+            <button
+              type="button"
+              class="spd-pill"
+              class:active={(currentSlide.speed ?? 1) === spd}
+              onclick={() => updateCurrentClipSlide({ speed: spd })}
+            >
+              {spd}x
+            </button>
+          {/each}
+        </div>
+        <button
+          type="button"
+          class="hud-btn"
+          class:active-draw={Boolean(currentSlide.muted)}
+          onclick={() => updateCurrentClipSlide({ muted: !currentSlide.muted })}
+          title="Bisukan audio video klip ini (non-destruktif)"
+        >
+          {#if currentSlide.muted}
+            <VolumeX size={13} />
+          {:else}
+            <Volume2 size={13} />
+          {/if}
+          <span>{currentSlide.muted ? 'Mute Klip' : 'Audio Klip'}</span>
+        </button>
+        <button
+          type="button"
+          class="hud-btn"
+          class:active-draw={currentSlide.showTelestration !== false}
+          onclick={toggleCurrentSlideTelestration}
+          title="Tampilkan atau sembunyikan anotasi telestrasi & freeze pada slide ini"
+        >
+          <Sparkles size={13} />
+          <span>{currentSlide.showTelestration !== false ? 'Telestrasi' : 'Polos'}</span>
+        </button>
+        <div class="trim-pill" title="Trim In / Out sementara untuk presentasi (tidak mengubah klip asli)">
+          <span>In {bounds.start.toFixed(1)}s</span>
+          <button type="button" class="trim-step" onclick={() => updateCurrentClipSlide({ trimStart: Math.max(0, bounds.start - 0.5) })}>-</button>
+          <button type="button" class="trim-step" onclick={() => updateCurrentClipSlide({ trimStart: Math.min(bounds.end - 0.5, bounds.start + 0.5) })}>+</button>
+          <span>Out {bounds.end.toFixed(1)}s</span>
+          <button type="button" class="trim-step" onclick={() => updateCurrentClipSlide({ trimEnd: Math.max(bounds.start + 0.5, bounds.end - 0.5) })}>-</button>
+          <button type="button" class="trim-step" onclick={() => updateCurrentClipSlide({ trimEnd: bounds.end + 0.5 })}>+</button>
+          {#if currentSlide.trimStart !== undefined || currentSlide.trimEnd !== undefined}
+            <button type="button" class="trim-step" onclick={() => updateCurrentClipSlide({ trimStart: undefined, trimEnd: undefined })} title="Reset trim">↺</button>
+          {/if}
+        </div>
+        <input
+          type="text"
+          class="caption-input"
+          value={currentSlide.caption || ''}
+          oninput={(e) => updateCurrentClipSlide({ caption: e.currentTarget.value })}
+          placeholder="Caption ruang ganti..."
+        />
+      {:else if currentSlide?.kind === 'image'}
+        <input
+          type="text"
+          class="caption-input"
+          value={currentSlide.caption || ''}
+          oninput={(e) => {
+            const val = e.currentTarget.value;
+            updateSlideAt(currentSlideIdx, (s) => (s.kind === 'image' ? { ...s, caption: val } : s));
+          }}
+          placeholder="Caption diagram..."
+        />
+      {/if}
+
       <label class="hud-toggle">
         <input type="checkbox" bind:checked={autoFreezeEnabled} />
         <span>Auto-Freeze</span>
@@ -1121,5 +1497,232 @@
     .hud-btn span {
       display: none;
     }
+  }
+
+  .hidden-file-input {
+    display: none;
+  }
+
+  .sd-act {
+    background: transparent;
+    border: none;
+    color: #64748b;
+    cursor: pointer;
+    padding: 2px;
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .sd-act:hover:not(:disabled) {
+    color: #38bdf8;
+  }
+
+  .sd-act:disabled {
+    opacity: 0.25;
+    cursor: not-allowed;
+  }
+
+  .club-watermark {
+    position: absolute;
+    top: 14px;
+    right: 18px;
+    max-width: 68px;
+    max-height: 68px;
+    object-fit: contain;
+    opacity: 0.86;
+    z-index: 8;
+    pointer-events: none;
+    filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.7));
+  }
+
+  .empty-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+  }
+
+  .title-card-stage {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    padding: 36px;
+  }
+
+  .title-card-logo {
+    max-width: 96px;
+    max-height: 96px;
+    object-fit: contain;
+    margin-bottom: 6px;
+  }
+
+  .title-card-heading {
+    width: min(760px, 90%);
+    background: transparent;
+    border: 1px dashed rgba(148, 163, 184, 0.25);
+    border-radius: 10px;
+    color: #f8fafc;
+    text-align: center;
+    font-size: clamp(24px, 3.6vw, 44px);
+    font-weight: 900;
+    letter-spacing: 0.03em;
+    padding: 8px 14px;
+  }
+
+  .title-card-sub {
+    width: min(640px, 85%);
+    background: transparent;
+    border: 1px dashed rgba(148, 163, 184, 0.2);
+    border-radius: 8px;
+    color: #94a3b8;
+    text-align: center;
+    font-size: clamp(14px, 1.8vw, 20px);
+    font-weight: 600;
+    padding: 6px 12px;
+  }
+
+  .title-bg-swatches {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+  }
+
+  .bg-swatch {
+    width: 22px;
+    height: 22px;
+    border-radius: 999px;
+    border: 2px solid #475569;
+    cursor: pointer;
+  }
+
+  .bg-swatch.selected {
+    border-color: #38bdf8;
+    transform: scale(1.15);
+  }
+
+  .image-slide-stage {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #020617;
+    padding: 16px;
+  }
+
+  .image-slide-img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    border-radius: 8px;
+  }
+
+  .slide-caption-banner {
+    position: absolute;
+    bottom: 18px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(2, 6, 23, 0.84);
+    border: 1px solid rgba(56, 189, 248, 0.55);
+    color: #f8fafc;
+    font-size: 13px;
+    font-weight: 700;
+    padding: 6px 16px;
+    border-radius: 999px;
+    max-width: 82%;
+    text-align: center;
+    z-index: 9;
+    pointer-events: none;
+  }
+
+  .clip-ctrl-group {
+    display: inline-flex;
+    align-items: center;
+    background: #0f172a;
+    border: 1px solid #1e293b;
+    border-radius: 6px;
+    padding: 2px;
+    gap: 2px;
+  }
+
+  .spd-pill {
+    background: transparent;
+    border: none;
+    color: #94a3b8;
+    font-size: 10px;
+    font-weight: 800;
+    padding: 3px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+
+  .spd-pill.active {
+    background: #0284c7;
+    color: #ffffff;
+  }
+
+  .trim-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: #0f172a;
+    border: 1px solid #1e293b;
+    border-radius: 6px;
+    padding: 2px 7px;
+    font-size: 10px;
+    color: #cbd5e1;
+    font-family: 'Fira Code', monospace;
+  }
+
+  .trim-step {
+    background: #1e293b;
+    border: 1px solid #334155;
+    color: #e2e8f0;
+    border-radius: 3px;
+    width: 16px;
+    height: 16px;
+    font-size: 10px;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .trim-step:hover {
+    border-color: #38bdf8;
+  }
+
+  .caption-input {
+    background: #0f172a;
+    border: 1px solid #334155;
+    border-radius: 6px;
+    color: #e2e8f0;
+    font-size: 11px;
+    padding: 4px 8px;
+    width: 148px;
+  }
+
+  .pth-match-badge {
+    font-size: 10px;
+    font-weight: 800;
+    background: #0f766e;
+    color: #ccfbf1;
+    padding: 2px 8px;
+    border-radius: 999px;
+    max-width: 170px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .sd-match-sub {
+    display: block;
+    font-size: 9px;
+    color: #5eead4;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 </style>

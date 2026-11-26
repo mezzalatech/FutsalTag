@@ -29,6 +29,8 @@
   import KeyboardShortcutsModal from "$lib/components/KeyboardShortcutsModal.svelte";
   import QuickExportClipModal from "$lib/components/QuickExportClipModal.svelte";
   import LiveCameraCaptureStage from "$lib/components/LiveCameraCaptureStage.svelte";
+  import PhoneRemoteModal from "$lib/components/PhoneRemoteModal.svelte";
+  import ShiftActionTimesModal from "$lib/components/ShiftActionTimesModal.svelte";
   import type {
     ExportAspectRatio,
     ExportCrfPreset,
@@ -79,6 +81,8 @@
     Keyboard,
     Camera,
     Columns2,
+    Smartphone,
+    Clock,
   } from "lucide-svelte";
 
   // --- REFS & STATE ---
@@ -165,7 +169,13 @@
   let selectedClipId = $state<string | null>(null);
   let selectedClipIds = $state<string[]>([]);
   let isLinimasaCollapsed = $state<boolean>(false);
-  let autoDescribeAfterTag = $state<boolean>(false);
+  let autoDescribeAfterTag = $state<boolean>(
+    typeof localStorage !== "undefined" &&
+      localStorage.getItem("futsaltag_auto_describe_after_tag") === "1",
+  );
+  let showPhoneRemoteModal = $state(false);
+  let isPhoneRemoteRunning = $state(false);
+  let showShiftTimesModal = $state(false);
   let copiedMeta = $state<{
     labels: TagDescriptor[];
     players: string[];
@@ -1095,6 +1105,45 @@
       linimasaHeight = 160;
       spatialCanvasHeight = 122;
     }
+    let unlistenRemoteTap: (() => void) | null = null;
+    if (isTauriDesktop()) {
+      invoke<{ running: boolean }>("get_remote_server_status")
+        .then((st) => {
+          isPhoneRemoteRunning = Boolean(st?.running);
+        })
+        .catch(() => {});
+      import("@tauri-apps/api/event")
+        .then(({ listen }) =>
+          listen<{
+            phoneName: string;
+            action: string;
+            buttonId?: string;
+            player?: string;
+          }>("remote-tag-action", (ev) => {
+            const p = ev.payload;
+            if (!p) return;
+            const who = p.phoneName || "HP";
+            if (p.action === "tag" || p.action === "label") {
+              const btn = activeBoard.buttons.find((b) => b.id === p.buttonId);
+              if (btn) {
+                handleLeftButtonClick(btn);
+                notifyUser(`📱 ${who}: ${btn.name}`);
+              }
+            } else if (p.action === "player" && p.player) {
+              handlePlayerPress(p.player);
+              notifyUser(`📱 ${who}: ${p.player}`);
+            } else if (p.action === "escape") {
+              stopAllContinuousTags();
+            } else if (p.action === "undo") {
+              handleUndoLastTag();
+            }
+          }),
+        )
+        .then((fn) => {
+          unlistenRemoteTap = fn;
+        })
+        .catch(() => {});
+    }
     function handleKeyDown(e: KeyboardEvent) {
       if (showTagLabelEditor || showStatsMatrix || showShortcutsModal) return;
       const targetTag = (e.target as HTMLElement)?.tagName;
@@ -1271,7 +1320,40 @@
     }
 
     window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      unlistenRemoteTap?.();
+    };
+  });
+
+  $effect(() => {
+    if (!isTauriDesktop() || (!isPhoneRemoteRunning && !showPhoneRemoteModal)) return;
+    const push = () => {
+      const payload = {
+        matchTitle: projectStore.videoTitle,
+        playing: isPlaying,
+        recording: projectStore.liveCaptureActive && isPlaying,
+        currentTime,
+        activePlayer: activeSelectedPlayer,
+        activeButtonIds: Object.keys(activeContinuousTags),
+        players: FUTSAL_ROSTER.map((p) => ({
+          id: p.id,
+          label: projectStore.getPlayerDisplayLabel(p),
+        })),
+        tags: activeBoard.buttons
+          .filter((b) => b.kind === "category")
+          .map((b) => ({ id: b.id, name: b.name, color: b.color })),
+        labels: activeBoard.buttons
+          .filter((b) => b.kind === "descriptor")
+          .map((b) => ({ id: b.id, name: b.name, color: b.color })),
+      };
+      invoke("update_remote_server_state", {
+        stateJson: JSON.stringify(payload),
+      }).catch(() => {});
+    };
+    push();
+    const timer = setInterval(push, 400);
+    return () => clearInterval(timer);
   });
 
   function showVideoOsd(
@@ -2520,11 +2602,41 @@
             type="button"
             class="hdr-tool-btn hdr-auto-btn"
             class:active={autoDescribeAfterTag}
-            onclick={() => (autoDescribeAfterTag = !autoDescribeAfterTag)}
+            onclick={() => {
+              autoDescribeAfterTag = !autoDescribeAfterTag;
+              if (typeof localStorage !== "undefined") {
+                localStorage.setItem(
+                  "futsaltag_auto_describe_after_tag",
+                  autoDescribeAfterTag ? "1" : "0",
+                );
+              }
+            }}
             title="Otomatis buka form Edit Tag, Label & Pemain setiap selesai menandai klip"
           >
             <Edit3 size={10} />
             <span>Auto-Edit</span>
+          </button>
+
+          <button
+            type="button"
+            class="hdr-tool-btn"
+            disabled={projectStore.tags.length === 0}
+            onclick={() => (showShiftTimesModal = true)}
+            title="Geser timestamp semua klip (Shift Action Times) untuk sinkronisasi video/stopwatch"
+          >
+            <Clock size={11} />
+            <span>Geser Waktu</span>
+          </button>
+
+          <button
+            type="button"
+            class="hdr-tool-btn hdr-auto-btn"
+            class:active={isPhoneRemoteRunning}
+            onclick={() => (showPhoneRemoteModal = true)}
+            title="Tagging langsung dari HP/Tablet lewat Wi-Fi (QR Code tanpa instal aplikasi)"
+          >
+            <Smartphone size={11} />
+            <span>{isPhoneRemoteRunning ? "Remote ON" : "Remote HP"}</span>
           </button>
 
           <button
@@ -4368,6 +4480,22 @@
       board={activeBoard}
     />
   {/if}
+
+  <PhoneRemoteModal
+    isOpen={showPhoneRemoteModal}
+    onClose={() => (showPhoneRemoteModal = false)}
+    onRemoteRunningChange={(r) => (isPhoneRemoteRunning = r)}
+  />
+
+  <ShiftActionTimesModal
+    isOpen={showShiftTimesModal}
+    playheadTime={currentTime}
+    onClose={() => (showShiftTimesModal = false)}
+    onApplied={(n, delta) =>
+      notifyUser(
+        `${n} klip digeser ${delta >= 0 ? "+" : ""}${delta.toFixed(1)}s (Ctrl+Z untuk batal)`,
+      )}
+  />
 
   <QuickExportClipModal
     clip={quickExportModalClip}

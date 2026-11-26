@@ -2,6 +2,7 @@ mod ai_tracker;
 mod court_calibration;
 mod ffmpeg;
 mod player_segmentation;
+mod remote_server;
 mod whistle_detector;
 mod whisper_asr;
 mod xlsx_export;
@@ -279,6 +280,11 @@ pub fn run() {
             ffmpeg::finalize_capture_mp4_ffmpeg,
             ffmpeg::start_dshow_capture_ffmpeg,
             ffmpeg::stop_dshow_capture_ffmpeg,
+            remote_server::start_remote_server,
+            remote_server::stop_remote_server,
+            remote_server::get_remote_server_status,
+            remote_server::update_remote_server_state,
+            remote_server::kick_remote_phone,
             ffmpeg::burn_telestration_clip_ffmpeg,
             ffmpeg::burn_animated_telestration_clip_ffmpeg,
             ffmpeg::save_overlay_frame_png,

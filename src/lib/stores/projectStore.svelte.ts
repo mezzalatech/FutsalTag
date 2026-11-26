@@ -324,6 +324,93 @@ class ProjectStore {
     return entry.label;
   }
 
+  shiftAllActionTimes(
+    deltaSec: number,
+    scope: 'all' | 'from_playhead' = 'all',
+    fromTime = 0,
+    includeClockAndSubs = true
+  ): number {
+    if (!Number.isFinite(deltaSec) || Math.abs(deltaSec) < 0.001) return 0;
+    let shiftedCount = 0;
+    const label = `Geser Waktu (${deltaSec >= 0 ? '+' : ''}${deltaSec.toFixed(1)}s)`;
+
+    this.runBatchTagMutation(label, () => {
+      const nextTags = this.tags.map((t) => {
+        if (scope === 'from_playhead' && t.startTime < fromTime - 0.001) {
+          return t;
+        }
+        shiftedCount += 1;
+        const dur = Math.max(0.2, t.endTime - t.startTime);
+        const newStart = Number(Math.max(0, t.startTime + deltaSec).toFixed(2));
+        const newEnd = Number(Math.max(newStart + 0.2, Math.max(0, t.endTime + deltaSec)).toFixed(2));
+        const actualDur = newEnd - newStart;
+        const nextEnd = actualDur < 0.2 ? Number((newStart + dur).toFixed(2)) : newEnd;
+
+        const nextLabels = t.labels?.map((l) => ({
+          ...l,
+          atTime: Number(Math.max(0, l.atTime + deltaSec).toFixed(2)),
+        }));
+        const nextStops = t.freezeStops?.map((s) => ({
+          ...s,
+          time: Number(Math.max(0, s.time + deltaSec).toFixed(2)),
+        }));
+        const nextDrawings = t.drawings?.map((d) => ({
+          ...d,
+          timeStart:
+            typeof d.timeStart === 'number'
+              ? Number(Math.max(0, d.timeStart + deltaSec).toFixed(2))
+              : d.timeStart,
+          timeEnd:
+            typeof d.timeEnd === 'number'
+              ? Number(Math.max(0, d.timeEnd + deltaSec).toFixed(2))
+              : d.timeEnd,
+          keyframes: d.keyframes?.map((k) => ({
+            ...k,
+            time: Number(Math.max(0, k.time + deltaSec).toFixed(2)),
+          })),
+          manualPins: d.manualPins?.map((k) => ({
+            ...k,
+            time: Number(Math.max(0, k.time + deltaSec).toFixed(2)),
+          })),
+        }));
+
+        return {
+          ...t,
+          startTime: newStart,
+          endTime: nextEnd,
+          freezeTimestamp:
+            typeof t.freezeTimestamp === 'number'
+              ? Number(Math.max(0, t.freezeTimestamp + deltaSec).toFixed(2))
+              : t.freezeTimestamp,
+          labels: nextLabels,
+          freezeStops: nextStops,
+          drawings: nextDrawings,
+        };
+      });
+
+      this.tags = nextTags;
+      this.syncPlaylistsAfterTagsRestore();
+    });
+
+    if (includeClockAndSubs) {
+      if (this.periodKickoffs.length > 0) {
+        this.periodKickoffs = this.periodKickoffs.map((k) => {
+          if (scope === 'from_playhead' && k.videoTime < fromTime - 0.001) return k;
+          return { ...k, videoTime: Number(Math.max(0, k.videoTime + deltaSec).toFixed(2)) };
+        });
+      }
+      if (this.substitutions.length > 0) {
+        this.substitutions = this.substitutions.map((s) => {
+          if (scope === 'from_playhead' && s.atTime < fromTime - 0.001) return s;
+          return { ...s, atTime: Number(Math.max(0, s.atTime + deltaSec).toFixed(2)) };
+        });
+      }
+    }
+
+    this.markDirty();
+    return shiftedCount;
+  }
+
   // --- MATCH CLOCK & KICK-OFF SYNCHRONIZATION ---
   setPeriodKickoff(period: 1 | 2 | 3, videoTime: number) {
     const label = period === 1 ? 'Babak 1' : period === 2 ? 'Babak 2' : 'Extra';

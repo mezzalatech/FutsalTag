@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#070e1c">
+<title>ARF FutsalTag · Remote HP</title>
+<style>
+:root {
+  --bg: #070e1c; --panel: #0f1b33; --line: #1f355c; --ink: #f8fafc; --ink2: #94a3b8;
+  --accent: #ef4444; --sky: #38bdf8; --ok: #10b981;
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; background: var(--bg); color: var(--ink); font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+body { padding: 10px 12px 84px; user-select: none; -webkit-user-select: none; }
+header { display: flex; align-items: center; gap: 8px; padding: 6px 0 10px; }
+.badge { font-size: 10px; font-weight: 900; padding: 2px 6px; border-radius: 5px; background: #0284c7; color: #060b14; }
+.who { font-weight: 800; font-size: 14px; }
+.queue { font-size: 11px; color: #fbbf24; margin-left: auto; }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: #64748b; flex: none; }
+.dot.on { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.status { display: flex; align-items: center; gap: 10px; padding: 9px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; font-size: 13px; margin-bottom: 10px; }
+.mode { font-weight: 800; white-space: nowrap; }
+.mode.rec { color: var(--accent); }
+.mode.play { color: var(--ok); }
+.mode.pause { color: var(--ink2); }
+.clock { font-variant-numeric: tabular-nums; font-weight: 800; font-size: 16px; color: #fff; }
+.match { color: var(--ink2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; text-align: right; font-size: 12px; }
+.banner { display: none; margin: 0 0 10px; padding: 9px 12px; border-radius: 8px; background: #3a1519; color: #fecaca; font-size: 12.5px; border: 1px solid #ef4444; }
+.banner.show { display: block; }
+h2 { font-size: 11px; letter-spacing: .07em; text-transform: uppercase; color: var(--ink2); margin: 14px 0 7px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; }
+.tile { position: relative; min-height: 68px; border: 0; border-radius: 12px; font-family: inherit; font-weight: 700; font-size: 15px; line-height: 1.2; color: #fff; padding: 10px; text-align: center; display: flex; align-items: center; justify-content: center; transition: transform .06s, filter .2s, opacity .2s; touch-action: manipulation; }
+.tile:active, .tile.hit { transform: scale(.95); filter: brightness(1.3); }
+.tile.on { box-shadow: 0 0 0 2px var(--bg), 0 0 0 5px var(--accent); }
+.tile.on::after { content: "● ON"; position: absolute; top: 5px; right: 5px; padding: 1px 6px; border-radius: 999px; background: rgba(0,0,0,.78); color: #fff; font-size: 9.5px; font-weight: 800; }
+.tile.dim { opacity: .35; }
+.labels .tile { min-height: 52px; font-size: 13.5px; }
+.players { display: flex; gap: 7px; overflow-x: auto; padding-bottom: 4px; }
+.players .tile { min-height: 44px; min-width: 78px; font-size: 13px; background: var(--panel); border: 1px solid var(--line); flex: none; padding: 6px 10px; }
+.players .tile.sel { border-color: var(--sky); background: rgba(56, 189, 248, 0.2); }
+.bar { position: fixed; left: 0; right: 0; bottom: 0; display: flex; gap: 8px; padding: 10px 12px; background: var(--bg); border-top: 1px solid var(--line); }
+.bar button { flex: 1; min-height: 48px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); font-family: inherit; font-weight: 700; font-size: 14px; }
+.card { margin: 28px auto; max-width: 420px; padding: 18px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; display: grid; gap: 12px; }
+.card p { margin: 0; color: var(--ink2); font-size: 13px; line-height: 1.45; }
+.card input { font-family: inherit; font-weight: 600; font-size: 18px; padding: 11px; border-radius: 9px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+.card .go { min-height: 48px; border: 0; border-radius: 10px; background: #0284c7; color: #fff; font-family: inherit; font-weight: 800; font-size: 16px; }
+.hidden { display: none !important; }
+</style>
+</head>
+<body>
+<header id="head" class="hidden">
+  <span class="badge">ARF</span>
+  <span class="who" id="who"></span>
+  <span class="queue" id="queue"></span>
+  <span class="dot" id="dot"></span>
+</header>
+<div class="banner" id="banner"></div>
+<div class="status hidden" id="status">
+  <span class="mode" id="mode"></span>
+  <span class="clock" id="clock">00:00</span>
+  <span class="match" id="match"></span>
+</div>
+
+<section id="nameView" class="card">
+  <strong>Siapa yang men-tag dari HP ini?</strong>
+  <p>Nama ini akan muncul pada notifikasi di laptop agar tag dari asisten/pelatih langsung teridentifikasi.</p>
+  <input id="nameInput" maxlength="24" placeholder="Contoh: Coach Asisten" autocomplete="name">
+  <button class="go" id="nameGo" type="button">Hubungkan ke Laptop</button>
+</section>
+
+<section id="tagView" class="hidden">
+  <div id="playersWrap"><h2>Pemain Aktif</h2><div class="players" id="players"></div></div>
+  <div id="tagsWrap"><h2>Tombol Aksi (Tag)</h2><div class="grid" id="tags"></div></div>
+  <div id="labelsWrap"><h2>Deskriptor / Label</h2><div class="grid labels" id="labels"></div></div>
+  <div class="bar">
+    <button id="escapeBtn" type="button">Matikan Tag Aktif</button>
+    <button id="undoBtn" type="button">Undo Tag Terakhir</button>
+  </div>
+</section>
+
+<script>
+(() => {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  const token = new URLSearchParams(location.search).get('k') || '';
+  const store = {
+    get(k, d) { try { const v = localStorage.getItem('arf_rem_' + k); return v === null ? d : JSON.parse(v); } catch (_) { return d; } },
+    set(k, v) { try { localStorage.setItem('arf_rem_' + k, JSON.stringify(v)); } catch (_) {} },
+  };
+  let phoneId = store.get('pid', '');
+  if (!phoneId) {
+    phoneId = 'hp_' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+    store.set('pid', phoneId);
+  }
+  let name = store.get('name', '');
+  let seq = store.get('seq', 0);
+  let queue = store.get('queue', []);
+  let sending = false;
+  let kicked = false;
+  let lastState = null;
+
+  function fmt(sec) {
+    const s = Math.max(0, Math.floor(sec || 0));
+    const m = Math.floor(s / 60), r = s % 60;
+    return String(m).padStart(2, '0') + ':' + String(r).padStart(2, '0');
+  }
+
+  function contrast(hex) {
+    const n = parseInt((hex || '#475569').slice(1), 16);
+    const l = (0.299 * (n >> 16 & 255) + 0.587 * (n >> 8 & 255) + 0.114 * (n & 255)) / 255;
+    return l > 0.62 ? '#111827' : '#ffffff';
+  }
+
+  function setBanner(txt) {
+    $('banner').textContent = txt || '';
+    $('banner').classList.toggle('show', !!txt);
+  }
+
+  function renderState(st) {
+    const prevKey = lastState ? JSON.stringify([lastState.tags, lastState.labels, lastState.players]) : '';
+    lastState = st;
+    $('dot').classList.add('on');
+    $('status').classList.remove('hidden');
+    const mode = $('mode');
+    mode.className = 'mode ' + (st.recording ? 'rec' : st.playing ? 'play' : 'pause');
+    mode.textContent = st.recording ? '● REC' : st.playing ? '▶ JALAN' : '⏸ JEDA';
+    $('clock').textContent = fmt(st.currentTime);
+    $('match').textContent = st.matchTitle || '';
+
+    const nextKey = JSON.stringify([st.tags, st.labels, st.players]);
+    if (prevKey !== nextKey) {
+      const pWrap = $('players'); pWrap.textContent = '';
+      for (const p of (st.players || [])) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'tile' + (p.label === st.activePlayer ? ' sel' : '');
+        b.textContent = p.label;
+        b.dataset.player = p.label;
+        b.onclick = () => tap({ action: 'player', player: p.label });
+        pWrap.appendChild(b);
+      }
+
+      const tWrap = $('tags'); tWrap.textContent = '';
+      for (const btn of (st.tags || [])) {
+        const el = document.createElement('button');
+        el.type = 'button';
+        el.className = 'tile';
+        el.dataset.id = btn.id;
+        el.textContent = btn.name;
+        el.style.background = btn.color || '#0284c7';
+        el.style.color = contrast(btn.color);
+        el.onclick = () => {
+          el.classList.add('hit'); setTimeout(() => el.classList.remove('hit'), 150);
+          tap({ action: 'tag', buttonId: btn.id });
+        };
+        tWrap.appendChild(el);
+      }
+
+      const lWrap = $('labels'); lWrap.textContent = '';
+      for (const btn of (st.labels || [])) {
+        const el = document.createElement('button');
+        el.type = 'button';
+        el.className = 'tile';
+        el.dataset.id = btn.id;
+        el.textContent = btn.name;
+        el.style.background = btn.color || '#334155';
+        el.style.color = contrast(btn.color);
+        el.onclick = () => {
+          el.classList.add('hit'); setTimeout(() => el.classList.remove('hit'), 150);
+          tap({ action: 'label', buttonId: btn.id });
+        };
+        lWrap.appendChild(el);
+      }
+      $('labelsWrap').classList.toggle('hidden', !(st.labels && st.labels.length));
+    }
+
+    const actSet = new Set(st.activeButtonIds || []);
+    for (const el of document.querySelectorAll('#tags .tile')) {
+      el.classList.toggle('on', actSet.has(el.dataset.id));
+    }
+    for (const el of document.querySelectorAll('#players .tile')) {
+      el.classList.toggle('sel', el.dataset.player === st.activePlayer);
+    }
+  }
+
+  function tap(payload) {
+    if (kicked || !name) return;
+    seq += 1; store.set('seq', seq);
+    queue.push(Object.assign({ seq, phoneId, phoneName: name, ts: Date.now() }, payload));
+    store.set('queue', queue);
+    $('queue').textContent = queue.length ? queue.length + ' antri' : '';
+    if (navigator.vibrate) navigator.vibrate(15);
+    flushQueue();
+  }
+
+  async function flushQueue() {
+    if (sending || kicked || queue.length === 0) return;
+    sending = true;
+    try {
+      while (queue.length > 0 && !kicked) {
+        const item = queue[0];
+        const body = Object.assign({}, item, { ageMs: Math.max(0, Date.now() - item.ts) });
+        delete body.ts;
+        const res = await fetch('/api/tap?k=' + encodeURIComponent(token), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (res.status === 403) {
+          kicked = true;
+          setBanner('Laptop memutus koneksi HP ini. Pindai ulang QR Code untuk terhubung lagi.');
+          break;
+        }
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        queue.shift();
+        store.set('queue', queue);
+        $('queue').textContent = queue.length ? queue.length + ' antri' : '';
+      }
+    } catch (_) {
+      $('dot').classList.remove('on');
+    } finally {
+      sending = false;
+    }
+  }
+
+  async function pollState() {
+    if (kicked || !name) return;
+    try {
+      const res = await fetch('/api/state?k=' + encodeURIComponent(token) + '&pid=' + encodeURIComponent(phoneId) + '&name=' + encodeURIComponent(name));
+      if (res.status === 403) {
+        kicked = true;
+        $('dot').classList.remove('on');
+        setBanner('Laptop memutus koneksi HP ini. Pindai ulang QR Code untuk terhubung lagi.');
+        return;
+      }
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const st = await res.json();
+      setBanner('');
+      renderState(st);
+      flushQueue();
+    } catch (_) {
+      $('dot').classList.remove('on');
+      setBanner('Terputus dari laptop. Pastikan laptop dan HP berada pada Wi-Fi / Hotspot yang sama...');
+    }
+  }
+
+  function startRemote() {
+    $('who').textContent = name;
+    $('nameView').classList.add('hidden');
+    $('head').classList.remove('hidden');
+    $('tagView').classList.remove('hidden');
+    pollState();
+    setInterval(pollState, 400);
+  }
+
+  $('nameGo').onclick = () => {
+    const v = $('nameInput').value.trim();
+    if (!v) return;
+    name = v; store.set('name', name);
+    startRemote();
+  };
+  $('nameInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('nameGo').click(); });
+  $('escapeBtn').onclick = () => tap({ action: 'escape' });
+  $('undoBtn').onclick = () => tap({ action: 'undo' });
+
+  $('nameInput').value = name;
+  if (name) startRemote();
+})();
+</script>
+</body>
+</html>

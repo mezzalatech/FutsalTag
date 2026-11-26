@@ -105,6 +105,8 @@ class ProjectStore {
   videoFilePath = $state<string | null>(null);
   onlineVideoUrl = $state<string | null>(null);
   onlineSourceType = $state<'youtube' | 'stream' | null>(null);
+  liveCaptureActive = $state<boolean>(false);
+  liveCaptureTargetPath = $state<string | null>(null);
   videoTitle = $state<string>('Pertandingan Futsal');
   duration = $state<number>(120);
   currentTime = $state<number>(0);
@@ -761,6 +763,8 @@ class ProjectStore {
     this.videoFilePath = path;
     this.onlineVideoUrl = null;
     this.onlineSourceType = null;
+    this.liveCaptureActive = false;
+    this.liveCaptureTargetPath = null;
     this.videoTitle = title || 'Video Pertandingan Futsal';
     this.duration = dur;
     this.currentTime = 0;
@@ -796,9 +800,40 @@ class ProjectStore {
     this.videoFilePath = null;
     this.onlineVideoUrl = null;
     this.onlineSourceType = null;
+    this.liveCaptureActive = false;
+    this.liveCaptureTargetPath = null;
     this.videoMissing = false;
     this.matchKind = kind;
     this.competitionName = competition;
+  }
+
+  startLiveCaptureSession(
+    title: string,
+    targetMp4Path: string | null,
+    kind: MatchKind = 'match',
+    competition = ''
+  ) {
+    this.loadVideo('', null, title || 'Live Capture Pertandingan', 2400);
+    this.videoSrc = null;
+    this.videoFilePath = null;
+    this.onlineVideoUrl = null;
+    this.onlineSourceType = null;
+    this.liveCaptureActive = true;
+    this.liveCaptureTargetPath = targetMp4Path;
+    this.videoMissing = false;
+    this.matchKind = kind;
+    this.competitionName = competition;
+  }
+
+  attachCapturedMp4(filePath: string) {
+    this.liveCaptureActive = false;
+    this.liveCaptureTargetPath = null;
+    this.onlineVideoUrl = null;
+    this.onlineSourceType = null;
+    this.videoFilePath = filePath;
+    this.videoSrc = convertFileSrc(filePath);
+    this.videoMissing = false;
+    this.markDirty();
   }
 
   loadOnlineVideo(
@@ -1554,6 +1589,8 @@ class ProjectStore {
     this.videoFilePath = null;
     this.onlineVideoUrl = null;
     this.onlineSourceType = null;
+    this.liveCaptureActive = false;
+    this.liveCaptureTargetPath = null;
     this.videoTitle = 'Pertandingan Futsal Baru';
     this.roster = DEFAULT_FUTSAL_ROSTER.map((p) => ({ ...p }));
     this.calibrationPoints = null;

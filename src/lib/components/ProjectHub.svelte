@@ -30,6 +30,7 @@
     Link2,
     Download,
     XCircle,
+    Camera,
   } from "lucide-svelte";
 
   interface Props {
@@ -238,6 +239,45 @@
       return;
     projectStore.startLiveStopwatchSession(
       `${homeTeam} vs ${awayTeam} (${matchHalf})`,
+      matchKind,
+      tournamentName.trim(),
+    );
+    if (selectedHomeClubId || selectedAwayClubId) {
+      projectStore.applyClubsToMatchRoster(
+        selectedHomeClubId || null,
+        selectedAwayClubId || null,
+      );
+    }
+  }
+
+  async function handleStartLiveCapture() {
+    if (
+      !projectStore.confirmDiscardIfDirty(
+        "memulai rekaman kamera / capture card live",
+      )
+    )
+      return;
+    let targetPath: string | null = null;
+    if (isTauriDesktop()) {
+      try {
+        const { save } = await import("@tauri-apps/plugin-dialog");
+        const safeName = `${homeTeam}_vs_${awayTeam}_live`
+          .replace(/[^a-zA-Z0-9_-]/g, "_")
+          .toLowerCase();
+        const picked = await save({
+          title: "Pilih Lokasi Simpan Video MP4 Rekaman Live",
+          defaultPath: `${safeName}.mp4`,
+          filters: [{ name: "MP4 Video", extensions: ["mp4"] }],
+        });
+        if (!picked) return;
+        targetPath = picked;
+      } catch {
+        // Fallback: user akan ditanya saat menekan Mulai Rekam
+      }
+    }
+    projectStore.startLiveCaptureSession(
+      `${homeTeam} vs ${awayTeam} (${matchHalf})`,
+      targetPath,
       matchKind,
       tournamentName.trim(),
     );
@@ -764,6 +804,15 @@
         >
           <Link2 size={14} />
           <span>Impor Link Online (YouTube / .m3u8 / MP4)</span>
+        </button>
+        <button
+          type="button"
+          class="btn-load-project"
+          onclick={handleStartLiveCapture}
+          title="Rekam langsung dari Webcam, GoPro mode Webcam, atau HDMI Capture Card (DirectShow) sambil Live Tagging"
+        >
+          <Camera size={14} />
+          <span>Rekam Kamera / Capture Card (Live)</span>
         </button>
         <input
           bind:this={fullVideoInputEl}

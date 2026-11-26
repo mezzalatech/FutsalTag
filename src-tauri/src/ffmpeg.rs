@@ -1,10 +1,10 @@
 use base64::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::OnceLock;
+use std::process::{Child, Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1714,6 +1714,340 @@ pub async fn download_online_video_ffmpeg(
     .map_err(|e| format!("Task unduhan video terhenti: {}", e))?
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CaptureDeviceList {
+    pub video_devices: Vec<String>,
+    pub audio_devices: Vec<String>,
+}
+
+static DSHOW_CAPTURE_PROC: OnceLock<Mutex<Option<Child>>> = OnceLock::new();
+
+pub fn parse_dshow_devices_output(output: &str) -> CaptureDeviceList {
+    let mut video_devices = Vec::new();
+    let mut audio_devices = Vec::new();
+    let mut section: Option<&str> = None;
+
+    for raw_line in output.lines() {
+        let line = raw_line.trim();
+        if line.contains("DirectShow video devices") {
+            section = Some("video");
+            continue;
+        }
+        if line.contains("DirectShow audio devices") {
+            section = Some("audio");
+            continue;
+        }
+        if line.contains("Alternative name") {
+            continue;
+        }
+        let Some(first_q) = line.find('"') else {
+            continue;
+        };
+        let rest = &line[first_q + 1..];
+        let Some(second_q) = rest.find('"') else {
+            continue;
+        };
+        let dev_name = rest[..second_q].trim().to_string();
+        if dev_name.is_empty() {
+            continue;
+        }
+        let after = rest[second_q + 1..].to_ascii_lowercase();
+        if after.contains("(video)") || (after.contains("video") && !after.contains("(audio)")) {
+            if !video_devices.contains(&dev_name) {
+                video_devices.push(dev_name);
+            }
+        } else if after.contains("(audio)") {
+            if !audio_devices.contains(&dev_name) {
+                audio_devices.push(dev_name);
+            }
+        } else if after.contains("(none)") {
+            continue;
+        } else if section == Some("video") && !video_devices.contains(&dev_name) {
+            video_devices.push(dev_name);
+        } else if section == Some("audio") && !audio_devices.contains(&dev_name) {
+            audio_devices.push(dev_name);
+        }
+    }
+
+    CaptureDeviceList {
+        video_devices,
+        audio_devices,
+    }
+}
+
+#[tauri::command]
+pub fn list_capture_devices_ffmpeg() -> CaptureDeviceList {
+    let ffmpeg = resolve_bin("ffmpeg");
+    let args = if cfg!(target_os = "windows") {
+        vec!["-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"]
+    } else if cfg!(target_os = "macos") {
+        vec!["-hide_banner", "-list_devices", "true", "-f", "avfoundation", "-i", ""]
+    } else {
+        return CaptureDeviceList {
+            video_devices: vec![],
+            audio_devices: vec![],
+        };
+    };
+
+    let out = silent_command(&ffmpeg).args(args).output();
+    match out {
+        Ok(o) => {
+            let combined = format!(
+                "{}\n{}",
+                String::from_utf8_lossy(&o.stdout),
+                String::from_utf8_lossy(&o.stderr)
+            );
+            parse_dshow_devices_output(&combined)
+        }
+        Err(_) => CaptureDeviceList {
+            video_devices: vec![],
+            audio_devices: vec![],
+        },
+    }
+}
+
+#[tauri::command]
+pub fn start_capture_temp_file(output_path: String) -> Result<String, String> {
+    ensure_parent_dir(&output_path)?;
+    let part_path = format!("{}.part.webm", output_path);
+    fs::write(&part_path, &[])
+        .map_err(|e| format!("Gagal menyiapkan file rekaman sementara '{}': {}", part_path, e))?;
+    Ok(part_path)
+}
+
+#[tauri::command]
+pub fn append_capture_chunk(temp_path: String, chunk_base64: String) -> Result<u64, String> {
+    let clean = chunk_base64.trim();
+    if clean.is_empty() {
+        return Ok(fs::metadata(&temp_path).map(|m| m.len()).unwrap_or(0));
+    }
+    let bytes = BASE64_STANDARD
+        .decode(clean)
+        .map_err(|e| format!("Gagal decode chunk rekaman: {}", e))?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&temp_path)
+        .map_err(|e| format!("Gagal membuka file rekaman '{}': {}", temp_path, e))?;
+    file.write_all(&bytes)
+        .map_err(|e| format!("Gagal menulis chunk rekaman: {}", e))?;
+    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    Ok(len)
+}
+
+#[tauri::command]
+pub async fn finalize_capture_mp4_ffmpeg(
+    temp_path: String,
+    output_path: String,
+) -> Result<String, String> {
+    if !Path::new(&temp_path).is_file() {
+        return Err(format!("File sementara rekaman tidak ditemukan: {}", temp_path));
+    }
+    ensure_parent_dir(&output_path)?;
+    let t_clone = temp_path.clone();
+    let out_clone = output_path.clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let (vcodec, _) = detect_video_encoder();
+        let mut args = vec![
+            "-y".into(),
+            "-fflags".into(),
+            "+genpts".into(),
+            "-i".into(),
+            t_clone.clone(),
+            "-c:v".into(),
+            vcodec.into(),
+        ];
+        if vcodec == "h264_nvenc" {
+            args.extend(["-preset".into(), "p4".into(), "-cq".into(), "22".into()]);
+        } else if vcodec == "h264_videotoolbox" {
+            args.extend(["-b:v".into(), "4500k".into(), "-allow_sw".into(), "1".into()]);
+        } else {
+            args.extend(["-preset".into(), "veryfast".into(), "-crf".into(), "22".into()]);
+        }
+        args.extend([
+            "-pix_fmt".into(),
+            "yuv420p".into(),
+            "-c:a".into(),
+            "aac".into(),
+            "-ar".into(),
+            "44100".into(),
+            "-ac".into(),
+            "2".into(),
+            "-movflags".into(),
+            "+faststart".into(),
+            out_clone.clone(),
+        ]);
+
+        let res = run_ffmpeg(&args);
+        if res.is_err() {
+            // Fallback bila stream webcam tidak memiliki audio
+            let no_audio_args = vec![
+                "-y".into(),
+                "-fflags".into(),
+                "+genpts".into(),
+                "-i".into(),
+                t_clone.clone(),
+                "-an".into(),
+                "-c:v".into(),
+                "libx264".into(),
+                "-preset".into(),
+                "veryfast".into(),
+                "-crf".into(),
+                "22".into(),
+                "-pix_fmt".into(),
+                "yuv420p".into(),
+                "-movflags".into(),
+                "+faststart".into(),
+                out_clone.clone(),
+            ];
+            run_ffmpeg(&no_audio_args)?;
+        }
+
+        let _ = fs::remove_file(&t_clone);
+        Ok(out_clone)
+    })
+    .await
+    .map_err(|e| format!("Task finalisasi rekaman MP4 terhenti: {}", e))?
+}
+
+#[tauri::command]
+pub fn start_dshow_capture_ffmpeg(
+    video_device: String,
+    audio_device: Option<String>,
+    output_path: String,
+    fps: Option<u32>,
+    width: Option<u32>,
+    height: Option<u32>,
+) -> Result<String, String> {
+    if !cfg!(target_os = "windows") {
+        return Err("Mode FFmpeg DirectShow hanya tersedia di Windows.".to_string());
+    }
+    let clean_v = video_device.trim();
+    if clean_v.is_empty() {
+        return Err("Nama perangkat video DirectShow tidak boleh kosong.".to_string());
+    }
+    ensure_parent_dir(&output_path)?;
+
+    let lock = DSHOW_CAPTURE_PROC.get_or_init(|| Mutex::new(None));
+    let mut guard = lock
+        .lock()
+        .map_err(|_| "Gagal mengunci status proses capture DirectShow.".to_string())?;
+    if guard.is_some() {
+        return Err("Rekaman FFmpeg DirectShow masih berjalan. Hentikan dulu sebelum memulai baru.".to_string());
+    }
+
+    let input_spec = match audio_device {
+        Some(ref a) if !a.trim().is_empty() => format!("video={}:audio={}", clean_v, a.trim()),
+        _ => format!("video={}", clean_v),
+    };
+    let fr = fps.unwrap_or(30).clamp(15, 60);
+    let w = width.unwrap_or(1280).clamp(640, 3840);
+    let h = height.unwrap_or(720).clamp(360, 2160);
+    let (vcodec, _) = detect_video_encoder();
+    let ffmpeg = resolve_bin("ffmpeg");
+
+    let mut args = vec![
+        "-y".into(),
+        "-f".into(),
+        "dshow".into(),
+        "-rtbufsize".into(),
+        "256M".into(),
+        "-framerate".into(),
+        fr.to_string(),
+        "-video_size".into(),
+        format!("{}x{}", w, h),
+        "-i".into(),
+        input_spec,
+        "-c:v".into(),
+        vcodec.into(),
+    ];
+    if vcodec == "h264_nvenc" {
+        args.extend(["-preset".into(), "p4".into(), "-cq".into(), "22".into()]);
+    } else {
+        args.extend(["-preset".into(), "veryfast".into(), "-crf".into(), "22".into()]);
+    }
+    args.extend([
+        "-pix_fmt".into(),
+        "yuv420p".into(),
+        "-c:a".into(),
+        "aac".into(),
+        "-ar".into(),
+        "44100".into(),
+        "-movflags".into(),
+        "+frag_keyframe+empty_moov".into(),
+        output_path.clone(),
+    ]);
+
+    let child = silent_command(&ffmpeg)
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Gagal memulai FFmpeg DirectShow: {}", e))?;
+
+    *guard = Some(child);
+    Ok(output_path)
+}
+
+#[tauri::command]
+pub async fn stop_dshow_capture_ffmpeg(output_path: String) -> Result<String, String> {
+    let lock = DSHOW_CAPTURE_PROC.get_or_init(|| Mutex::new(None));
+    let child_opt = {
+        let mut guard = lock
+            .lock()
+            .map_err(|_| "Gagal mengunci status proses capture DirectShow.".to_string())?;
+        guard.take()
+    };
+
+    let Some(mut child) = child_opt else {
+        return Err("Tidak ada sesi rekaman FFmpeg DirectShow yang sedang aktif.".to_string());
+    };
+
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(b"q\n");
+            let _ = stdin.flush();
+        }
+        let status = child
+            .wait()
+            .map_err(|e| format!("Gagal menunggu FFmpeg DirectShow berhenti: {}", e))?;
+        if !Path::new(&output_path).is_file() {
+            let mut err_buf = String::new();
+            if let Some(mut se) = child.stderr.take() {
+                let _ = se.read_to_string(&mut err_buf);
+            }
+            return Err(format!(
+                "Rekaman DirectShow tidak menghasilkan file MP4 (exit {:?}): {}",
+                status.code(),
+                err_buf.trim()
+            ));
+        }
+
+        // Remux cepat agar moov atom ada di depan (+faststart)
+        let fast_tmp = format!("{}.faststart.mp4", output_path);
+        let remux_args = vec![
+            "-y".into(),
+            "-i".into(),
+            output_path.clone(),
+            "-c".into(),
+            "copy".into(),
+            "-movflags".into(),
+            "+faststart".into(),
+            fast_tmp.clone(),
+        ];
+        if run_ffmpeg(&remux_args).is_ok() && Path::new(&fast_tmp).is_file() {
+            let _ = fs::rename(&fast_tmp, &output_path);
+        } else {
+            let _ = fs::remove_file(&fast_tmp);
+        }
+        Ok(output_path)
+    })
+    .await
+    .map_err(|e| format!("Task penghentian capture DirectShow terhenti: {}", e))?
+}
+
 pub fn extract_rgb_frames(
     input_path: &str,
     start_sec: f64,
@@ -2270,5 +2604,72 @@ mod tests {
             validate_online_url("  https://youtu.be/abc123  ").unwrap(),
             "https://youtu.be/abc123"
         );
+    }
+
+    #[test]
+    fn test_dshow_device_parsing_and_capture_chunk_finalize() {
+        let sample_dshow = r#"
+[dshow @ 000001] "HD Pro Webcam C920" (video)
+[dshow @ 000001]   Alternative name "@device_pnp_usb#vid_046d"
+[dshow @ 000001] "Cam Link 4K" (video)
+[dshow @ 000001] "Microphone (USB Audio)" (audio)
+DirectShow video devices
+[dshow @ 000002]  "OBS Virtual Camera"
+DirectShow audio devices
+[dshow @ 000002]  "Stereo Mix"
+"#;
+        let parsed = parse_dshow_devices_output(sample_dshow);
+        assert_eq!(
+            parsed.video_devices,
+            vec!["HD Pro Webcam C920", "Cam Link 4K", "OBS Virtual Camera"]
+        );
+        assert_eq!(
+            parsed.audio_devices,
+            vec!["Microphone (USB Audio)", "Stereo Mix"]
+        );
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let src_webm = std::env::temp_dir().join(format!("futsaltag_cap_src_{}.webm", now));
+        let out_mp4 = std::env::temp_dir().join(format!("futsaltag_cap_out_{}.mp4", now));
+        let part_path = start_capture_temp_file(out_mp4.to_string_lossy().to_string())
+            .expect("start_capture_temp_file failed");
+        let _cleanup = TempCleanup(vec![
+            src_webm.clone(),
+            out_mp4.clone(),
+            PathBuf::from(&part_path),
+        ]);
+
+        let gen_args = vec![
+            "-y".into(),
+            "-f".into(),
+            "lavfi".into(),
+            "-i".into(),
+            "color=c=green:s=320x240:d=1.0:r=25".into(),
+            "-c:v".into(),
+            "libvpx".into(),
+            src_webm.to_string_lossy().to_string(),
+        ];
+        run_ffmpeg(&gen_args).expect("generate sample webm failed");
+        let raw_bytes = fs::read(&src_webm).expect("read webm bytes failed");
+        let mid = raw_bytes.len() / 2;
+        append_capture_chunk(part_path.clone(), BASE64_STANDARD.encode(&raw_bytes[..mid]))
+            .expect("append chunk 1 failed");
+        let written =
+            append_capture_chunk(part_path.clone(), BASE64_STANDARD.encode(&raw_bytes[mid..]))
+                .expect("append chunk 2 failed");
+        assert_eq!(written as usize, raw_bytes.len());
+
+        tauri::async_runtime::block_on(finalize_capture_mp4_ffmpeg(
+            part_path.clone(),
+            out_mp4.to_string_lossy().to_string(),
+        ))
+        .expect("finalize_capture_mp4_ffmpeg failed");
+
+        let info = probe_video_info(&out_mp4.to_string_lossy()).expect("probe finalized mp4 failed");
+        assert!(info.duration >= 0.85, "expected finalized >= 0.85s, got {:.3}s", info.duration);
+        assert!(!Path::new(&part_path).exists(), "part file should be cleaned up");
     }
 }

@@ -28,6 +28,7 @@
   import MatchMinutesView from "$lib/components/MatchMinutesView.svelte";
   import KeyboardShortcutsModal from "$lib/components/KeyboardShortcutsModal.svelte";
   import QuickExportClipModal from "$lib/components/QuickExportClipModal.svelte";
+  import LiveCameraCaptureStage from "$lib/components/LiveCameraCaptureStage.svelte";
   import type {
     ExportAspectRatio,
     ExportCrfPreset,
@@ -1441,6 +1442,7 @@
   }
 
   function togglePlay() {
+    if (projectStore.liveCaptureActive) return;
     if (ytPlayer && ytReady) {
       if (isPlaying) {
         ytPlayer.pauseVideo?.();
@@ -1580,9 +1582,9 @@
     };
   });
 
-  // Live Stopwatch Ticker when running without a video file or YouTube stream
+  // Live Stopwatch Ticker when running without a video file, YouTube stream, or Live Camera capture
   $effect(() => {
-    if (!isPlaying || projectStore.videoSrc || ytVideoId) return;
+    if (!isPlaying || projectStore.videoSrc || ytVideoId || projectStore.liveCaptureActive) return;
     let lastMs = performance.now();
     let rafId = 0;
     const step = (now: number) => {
@@ -2799,6 +2801,12 @@
                     {/if}
                   </div>
                 </div>
+              {:else if projectStore.liveCaptureActive}
+                <LiveCameraCaptureStage
+                  bind:isRecording={isPlaying}
+                  bind:currentTime={currentTime}
+                  bind:duration={duration}
+                />
               {:else}
                 <div class="empty-video-placeholder stopwatch-stage">
                   <div class="sw-header-pill">

@@ -1,5 +1,6 @@
 @echo off
 cd /d "%~dp0"
+set "PATH=%USERPROFILE%\.bun\bin;%USERPROFILE%\.cargo\bin;%PATH%"
 echo Menyiapkan ARF FutsalTag...
 
 for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":1420 " ^| findstr "LISTENING"') do taskkill /F /PID %%a >nul 2>&1

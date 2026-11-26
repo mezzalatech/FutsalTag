@@ -465,6 +465,7 @@ export function hasAnimatedTelestration(
   clipEnd?: number
 ): boolean {
   return drawings.some((d) => {
+    if (d.type === 'timer-overlay') return true;
     if ((d.keyframes?.length ?? 0) > 1) return true;
     if (d.pointTracks && Object.values(d.pointTracks).some((kfs) => kfs.length > 1)) return true;
     if (d.animationStyle && d.animationStyle !== 'none') return true;

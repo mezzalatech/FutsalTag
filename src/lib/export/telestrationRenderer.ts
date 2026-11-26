@@ -5,12 +5,14 @@ import type {
   DetectedPlayerBox,
   DrawingElement,
   DrawingToolType,
+  MultiPlayerTrack,
   PlayerSilhouetteMask,
   Point2D,
   SubtitleCue,
 } from '$lib/types';
 import {
   getElementPointsAtTime,
+  getInterpolatedPosition,
   isElementVisibleAtTime,
   getElementLifespanOpacity,
 } from '$lib/tracking/playerTracker';
@@ -34,6 +36,8 @@ export interface RenderExportOptions {
   subtitleText?: string | null;
   subtitleCues?: SubtitleCue[];
   burnSubtitle?: boolean;
+  sceneDrawings?: DrawingElement[];
+  trackedEntities?: MultiPlayerTrack[];
 }
 
 let maskSampleCanvas: HTMLCanvasElement | null = null;
@@ -49,7 +53,9 @@ export function isFloorElType(type: DrawingToolType): boolean {
     type === 'player-link' ||
     type === 'pressing-zone' ||
     type === 'distance-line' ||
-    type === 'compactness-hull'
+    type === 'compactness-hull' ||
+    type === 'angle-tool' ||
+    type === 'speed-tag'
   );
 }
 
@@ -380,19 +386,23 @@ export function renderDrawingsToCanvas(
   const visibleDrawings = drawings.filter((el) => isElementVisibleAtTime(el, currentTime));
   const activeSubtitle = resolveActiveSubtitleText(options, currentTime);
   if (visibleDrawings.length === 0 && !activeSubtitle) return;
+  const effectiveOpts: RenderExportOptions = {
+    ...options,
+    sceneDrawings: options.sceneDrawings ?? visibleDrawings,
+  };
 
-  const floorMode = options.chromaConfig?.mode ?? 'ai-silhouette';
+  const floorMode = effectiveOpts.chromaConfig?.mode ?? 'ai-silhouette';
   const aiSilhouetteActive = Boolean(
-    options.chromaConfig?.enabled &&
+    effectiveOpts.chromaConfig?.enabled &&
       floorMode === 'ai-silhouette' &&
-      options.silhouetteMask &&
-      options.silhouetteMask.alphaBytes.length > 0
+      effectiveOpts.silhouetteMask &&
+      effectiveOpts.silhouetteMask.alphaBytes.length > 0
   );
   const chromaActive = Boolean(
-    options.chromaConfig?.enabled &&
+    effectiveOpts.chromaConfig?.enabled &&
       floorMode === 'chroma-key' &&
-      options.videoEl &&
-      options.videoEl.videoWidth > 0 &&
+      effectiveOpts.videoEl &&
+      effectiveOpts.videoEl.videoWidth > 0 &&
       !aiSilhouetteActive
   );
 
@@ -400,7 +410,7 @@ export function renderDrawingsToCanvas(
     visibleDrawings.length > 0 &&
     (aiSilhouetteActive || chromaActive) &&
     typeof document !== 'undefined' &&
-    options.chromaConfig
+    effectiveOpts.chromaConfig
   ) {
     const floorEls = visibleDrawings.filter((el) => el.isChromaFloor ?? isFloorElType(el.type));
     const fgEls = visibleDrawings.filter((el) => !(el.isChromaFloor ?? isFloorElType(el.type)));
@@ -415,18 +425,18 @@ export function renderDrawingsToCanvas(
       if (fCtx) {
         fCtx.clearRect(0, 0, width, height);
         for (const el of floorEls) {
-          drawSingleElement(fCtx, el, width, height, currentTime, options, true);
+          drawSingleElement(fCtx, el, width, height, currentTime, effectiveOpts, true);
         }
-        if (aiSilhouetteActive && options.silhouetteMask) {
-          applyPlayerSilhouetteCutout(fCtx, width, height, options.silhouetteMask);
-        } else if (chromaActive && options.videoEl) {
+        if (aiSilhouetteActive && effectiveOpts.silhouetteMask) {
+          applyPlayerSilhouetteCutout(fCtx, width, height, effectiveOpts.silhouetteMask);
+        } else if (chromaActive && effectiveOpts.videoEl) {
           applyFloorChromaMask(
             fCtx,
             width,
             height,
-            options.videoEl,
-            options.chromaConfig,
-            options.detectedBoxes,
+            effectiveOpts.videoEl,
+            effectiveOpts.chromaConfig,
+            effectiveOpts.detectedBoxes,
             Math.min(640, width),
             Math.min(360, height)
           );
@@ -436,7 +446,7 @@ export function renderDrawingsToCanvas(
     }
 
     for (const el of fgEls) {
-      drawSingleElement(ctx, el, width, height, currentTime, options, false);
+      drawSingleElement(ctx, el, width, height, currentTime, effectiveOpts, false);
     }
     if (activeSubtitle) {
       drawBroadcastSubtitleBanner(ctx, activeSubtitle, width, height);
@@ -445,7 +455,7 @@ export function renderDrawingsToCanvas(
   }
 
   for (const el of visibleDrawings) {
-    drawSingleElement(ctx, el, width, height, currentTime, options, false);
+    drawSingleElement(ctx, el, width, height, currentTime, effectiveOpts, false);
   }
   if (activeSubtitle) {
     drawBroadcastSubtitleBanner(ctx, activeSubtitle, width, height);
@@ -1390,6 +1400,424 @@ function drawSingleElement(
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(badgeText, cx, badgeY);
+      break;
+    }
+
+    case 'angle-tool': {
+      if (pts.length < 2) break;
+      const pA = { x: pts[0].x * width, y: pts[0].y * height };
+      const pV = { x: pts[1].x * width, y: pts[1].y * height };
+      const color = el.color || '#f59e0b';
+
+      // Preview 2 points while placing vertex, or full 3-point angle [A, vertex, B]
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(pV.x, pV.y);
+      ctx.lineTo(pA.x, pA.y);
+      if (pts.length >= 3) {
+        const pB = { x: pts[2].x * width, y: pts[2].y * height };
+        ctx.moveTo(pV.x, pV.y);
+        ctx.lineTo(pB.x, pB.y);
+      }
+      ctx.strokeStyle = 'rgba(0,0,0,0.75)';
+      ctx.lineWidth = 6 * scaleFactor;
+      ctx.stroke();
+
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 3 * scaleFactor;
+      ctx.stroke();
+
+      if (pts.length >= 3) {
+        const pB = { x: pts[2].x * width, y: pts[2].y * height };
+        const a1 = Math.atan2(pA.y - pV.y, pA.x - pV.x);
+        const a2 = Math.atan2(pB.y - pV.y, pB.x - pV.x);
+        let diff = a2 - a1;
+        while (diff <= -Math.PI) diff += Math.PI * 2;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+
+        const arcR = Math.max(
+          26 * scaleFactor,
+          Math.min(54 * scaleFactor, Math.hypot(pA.x - pV.x, pA.y - pV.y) * 0.45, Math.hypot(pB.x - pV.x, pB.y - pV.y) * 0.45)
+        );
+        ctx.beginPath();
+        ctx.moveTo(pV.x, pV.y);
+        ctx.arc(pV.x, pV.y, arcR, a1, a1 + diff, diff < 0);
+        ctx.closePath();
+        ctx.fillStyle = hexToRgba(color, 0.28);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(pV.x, pV.y, arcR, a1, a1 + diff, diff < 0);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2.4 * scaleFactor;
+        ctx.stroke();
+
+        // Compute true court-plane angle if calibrated, else screen angle
+        let deg = Math.abs(diff) * (180 / Math.PI);
+        if (options.homographyResult) {
+          const mA = canvasToCourtMeters(pts[0], options.homographyResult.H_inv);
+          const mV = canvasToCourtMeters(pts[1], options.homographyResult.H_inv);
+          const mB = canvasToCourtMeters(pts[2], options.homographyResult.H_inv);
+          const v1x = mA.x - mV.x;
+          const v1y = mA.y - mV.y;
+          const v2x = mB.x - mV.x;
+          const v2y = mB.y - mV.y;
+          const mag = Math.hypot(v1x, v1y) * Math.hypot(v2x, v2y);
+          if (mag > 1e-6) {
+            const cos = Math.max(-1, Math.min(1, (v1x * v2x + v1y * v2y) / mag));
+            deg = Math.acos(cos) * (180 / Math.PI);
+          }
+        }
+
+        const midAng = a1 + diff * 0.5;
+        const bx = pV.x + Math.cos(midAng) * (arcR + 24 * scaleFactor);
+        const by = pV.y + Math.sin(midAng) * (arcR + 24 * scaleFactor);
+        const angleTxt = `${deg.toFixed(1)}°`;
+        ctx.font = `bold ${Math.round(12 * scaleFactor)}px monospace`;
+        const tm = ctx.measureText(angleTxt);
+        const bw = tm.width + 14 * scaleFactor;
+        const bh = 22 * scaleFactor;
+        ctx.fillStyle = 'rgba(11, 23, 42, 0.94)';
+        ctx.beginPath();
+        ctx.roundRect(bx - bw / 2, by - bh / 2, bw, bh, 6 * scaleFactor);
+        ctx.fill();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5 * scaleFactor;
+        ctx.stroke();
+        ctx.fillStyle = '#ffffff';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(angleTxt, bx, by);
+      }
+
+      for (const p of pts) {
+        ctx.beginPath();
+        ctx.arc(p.x * width, p.y * height, 4.5 * scaleFactor, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffffff';
+        ctx.fill();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2 * scaleFactor;
+        ctx.stroke();
+      }
+      break;
+    }
+
+    case 'parabolic-arrow': {
+      if (pts.length < 2) break;
+      const p0 = { x: pts[0].x * width, y: pts[0].y * height };
+      const p2Full = { x: pts[1].x * width, y: pts[1].y * height };
+      const dx = p2Full.x - p0.x;
+      const dy = p2Full.y - p0.y;
+      const span = Math.hypot(dx, dy) || 1;
+      // Vertical 3D elevation peak strictly upward in screen space (-Y)
+      const liftPx = Math.max(36 * scaleFactor, span * Math.abs(el.curveOffset ?? 0.36));
+      const cpFull = { x: (p0.x + p2Full.x) / 2, y: Math.min(p0.y, p2Full.y) - liftPx };
+
+      const drawT = animStyle === 'draw-on' ? eased : 1;
+      const q0 = { x: p0.x + (cpFull.x - p0.x) * drawT, y: p0.y + (cpFull.y - p0.y) * drawT };
+      const q1 = { x: cpFull.x + (p2Full.x - cpFull.x) * drawT, y: cpFull.y + (p2Full.y - cpFull.y) * drawT };
+      const p2 = { x: q0.x + (q1.x - q0.x) * drawT, y: q0.y + (q1.y - q0.y) * drawT };
+      const color = el.color || '#00f0ff';
+
+      // Ground projection shadow on pitch floor directly under flight path
+      const gEnd = { x: p0.x + dx * drawT, y: p0.y + dy * drawT };
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(p0.x, p0.y);
+      ctx.lineTo(gEnd.x, gEnd.y);
+      ctx.strokeStyle = 'rgba(2, 6, 23, 0.52)';
+      ctx.lineWidth = 10 * scaleFactor;
+      ctx.lineCap = 'round';
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(p0.x, p0.y);
+      ctx.lineTo(gEnd.x, gEnd.y);
+      ctx.strokeStyle = hexToRgba(color, 0.32);
+      ctx.lineWidth = 2 * scaleFactor;
+      ctx.setLineDash([6 * scaleFactor, 6 * scaleFactor]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Ground landing ellipse ring
+      ctx.beginPath();
+      ctx.ellipse(gEnd.x, gEnd.y, 16 * scaleFactor, 6.5 * scaleFactor, 0, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(2, 6, 23, 0.45)';
+      ctx.fill();
+      ctx.strokeStyle = hexToRgba(color, 0.65);
+      ctx.lineWidth = 1.5 * scaleFactor;
+      ctx.stroke();
+      ctx.restore();
+
+      // 3D Parabolic Flight Arc
+      ctx.beginPath();
+      ctx.moveTo(p0.x, p0.y);
+      ctx.quadraticCurveTo(q0.x, q0.y, p2.x, p2.y);
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.78)';
+      ctx.lineWidth = 8.5 * scaleFactor;
+      ctx.lineCap = 'round';
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(p0.x, p0.y);
+      ctx.quadraticCurveTo(q0.x, q0.y, p2.x, p2.y);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 4.5 * scaleFactor;
+      ctx.lineCap = 'round';
+      ctx.stroke();
+
+      drawArrowHead(ctx, q0.x, q0.y, p2.x, p2.y, 20 * scaleFactor, color);
+      break;
+    }
+
+    case 'speed-tag': {
+      const cx = centerPt.x * width;
+      const cy = centerPt.y * height;
+      const color = el.color || '#10b981';
+
+      // Instantaneous speed from keyframes around currentTime
+      let kmh = 0;
+      const kfs = el.keyframes;
+      if (kfs && kfs.length >= 2) {
+        const tMin = kfs[0].time;
+        const tMax = kfs[kfs.length - 1].time;
+        const dtHalf = 0.16;
+        const t1 = Math.max(tMin, currentTime - dtHalf);
+        const t2 = Math.min(tMax, currentTime + dtHalf);
+        const dt = Math.max(0.05, t2 - t1);
+        const p1 = getInterpolatedPosition(kfs, t1);
+        const p2 = getInterpolatedPosition(kfs, t2);
+        if (p1 && p2) {
+          const distMeters = options.homographyResult
+            ? getCalibratedDistanceMeters(p1, p2, options.homographyResult.H_inv)
+            : Math.hypot((p2.x - p1.x) * 40, (p2.y - p1.y) * 20);
+          kmh = Math.max(0, Math.min(36, (distMeters / dt) * 3.6));
+        }
+      }
+
+      // Floor halo
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, 24 * scaleFactor, 9.5 * scaleFactor, 0, 0, Math.PI * 2);
+      ctx.fillStyle = hexToRgba(color, 0.25);
+      ctx.fill();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2.5 * scaleFactor;
+      ctx.stroke();
+
+      // Speedometer telemetry badge
+      const speedRatio = Math.min(1, kmh / 28);
+      const speedTxt =
+        kfs && kfs.length >= 2 ? `${kmh.toFixed(1)} km/h` : '0.0 km/h (Track)';
+      const titleTxt = el.label?.trim() ? `${el.label.trim()} · ${speedTxt}` : speedTxt;
+      ctx.font = `bold ${Math.round(12.5 * scaleFactor)}px monospace`;
+      const tw = ctx.measureText(titleTxt).width;
+      const bw = Math.max(96 * scaleFactor, tw + 22 * scaleFactor);
+      const bh = 28 * scaleFactor;
+      const bx = cx - bw / 2;
+      const by = cy - 42 * scaleFactor;
+
+      ctx.fillStyle = 'rgba(11, 23, 42, 0.94)';
+      ctx.beginPath();
+      ctx.roundRect(bx, by, bw, bh, 7 * scaleFactor);
+      ctx.fill();
+      ctx.strokeStyle = kmh >= 18 ? '#ef4444' : kmh >= 11 ? '#f59e0b' : color;
+      ctx.lineWidth = 1.8 * scaleFactor;
+      ctx.stroke();
+
+      // Bottom speed gauge bar inside badge
+      ctx.fillStyle = 'rgba(255,255,255,0.12)';
+      ctx.fillRect(bx + 6 * scaleFactor, by + bh - 5 * scaleFactor, bw - 12 * scaleFactor, 2.5 * scaleFactor);
+      ctx.fillStyle = kmh >= 18 ? '#ef4444' : kmh >= 11 ? '#f59e0b' : color;
+      ctx.fillRect(
+        bx + 6 * scaleFactor,
+        by + bh - 5 * scaleFactor,
+        (bw - 12 * scaleFactor) * speedRatio,
+        2.5 * scaleFactor
+      );
+
+      ctx.fillStyle = '#ffffff';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(titleTxt, cx, by + 12 * scaleFactor);
+      break;
+    }
+
+    case 'timer-overlay': {
+      const cx = centerPt.x * width;
+      const cy = centerPt.y * height;
+      const originTime = el.timeStart ?? options.clipStartTime ?? 0;
+      const timerSec = Math.max(0, currentTime - originTime);
+      const secsStr = `${timerSec.toFixed(1)}s`;
+      const caption = el.label?.trim() || 'STOPWATCH';
+      const color = timerSec >= 4.0 ? '#f59e0b' : el.color || '#38bdf8';
+
+      ctx.font = `bold ${Math.round(11 * scaleFactor)}px system-ui`;
+      const capW = ctx.measureText(caption).width;
+      ctx.font = `900 ${Math.round(18 * scaleFactor)}px monospace`;
+      const numW = ctx.measureText(secsStr).width;
+      const bw = Math.max(capW, numW) + 34 * scaleFactor;
+      const bh = 44 * scaleFactor;
+      const bx = cx - bw / 2;
+      const by = cy - bh / 2;
+
+      ctx.fillStyle = 'rgba(6, 11, 20, 0.92)';
+      ctx.beginPath();
+      ctx.roundRect(bx, by, bw, bh, 8 * scaleFactor);
+      ctx.fill();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = (isSelected ? 3 : 2) * scaleFactor;
+      ctx.stroke();
+
+      // Pulsing timer dot
+      const dotR = (3.5 + (Math.sin(currentTime * 6) * 0.5 + 0.5) * 1.2) * scaleFactor;
+      ctx.beginPath();
+      ctx.arc(bx + 12 * scaleFactor, by + 14 * scaleFactor, dotR, 0, Math.PI * 2);
+      ctx.fillStyle = timerSec >= 4.0 ? '#ef4444' : '#10b981';
+      ctx.fill();
+
+      ctx.font = `bold ${Math.round(10 * scaleFactor)}px system-ui`;
+      ctx.fillStyle = '#94a3b8';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(caption.toUpperCase(), bx + 20 * scaleFactor, by + 14 * scaleFactor);
+
+      ctx.font = `900 ${Math.round(17 * scaleFactor)}px monospace`;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(secsStr, bx + 12 * scaleFactor, by + 31 * scaleFactor);
+      break;
+    }
+
+    case 'mini-radar': {
+      const boxW = 240 * scaleFactor;
+      const boxH = 120 * scaleFactor;
+      const pad = 8 * scaleFactor;
+      const rx = Math.max(pad, Math.min(width - boxW - pad, centerPt.x * width - boxW / 2));
+      const ry = Math.max(pad, Math.min(height - boxH - pad, centerPt.y * height - boxH / 2));
+      const borderColor = el.color || '#38bdf8';
+
+      // Panel container & pitch turf
+      ctx.fillStyle = 'rgba(6, 20, 14, 0.9)';
+      ctx.beginPath();
+      ctx.roundRect(rx, ry, boxW, boxH, 8 * scaleFactor);
+      ctx.fill();
+      ctx.strokeStyle = isSelected ? '#ffffff' : borderColor;
+      ctx.lineWidth = (isSelected ? 2.8 : 1.8) * scaleFactor;
+      ctx.stroke();
+
+      const m = 8 * scaleFactor;
+      const cw = boxW - m * 2;
+      const ch = boxH - m * 2;
+      const cx0 = rx + m;
+      const cy0 = ry + m;
+
+      // Miniature 40x20 futsal court lines
+      ctx.strokeStyle = 'rgba(226, 232, 240, 0.55)';
+      ctx.lineWidth = 1.2 * scaleFactor;
+      ctx.strokeRect(cx0, cy0, cw, ch);
+      ctx.beginPath();
+      ctx.moveTo(cx0 + cw / 2, cy0);
+      ctx.lineTo(cx0 + cw / 2, cy0 + ch);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(cx0 + cw / 2, cy0 + ch / 2, ch * 0.15, 0, Math.PI * 2);
+      ctx.stroke();
+      // Left & right 6m D arcs
+      ctx.beginPath();
+      ctx.arc(cx0, cy0 + ch / 2, ch * 0.3, -Math.PI / 2, Math.PI / 2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(cx0 + cw, cy0 + ch / 2, ch * 0.3, Math.PI / 2, Math.PI * 1.5);
+      ctx.stroke();
+
+      const mapPtToRadar = (pt: Point2D): { x: number; y: number } => {
+        if (options.homographyResult) {
+          const meters = canvasToCourtMeters(pt, options.homographyResult.H_inv);
+          return {
+            x: cx0 + (meters.x / 40) * cw,
+            y: cy0 + (meters.y / 20) * ch,
+          };
+        }
+        return {
+          x: cx0 + Math.max(0, Math.min(1, pt.x)) * cw,
+          y: cy0 + Math.max(0, Math.min(1, pt.y)) * ch,
+        };
+      };
+
+      const plotDot = (pt: Point2D, dotColor: string, lbl?: string) => {
+        const rp = mapPtToRadar(pt);
+        ctx.beginPath();
+        ctx.arc(rp.x, rp.y, 5 * scaleFactor, 0, Math.PI * 2);
+        ctx.fillStyle = dotColor;
+        ctx.fill();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1.2 * scaleFactor;
+        ctx.stroke();
+        if (lbl) {
+          ctx.font = `bold ${Math.round(8.5 * scaleFactor)}px monospace`;
+          ctx.fillStyle = '#ffffff';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'bottom';
+          ctx.fillText(lbl, rp.x, rp.y - 5.5 * scaleFactor);
+        }
+      };
+
+      // Plot multi-player AI tracks if available
+      if (options.trackedEntities && options.trackedEntities.length > 0) {
+        for (const tr of options.trackedEntities) {
+          const p = getInterpolatedPosition(tr.keyframes, currentTime);
+          if (p) plotDot(p, tr.color || '#38bdf8');
+        }
+      } else if (options.detectedBoxes && options.detectedBoxes.length > 0) {
+        for (const box of options.detectedBoxes) {
+          if (box.class_id === 0) {
+            plotDot({ x: box.foot_x, y: box.foot_y }, '#38bdf8');
+          } else {
+            plotDot({ x: box.foot_x, y: box.foot_y }, '#facc15');
+          }
+        }
+      }
+
+      // Also plot player markers / links from current scene drawings
+      const scene = options.sceneDrawings || [];
+      for (const sd of scene) {
+        if (
+          sd.type === 'spotlight-3d' ||
+          sd.type === 'player-circle' ||
+          sd.type === 'speed-tag' ||
+          sd.type === 'player-cross'
+        ) {
+          const sPts = getElementPointsAtTime(sd, currentTime);
+          if (sPts[0]) {
+            plotDot(sPts[0], sd.color || '#00f0ff', sd.label?.slice(0, 4));
+          }
+        } else if (sd.type === 'player-link' || sd.type === 'compactness-hull') {
+          const sPts = getElementPointsAtTime(sd, currentTime);
+          if (sPts.length >= 2) {
+            ctx.beginPath();
+            sPts.forEach((sp, idx) => {
+              const rp = mapPtToRadar(sp);
+              if (idx === 0) ctx.moveTo(rp.x, rp.y);
+              else ctx.lineTo(rp.x, rp.y);
+            });
+            if (sd.type === 'compactness-hull') ctx.closePath();
+            ctx.strokeStyle = hexToRgba(sd.color || '#00f0ff', 0.7);
+            ctx.lineWidth = 1.4 * scaleFactor;
+            ctx.stroke();
+            for (const sp of sPts) {
+              plotDot(sp, sd.color || '#00f0ff');
+            }
+          }
+        }
+      }
+
+      ctx.font = `bold ${Math.round(8.5 * scaleFactor)}px system-ui`;
+      ctx.fillStyle = options.homographyResult ? '#6ee7b7' : '#fbbf24';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      ctx.fillText(
+        options.homographyResult ? '2D RADAR (KALIBRASI)' : '2D RADAR (ESTIMASI)',
+        rx + 6 * scaleFactor,
+        ry + 3 * scaleFactor
+      );
       break;
     }
   }

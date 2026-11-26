@@ -49,6 +49,11 @@ export type DrawingToolType =
   | 'player-link'      // Formation chain linking moving players (Once Sport PlayerFormationWithPlayerCircle2)
   | 'magnifier'        // Zoom lens detail for ball/feet inspection (Once Sport Magnifier)
   | 'player-cross'     // Red/amber X marker for tactical mistake/out-of-position (Once Sport PlayerCross)
+  | 'angle-tool'       // 3-point angle measurement arc in degrees (Momen Angle Tool)
+  | 'parabolic-arrow'  // 3D parabolic lob/chip flight arrow with pitch ground shadow (Once Sport ParabolicFlightArrow)
+  | 'speed-tag'        // Dynamic player sprint velocity km/h readout from tracking + homography
+  | 'timer-overlay'    // Broadcast elapsed stopwatch overlay (Once Sport TimerTextSymbol)
+  | 'mini-radar'       // 2D miniature futsal court minimap projecting calibrated player dots (Once Sport RadarSymbol)
   | 'freehand';        // Freehand tactical marker
 
 export interface Point2D {

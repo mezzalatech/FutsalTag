@@ -86,6 +86,9 @@
     Crosshair,
     Scissors,
     Gauge,
+    Compass,
+    TrendingUp,
+    Map as MapIcon,
   } from "lucide-svelte";
 
   // --- REFS & STATE ---
@@ -141,6 +144,7 @@
     "magnifier",
     "vision-cone",
     "player-ghost",
+    "speed-tag",
   ];
 
   const MULTI_PLAYER_SNAP_TOOLS: DrawingToolType[] = [
@@ -148,6 +152,7 @@
     "compactness-hull",
     "pressing-zone",
     "distance-line",
+    "angle-tool",
   ];
 
   let inProgressMatchedBoxes = new Map<number, DetectedPlayerBox>();
@@ -355,6 +360,36 @@
       label: "Garis Jarak (Meter)",
       icon: Ruler,
       desc: "Ukur jarak antar pemain atau ke gawang",
+    },
+    {
+      id: "angle-tool",
+      label: "Sudut Passing (Angle)",
+      icon: Compass,
+      desc: "Klik 3 titik (ujung A → sudut tengah → ujung B) untuk ukur sudut passing/tembak",
+    },
+    {
+      id: "parabolic-arrow",
+      label: "Panah Parabolik 3D",
+      icon: TrendingUp,
+      desc: "Operan lambung/chip 3D lengkap dengan bayangan lantai lapangan",
+    },
+    {
+      id: "speed-tag",
+      label: "Kecepatan Lari (km/h)",
+      icon: Gauge,
+      desc: "Klik/Track pemain untuk tampilkan kecepatan lari real-time (km/h)",
+    },
+    {
+      id: "timer-overlay",
+      label: "Timer Transisi (4s)",
+      icon: Clock,
+      desc: "Klik layar untuk pasang stopwatch transisi/restart langsung di video",
+    },
+    {
+      id: "mini-radar",
+      label: "2D Mini Radar Peta",
+      icon: MapIcon,
+      desc: "Minimap 2D lapangan futsal memproyeksikan posisi pemain terkalibrasi",
     },
     {
       id: "magnifier",
@@ -927,6 +962,7 @@
       subtitleText: voiceoverTranscript,
       subtitleCues,
       burnSubtitle,
+      trackedEntities: detectedTracks,
     });
 
     // Render 3D court homography calibration grid if active
@@ -1284,7 +1320,9 @@
                   ? "1.8x Zoom"
                   : activeTool === "player-cross"
                     ? "Evaluasi"
-                    : undefined
+                    : activeTool === "speed-tag"
+                      ? `#P${hit.idx + 1}`
+                      : undefined
             : activeTool === "player-circle"
               ? undefined
               : activeTool === "spotlight-3d"
@@ -1293,7 +1331,9 @@
                   ? "1.8x Zoom"
                   : activeTool === "player-cross"
                     ? "Evaluasi"
-                    : undefined,
+                    : activeTool === "speed-tag"
+                      ? "Sprint"
+                      : undefined,
           zoomScale: activeTool === "magnifier" ? 1.8 : undefined,
         };
         drawings = [...drawings, newEl];
@@ -1356,11 +1396,48 @@
       return;
     }
 
-    // Creating new multi-point element (Hull, Textured Pressing Zone, or Player Link)
+    // Single-click placement tools (Timer Overlay, 2D Mini Radar, Speed Tag fallback)
+    if (
+      activeTool === "timer-overlay" ||
+      activeTool === "mini-radar" ||
+      activeTool === "speed-tag"
+    ) {
+      inProgressMatchedBoxes.clear();
+      const snapped =
+        activeTool === "speed-tag"
+          ? snapPointToDetectedPlayer(pt)
+          : { point: pt, box: undefined };
+      const el: DrawingElement = {
+        id: `${activeTool}-${Date.now()}`,
+        type: activeTool,
+        color: activeColor,
+        points: [snapped.point],
+        timeStart: activeClip ? activeClip.startTime : currentTime,
+        timeEnd: activeClip ? activeClip.endTime : currentTime + 5,
+        isChromaFloor: isFloorBlend || isFloorElType(activeTool),
+        animationStyle: "none",
+        label:
+          activeTool === "timer-overlay"
+            ? "Transisi 4s"
+            : activeTool === "mini-radar"
+              ? "Radar 2D"
+              : "Sprint",
+      };
+      drawings = [...drawings, el];
+      selectedElementId = el.id;
+      rightPanelTab = "elements";
+      if (activeTool === "speed-tag" && snapped.box) {
+        trackElementBidirectional(el, currentTime, snapped.box);
+      }
+      return;
+    }
+
+    // Creating new multi-point element (Hull, Pressing Zone, Player Link, or 3-point Angle Tool)
     if (
       activeTool === "compactness-hull" ||
       activeTool === "pressing-zone" ||
-      activeTool === "player-link"
+      activeTool === "player-link" ||
+      activeTool === "angle-tool"
     ) {
       const snapped = snapPointToDetectedPlayer(pt);
       if (!inProgressDrawing || inProgressDrawing.type !== activeTool) {
@@ -1379,11 +1456,29 @@
               ? "Zona Pressing"
               : activeTool === "player-link"
                 ? "Link Formasi"
-                : undefined,
+                : activeTool === "angle-tool"
+                  ? "Sudut Passing"
+                  : undefined,
         };
       } else {
         const p0 = inProgressDrawing.points[0];
-        if (
+        if (activeTool === "angle-tool") {
+          const nextIdx = inProgressDrawing.points.length;
+          if (snapped.box) inProgressMatchedBoxes.set(nextIdx, snapped.box);
+          inProgressDrawing.points.push(snapped.point);
+          if (inProgressDrawing.points.length >= 3) {
+            const created = { ...inProgressDrawing };
+            const boxesSnap = new Map(inProgressMatchedBoxes);
+            inProgressMatchedBoxes.clear();
+            drawings = [...drawings, created];
+            selectedElementId = created.id;
+            rightPanelTab = "elements";
+            inProgressDrawing = null;
+            if (boxesSnap.size > 0) {
+              trackElementPointsAutomated(created, currentTime, boxesSnap);
+            }
+          }
+        } else if (
           activeTool !== "player-link" &&
           inProgressDrawing.points.length >= 3 &&
           Math.hypot(snapped.point.x - p0.x, snapped.point.y - p0.y) < 0.05
@@ -1432,7 +1527,12 @@
               : activeTool === "player-ghost"
                 ? "Posisi Ideal"
                 : undefined,
-      curveOffset: activeTool === "curved-arrow" ? -0.28 : undefined,
+      curveOffset:
+        activeTool === "curved-arrow"
+          ? -0.28
+          : activeTool === "parabolic-arrow"
+            ? -0.36
+            : undefined,
       zoomScale: activeTool === "magnifier" ? 1.8 : undefined,
       spotlightRadius: activeTool === "spotlight-3d" ? 1.0 : undefined,
       spotlightHeight: activeTool === "spotlight-3d" ? 1.0 : undefined,
@@ -1556,7 +1656,8 @@
       !inProgressDrawing ||
       inProgressDrawing.type === "compactness-hull" ||
       inProgressDrawing.type === "pressing-zone" ||
-      inProgressDrawing.type === "player-link"
+      inProgressDrawing.type === "player-link" ||
+      inProgressDrawing.type === "angle-tool"
     )
       return;
 
@@ -2713,6 +2814,7 @@
             subtitleText: voiceoverTranscript,
             subtitleCues,
             burnSubtitle,
+            trackedEntities: detectedTracks,
           });
           await invoke<string>("save_overlay_frame_png", {
             dirPath: seqDir,
@@ -2756,6 +2858,7 @@
             subtitleCues,
             burnSubtitle,
             animElapsedSec: 1.0,
+            trackedEntities: detectedTracks,
           });
           freezeStopsPayload.push({
             time: st.time,

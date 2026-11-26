@@ -35,7 +35,9 @@
     "resources": [
       "resources/models/*",
       "resources/bin/*",
-      "resources/whisper/*"
+      "resources/whisper/*",
+      "resources/bin-macos/*",
+      "resources/whisper-macos/*"
     ],
     "fileAssociations": [
       {

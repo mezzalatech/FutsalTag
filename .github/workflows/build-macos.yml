@@ -19,7 +19,7 @@ jobs:
             os: macos-14
             target: aarch64-apple-darwin
           - arch: Intel-Mac
-            os: macos-15-intel
+            os: macos-13
             target: x86_64-apple-darwin
 
     runs-on: ${{ matrix.os }}
@@ -40,7 +40,6 @@ jobs:
 
       - name: Install FFmpeg & Whisper CLI via Homebrew
         run: |
-          brew update
           brew install ffmpeg whisper-cpp
 
       - name: Install frontend dependencies
@@ -54,12 +53,20 @@ jobs:
           bun run check
           cargo test --manifest-path src-tauri/Cargo.toml
 
-      - name: Build FutsalTag Pro macOS DMG
+      - name: Build ARF FutsalTag macOS DMG
         run: bun run tauri build --target ${{ matrix.target }} --bundles dmg
 
       - name: Upload macOS DMG Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: FutsalTag-Pro-macOS-${{ matrix.arch }}
+          name: ARF-FutsalTag-macOS-${{ matrix.arch }}
           path: src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
           if-no-files-found: error
+
+      - name: Release macOS DMG to GitHub Releases
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

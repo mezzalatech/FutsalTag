@@ -1,4 +1,5 @@
 mod ai_tracker;
+mod cloud_sync;
 mod court_calibration;
 mod ffmpeg;
 mod player_segmentation;
@@ -16,6 +17,26 @@ use tauri::Manager;
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! Futsal Video Analyser Engine is ready.", name)
+}
+
+#[tauri::command]
+fn open_projector_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("projector") {
+        let _ = win.show();
+        let _ = win.set_focus();
+        return Ok(());
+    }
+    tauri::WebviewWindowBuilder::new(
+        &app,
+        "projector",
+        tauri::WebviewUrl::App("index.html?screen=presenter".into()),
+    )
+    .title("ARF FutsalTag — Layar Proyektor")
+    .inner_size(1280.0, 720.0)
+    .resizable(true)
+    .build()
+    .map_err(|e| format!("Gagal membuka jendela proyektor kedua: {}", e))?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -285,6 +306,9 @@ pub fn run() {
             remote_server::get_remote_server_status,
             remote_server::update_remote_server_state,
             remote_server::kick_remote_phone,
+            open_projector_window,
+            cloud_sync::upload_file_cloud,
+            cloud_sync::upload_text_cloud,
             ffmpeg::burn_telestration_clip_ffmpeg,
             ffmpeg::burn_animated_telestration_clip_ffmpeg,
             ffmpeg::save_overlay_frame_png,

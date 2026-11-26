@@ -1,5 +1,7 @@
 <script lang="ts">
-  import { tick } from 'svelte';
+  import { tick, untrack } from 'svelte';
+  import { invoke, convertFileSrc } from '@tauri-apps/api/core';
+  import { emit } from '@tauri-apps/api/event';
   import { projectStore, isTauriDesktop } from '$lib/stores/projectStore.svelte';
   import type { FreezeStop, Point2D, PresentationSlide, VideoTagEvent } from '$lib/types';
   import { renderDrawingsToCanvas } from '$lib/export/telestrationRenderer';
@@ -31,6 +33,8 @@
     Shield,
     Filter,
     Sparkles,
+    MonitorPlay,
+    Film,
   } from 'lucide-svelte';
 
   interface Props {
@@ -59,6 +63,52 @@
   let voiceoverEnabled = $state(true);
   let imageInputEl = $state<HTMLInputElement | null>(null);
   let logoInputEl = $state<HTMLInputElement | null>(null);
+  let externalVideoInputEl = $state<HTMLInputElement | null>(null);
+  let projectorActive = $state(false);
+  let projectorChannel: BroadcastChannel | null = null;
+
+  function broadcastProjectorState() {
+    if (!projectorActive || !isOpen) return;
+    const liveSlide =
+      currentSlide?.kind === 'clip'
+        ? { ...currentSlide, tag: resolveLiveTag(currentSlide.tag, currentSlide.matchId) }
+        : currentSlide;
+    const payload = {
+      slide: liveSlide,
+      slideIndex: currentSlideIdx,
+      totalSlides: slides.length,
+      videoSrc: activeSlideVideoSrc ?? null,
+      currentTime: videoEl ? videoEl.currentTime : currentTime,
+      isPlaying,
+      playbackRate: videoEl?.playbackRate || (currentSlide?.kind === 'clip' ? currentSlide.speed || 1 : 1),
+      isFreezing,
+      freezeLabel: activeFreezeLabel,
+      freezeRemaining,
+      showTelestration: currentSlide?.kind === 'clip' ? currentSlide.showTelestration !== false : true,
+      cameraZoom: activeCameraZoom,
+      liveStrokes,
+      clubLogoDataUrl: projectStore.clubLogoDataUrl,
+      chromaFloorConfig: projectStore.chromaFloorConfig,
+    };
+    if (typeof BroadcastChannel !== 'undefined') {
+      if (!projectorChannel) projectorChannel = new BroadcastChannel('futsaltag-projector');
+      projectorChannel.postMessage(payload);
+    }
+    if (isTauriDesktop()) {
+      emit('projector-sync', payload).catch(() => {});
+    }
+  }
+
+  async function openSecondScreenWindow() {
+    projectorActive = true;
+    if (isTauriDesktop()) {
+      await invoke('open_projector_window').catch(() => {});
+    } else if (typeof window !== 'undefined') {
+      window.open('/?screen=presenter', 'futsaltag-projector', 'width=1280,height=720');
+    }
+    setTimeout(broadcastProjectorState, 350);
+    setTimeout(broadcastProjectorState, 900);
+  }
 
   // Video & telestration playback state
   let videoEl = $state<HTMLVideoElement | null>(null);
@@ -161,23 +211,40 @@
   // Initialize slides from filtered library clips + preserved custom slides whenever modal opens
   $effect(() => {
     if (!isOpen) {
-      cleanupMediaAndTimers();
+      untrack(() => cleanupMediaAndTimers());
       return;
     }
-    const baseSource = projectStore.presentationSlides.length > 0 ? projectStore.presentationSlides : slides;
-    commitSlides(buildFilteredSlides(baseSource));
-    currentSlideIdx = 0;
-    liveStrokes = [];
-    isDrawMode = false;
-    loadCurrentSlideMedia(true);
+    untrack(() => {
+      const baseSource = projectStore.presentationSlides.length > 0 ? projectStore.presentationSlides : slides;
+      commitSlides(buildFilteredSlides(baseSource));
+      currentSlideIdx = 0;
+      liveStrokes = [];
+      isDrawMode = false;
+      loadCurrentSlideMedia(true);
 
-    if (isTauriDesktop() && projectStore.libraryMatches.length === 0) {
-      projectStore.scanMatchLibrary().then(() => {
-        if (isOpen) {
-          commitSlides(buildFilteredSlides(slides));
-        }
-      });
-    }
+      if (isTauriDesktop() && projectStore.libraryMatches.length === 0) {
+        projectStore.scanMatchLibrary().then(() => {
+          if (isOpen) {
+            commitSlides(buildFilteredSlides(slides));
+          }
+        });
+      }
+    });
+  });
+
+  // Sync Second-Screen Projector window continuously while active
+  $effect(() => {
+    if (!isOpen || !projectorActive) return;
+    // Track reactive dependencies
+    void currentSlideIdx;
+    void currentSlide;
+    void isPlaying;
+    void isFreezing;
+    void liveStrokes;
+    void activeSlideVideoSrc;
+    broadcastProjectorState();
+    const timer = setInterval(broadcastProjectorState, 180);
+    return () => clearInterval(timer);
   });
 
   // Render loop & keyboard bindings while open
@@ -574,6 +641,73 @@
     input.value = '';
   }
 
+  async function handleInsertExternalVideo() {
+    if (isTauriDesktop()) {
+      try {
+        const { open } = await import('@tauri-apps/plugin-dialog');
+        const chosen = await open({
+          title: 'Sisipkan Klip Video (.mp4 / .mov / .webm) dari Disk',
+          multiple: false,
+          filters: [{ name: 'Video Files', extensions: ['mp4', 'mov', 'webm', 'mkv'] }],
+        });
+        if (typeof chosen !== 'string') return;
+        const name = chosen.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, '') || 'Video Eksternal';
+        let dur = 120;
+        try {
+          const info = await invoke<{ duration: number }>('probe_video_ffmpeg', { filePath: chosen });
+          if (info?.duration > 0.5) dur = info.duration;
+        } catch {
+          // Use fallback duration
+        }
+        const extSrc = convertFileSrc(chosen);
+        insertSlideAfterCurrent({
+          id: `extvid-${Date.now()}`,
+          kind: 'clip',
+          title: name,
+          videoFilePath: chosen,
+          videoSrc: extSrc,
+          showTelestration: false,
+          tag: {
+            id: `ext_${Date.now()}`,
+            title: name,
+            category: 'Video Eksternal',
+            startTime: 0,
+            endTime: dur,
+            color: '#38bdf8',
+          },
+        });
+      } catch {
+        // Ignore dialog error
+      }
+    } else {
+      externalVideoInputEl?.click();
+    }
+  }
+
+  function onExternalVideoSelected(e: Event) {
+    const input = e.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+    const objUrl = URL.createObjectURL(file);
+    const title = file.name.replace(/\.[^.]+$/, '') || 'Video Eksternal';
+    insertSlideAfterCurrent({
+      id: `extvid-${Date.now()}`,
+      kind: 'clip',
+      title,
+      videoSrc: objUrl,
+      showTelestration: false,
+      tag: {
+        id: `ext_${Date.now()}`,
+        title,
+        category: 'Video Eksternal',
+        startTime: 0,
+        endTime: 180,
+        color: '#38bdf8',
+      },
+    });
+    input.value = '';
+  }
+
   function syncFilteredClipsToSlides() {
     const next = buildFilteredSlides(slides);
     commitSlides(next);
@@ -739,6 +873,17 @@
         class="hidden-file-input"
         onchange={onLogoFileSelected}
       />
+      <input
+        bind:this={externalVideoInputEl}
+        type="file"
+        accept="video/*"
+        class="hidden-file-input"
+        onchange={onExternalVideoSelected}
+      />
+      <button type="button" class="hud-btn" onclick={openSecondScreenWindow} title="Buka Jendela Bersih di Monitor / Proyektor Kedua">
+        <MonitorPlay size={13} />
+        <span>{projectorActive ? 'Proyektor Aktif' : 'Layar Proyektor Ke-2'}</span>
+      </button>
       <button type="button" class="hud-btn" class:active-draw={showFilterPanel} onclick={() => (showFilterPanel = !showFilterPanel)} title="Filter Klip Lintas Pertandingan (Tag × Label × Pemain × Telestrasi)">
         <Filter size={13} />
         <span>Filter Klip</span>
@@ -758,6 +903,10 @@
       <button type="button" class="hud-btn" onclick={() => imageInputEl?.click()} title="Sisipkan Slide Gambar / Diagram Pelatih">
         <ImageIcon size={13} />
         <span>+ Gambar</span>
+      </button>
+      <button type="button" class="hud-btn" onclick={handleInsertExternalVideo} title="Sisipkan File Video Eksternal (.mp4) dari Disk ke Playlist Briefing">
+        <Film size={13} />
+        <span>+ Video</span>
       </button>
       <button type="button" class="hud-btn" onclick={insertTacticalSlide} title="Sisipkan Slide Papan Taktik 2D">
         <Plus size={14} />

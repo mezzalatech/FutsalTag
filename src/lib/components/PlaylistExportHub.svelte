@@ -29,7 +29,11 @@
     Upload,
     FileCode2,
     MonitorPlay,
+    CloudUpload,
+    Globe,
   } from "lucide-svelte";
+  import { exportInteractiveHtmlStatsReport } from "$lib/export/htmlStatsReport";
+  import CloudExportModal from "$lib/components/CloudExportModal.svelte";
   import { renderDrawingsToDataUrl } from "$lib/export/telestrationRenderer";
   import {
     getEffectiveFreezeStopsForTag,
@@ -75,6 +79,31 @@
   let presentationVideoEl = $state<HTMLVideoElement | null>(null);
   let xmlImportInputEl = $state<HTMLInputElement | undefined>(undefined);
   let wmLogoInputEl = $state<HTMLInputElement | undefined>(undefined);
+  let isCloudOpen = $state(false);
+
+  async function handleExportHtmlStats() {
+    if (projectStore.tags.length === 0) {
+      exportStatusMessage = "Belum ada klip momen untuk diekspor ke Laporan HTML.";
+      return;
+    }
+    try {
+      const saved = await exportInteractiveHtmlStatsReport({
+        matchTitle: projectStore.videoTitle,
+        competition: projectStore.competitionName,
+        durationSec: projectStore.duration,
+        tags: projectStore.tags,
+        roster: projectStore.roster,
+        clubLogoDataUrl: projectStore.clubLogoDataUrl,
+        formatMatchClock: (s) => projectStore.formatMatchClock(s),
+      });
+      if (saved) {
+        exportSuccessPath = saved;
+        exportStatusMessage = `Statistik HTML Mobile interaktif disimpan ke: ${saved}`;
+      }
+    } catch (err: any) {
+      exportStatusMessage = `Gagal ekspor HTML: ${err?.message || err}`;
+    }
+  }
 
   function handleWmLogoSelected(e: Event) {
     const file = (e.currentTarget as HTMLInputElement).files?.[0];
@@ -1278,11 +1307,31 @@
             <Download size={13} />
             <span>Laporan PDF 1-Klik (A4)</span>
           </button>
+          <button
+            type="button"
+            class="btn-interop"
+            onclick={handleExportHtmlStats}
+            title="Ekspor file .html interaktif mandiri untuk dibuka langsung di HP / WhatsApp pemain"
+          >
+            <Globe size={13} />
+            <span>Statistik HTML (Mobile)</span>
+          </button>
+          <button
+            type="button"
+            class="btn-interop"
+            onclick={() => (isCloudOpen = true)}
+            title="Unggah proyek .futsal, statistik .html, atau video .mp4 ke Nextcloud / WebDAV / S3"
+          >
+            <CloudUpload size={13} />
+            <span>Upload Cloud (WebDAV / S3)</span>
+          </button>
         </div>
       </div>
     </div>
   </div>
 </div>
+
+<CloudExportModal isOpen={isCloudOpen} onClose={() => (isCloudOpen = false)} />
 
 <style>
   .playlist-export-hub {

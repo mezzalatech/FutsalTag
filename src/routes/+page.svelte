@@ -42,6 +42,9 @@
   let metaDate = $state("");
   let saveToast = $state<string | null>(null);
   let openProjectInputEl: HTMLInputElement | undefined = $state();
+  const isProjectorWindow =
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("screen") === "presenter";
 
   function showSaveToast(msg: string) {
     saveToast = msg;
@@ -51,6 +54,7 @@
   }
 
   onMount(() => {
+    if (isProjectorWindow) return;
     projectStore.checkAutoSaveRecovery();
     const timer = setInterval(() => {
       projectStore.runAutoSave();
@@ -193,6 +197,11 @@
   >
 </svelte:head>
 
+{#if isProjectorWindow}
+  {#await import("$lib/components/SecondScreenStage.svelte") then { default: SecondScreenStage }}
+    <SecondScreenStage />
+  {/await}
+{:else}
 <div class="app-container">
   <!-- PRIMARY APP HEADER BAR -->
   <header class="app-header">
@@ -619,6 +628,7 @@
     </div>
   {/if}
 </div>
+{/if}
 
 <style>
   :global(body, html) {

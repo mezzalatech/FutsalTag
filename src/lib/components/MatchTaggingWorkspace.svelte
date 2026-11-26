@@ -194,7 +194,6 @@
   // Manual In/Out Points
   let inPoint = $state<number | null>(null);
   let outPoint = $state<number | null>(null);
-  let activeLoopClip = $state<VideoTagEvent | null>(null);
   let activeClipQueue = $state<VideoTagEvent[]>([]);
   let activeQueueIndex = $state<number>(0);
   let activeQueueTitle = $state<string>("");
@@ -686,9 +685,6 @@
       selectedClipId = null;
     }
     selectedClipIds = selectedClipIds.filter((id) => !validIds.includes(id));
-    if (activeLoopClip && validIds.includes(activeLoopClip.id)) {
-      activeLoopClip = null;
-    }
     notifyUser(
       `${validIds.length} klip dihapus. Tekan Ctrl+Z untuk mengurungkan.`,
     );
@@ -1197,10 +1193,10 @@
       if (e.key === "Escape") {
         if (showKickoffMenu) {
           showKickoffMenu = false;
-        } else if (activeLoopClip || activeClipQueue.length > 0) {
+        } else if (activeClipQueue.length > 0) {
           e.preventDefault();
-          stopClipLoop();
-          showVideoOsd("▶", "Lanjut", "Loop klip dimatikan", "emerald");
+          stopSequentialQueue();
+          showVideoOsd("▶", "Lanjut", "Antrian klip dimatikan", "emerald");
         } else if (Object.keys(activeContinuousTags).length > 0) {
           e.preventDefault();
           stopAllContinuousTags();
@@ -1472,7 +1468,6 @@
   function startReversePlayback(rate = 1.0) {
     if (projectStore.liveCaptureActive) return;
     hasRestoredInitialTime = true;
-    activeLoopClip = null;
     activeClipQueue = [];
     videoEl?.pause();
     angle2VideoEl?.pause();
@@ -1494,7 +1489,6 @@
   }
 
   function applyPlaybackSpeed(nextRate: number, autoPlay: boolean = true) {
-    activeLoopClip = null;
     activeClipQueue = [];
     reverseRate = 0;
     playbackRate = nextRate;
@@ -1589,7 +1583,6 @@
   }
 
   function handleSpeedResetAndPause() {
-    activeLoopClip = null;
     activeClipQueue = [];
     reverseRate = 0;
     if (videoEl) {
@@ -1617,7 +1610,6 @@
   function togglePlay() {
     if (projectStore.liveCaptureActive) return;
     hasRestoredInitialTime = true;
-    activeLoopClip = null;
     activeClipQueue = [];
     if (reverseRate > 0) {
       reverseRate = 0;
@@ -1796,11 +1788,13 @@
         if (activeClipQueue.length > 0 && activeQueueIndex < activeClipQueue.length) {
           const cur = activeClipQueue[activeQueueIndex];
           if (t >= cur.endTime) {
-            activeQueueIndex = activeQueueIndex + 1 < activeClipQueue.length ? activeQueueIndex + 1 : 0;
-            playQueueCurrentClip();
+            if (activeQueueIndex + 1 < activeClipQueue.length) {
+              activeQueueIndex += 1;
+              playQueueCurrentClip();
+            } else {
+              stopSequentialQueue();
+            }
           }
-        } else if (activeLoopClip && t >= activeLoopClip.endTime) {
-          ytPlayer.seekTo?.(activeLoopClip.startTime, true);
         }
       }
     }, 100);
@@ -1832,9 +1826,6 @@
         duration = Math.max(duration, Math.ceil(currentTime + 600));
         projectStore.duration = duration;
       }
-      if (activeLoopClip && currentTime >= activeLoopClip.endTime) {
-        currentTime = activeLoopClip.startTime;
-      }
       rafId = requestAnimationFrame(step);
     };
     rafId = requestAnimationFrame(step);
@@ -1859,17 +1850,8 @@
           activeQueueIndex += 1;
           playQueueCurrentClip();
         } else {
-          // Loop playlist back to start
-          activeQueueIndex = 0;
-          playQueueCurrentClip();
+          stopSequentialQueue();
         }
-      }
-      return;
-    }
-
-    if (activeLoopClip) {
-      if (currentTime >= activeLoopClip.endTime) {
-        videoEl.currentTime = activeLoopClip.startTime;
       }
     }
   }
@@ -1893,7 +1875,6 @@
     hasRestoredInitialTime = true;
     const target = Math.max(0, Math.min(seconds, duration));
     if (ytPlayer && ytReady) {
-      activeLoopClip = null;
       activeClipQueue = [];
       ytPlayer.seekTo?.(target, true);
       currentTime = target;
@@ -1906,7 +1887,6 @@
       projectStore.currentTime = currentTime;
       return;
     }
-    activeLoopClip = null;
     activeClipQueue = [];
     videoEl.currentTime = target;
     currentTime = videoEl.currentTime;
@@ -1916,7 +1896,6 @@
 
   function stepFrame(step: number) {
     reverseRate = 0;
-    activeLoopClip = null;
     activeClipQueue = [];
     const fps = 25;
     if (ytPlayer && ytReady) {
@@ -2196,7 +2175,6 @@
   }
 
   function handleCategoryPress(btn: TaggingButton) {
-    activeLoopClip = null;
     activeClipQueue = [];
     if (btn.continuous) {
       if (activeContinuousTags[btn.id]) {
@@ -2398,8 +2376,6 @@
       if (selectedClipId && !validIds.has(selectedClipId))
         selectedClipId = null;
       selectedClipIds = selectedClipIds.filter((id) => validIds.has(id));
-      if (activeLoopClip && !validIds.has(activeLoopClip.id))
-        activeLoopClip = null;
       notifyUser(`Undo: ${label}`);
     } else {
       notifyUser("Tidak ada perubahan untuk di-undo");
@@ -2503,29 +2479,33 @@
     showTagLabelEditor = true;
   }
 
-  function playClipLoop(tag: VideoTagEvent) {
-    if (!videoEl && !(ytPlayer && ytReady)) return;
+  function playClipFrom(tag: VideoTagEvent) {
     reverseRate = 0;
+    hasRestoredInitialTime = true;
     activeClipQueue = [];
-    activeLoopClip = tag;
+    const start = Math.max(0, Math.min(tag.startTime, duration || tag.startTime));
     if (videoEl) {
-      videoEl.currentTime = tag.startTime;
-      videoEl.play();
+      videoEl.currentTime = start;
+      videoEl.playbackRate = playbackRate;
+      videoEl.play().catch(() => {});
+      currentTime = start;
+      projectStore.currentTime = start;
+      syncSecondaryAngle(true);
     } else if (ytPlayer && ytReady) {
-      ytPlayer.seekTo?.(tag.startTime, true);
+      ytPlayer.seekTo?.(start, true);
+      ytPlayer.setPlaybackRate?.(playbackRate);
       ytPlayer.playVideo?.();
+      currentTime = start;
+      projectStore.currentTime = start;
+    } else {
+      currentTime = start;
+      projectStore.currentTime = start;
     }
     isPlaying = true;
   }
 
-  function stopClipLoop() {
-    activeLoopClip = null;
-    activeClipQueue = [];
-  }
-
   function playSequentialClips(clips: VideoTagEvent[], title?: string) {
     if (!clips || clips.length === 0 || (!videoEl && !(ytPlayer && ytReady))) return;
-    activeLoopClip = null;
     activeClipQueue = [...clips];
     activeQueueIndex = 0;
     activeQueueTitle = title || `${clips.length} Klip Terpilih`;
@@ -3614,19 +3594,6 @@
                 <span class="play-status-pill" class:running={isPlaying || reverseRate > 0}>
                   ● {reverseRate > 0 ? `◀ -${reverseRate}x` : isPlaying ? "jalan" : "jeda"}
                 </span>
-                {#if activeLoopClip}
-                  <button
-                    type="button"
-                    class="loop-active-pill"
-                    onclick={() => {
-                      stopClipLoop();
-                      showVideoOsd("▶", "Lanjut", "Loop klip dimatikan", "emerald");
-                    }}
-                    title="Sedang mengulang klip ini — klik untuk lanjut video penuh (atau tekan Spasi / Esc)"
-                  >
-                    🔁 {activeLoopClip.category} ×
-                  </button>
-                {/if}
               </div>
 
               <div class="mtb-scrubber">
@@ -4043,7 +4010,6 @@
                       <!-- svelte-ignore a11y_click_events_have_key_events -->
                       <div
                         class="clip-row"
-                        class:active-loop={activeLoopClip?.id === tag.id}
                         class:selected-clip={selectedClipId === tag.id}
                         class:multi-selected={selectedClipIds.includes(tag.id)}
                         onclick={(e) => {
@@ -4133,19 +4099,25 @@
                             <button
                               type="button"
                               class="icon-act-btn"
-                              class:playing={activeLoopClip?.id === tag.id}
+                              class:playing={isPlaying && selectedClipId === tag.id && currentTime >= tag.startTime - 0.15 && currentTime <= tag.endTime + 0.15}
                               onclick={(e) => {
                                 e.stopPropagation();
-                                if (activeLoopClip?.id === tag.id) {
-                                  stopClipLoop();
-                                  showVideoOsd("▶", "Lanjut", "Loop klip dimatikan", "emerald");
+                                const inside =
+                                  isPlaying &&
+                                  selectedClipId === tag.id &&
+                                  currentTime >= tag.startTime - 0.15 &&
+                                  currentTime <= tag.endTime + 0.15;
+                                if (inside) {
+                                  togglePlay();
                                 } else {
-                                  playClipLoop(tag);
+                                  selectedClipId = tag.id;
+                                  selectedClipIds = [tag.id];
+                                  playClipFrom(tag);
                                 }
                               }}
-                              title="Putar / Loop Klip"
+                              title="Putar dari awal klip (lanjut normal tanpa loop)"
                             >
-                              {#if activeLoopClip?.id === tag.id}
+                              {#if isPlaying && selectedClipId === tag.id && currentTime >= tag.startTime - 0.15 && currentTime <= tag.endTime + 0.15}
                                 <Pause size={10} />
                               {:else}
                                 <Play size={10} />
@@ -4365,7 +4337,7 @@
             )}
             hasCopiedMeta={copiedMeta !== null}
             isCollapsed={isLinimasaCollapsed}
-            activeLoopClipId={activeLoopClip?.id ?? null}
+            activeLoopClipId={null}
             periodKickoffs={projectStore.periodKickoffs}
             useMatchClock={projectStore.useMatchClock}
             formatMatchClock={(t) => projectStore.formatMatchClock(t)}
@@ -4375,9 +4347,7 @@
             onSelectClip={(tag) => {
               selectedClipId = tag.id;
               selectedClipIds = [tag.id];
-              activeLoopClip = null;
-              activeClipQueue = [];
-              seekTo(tag.startTime);
+              playClipFrom(tag);
             }}
             onSelectionChange={(ids, primaryId) => {
               selectedClipIds = ids;
@@ -4653,7 +4623,7 @@
         activeEditingTag = nextTag;
         selectedClipId = nextTag.id;
         selectedClipIds = [nextTag.id];
-        playClipLoop(nextTag);
+        playClipFrom(nextTag);
       }}
       onDelete={(id) => {
         projectStore.deleteTag(id);
@@ -4683,7 +4653,9 @@
       tags={projectStore.tags}
       onPlayTag={(tag) => {
         showStatsMatrix = false;
-        playClipLoop(tag);
+        selectedClipId = tag.id;
+        selectedClipIds = [tag.id];
+        playClipFrom(tag);
       }}
       onPlayClips={(clips, title) => {
         showStatsMatrix = false;
@@ -5842,26 +5814,6 @@
     background: rgba(16, 185, 129, 0.18);
     border-color: #10b981;
     color: #34d399;
-  }
-
-  .loop-active-pill {
-    font-size: 9px;
-    font-weight: 800;
-    padding: 1px 7px;
-    border-radius: 999px;
-    background: rgba(245, 158, 11, 0.2);
-    border: 1px solid #f59e0b;
-    color: #fcd34d;
-    white-space: nowrap;
-    max-width: 120px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    cursor: pointer;
-    transition: background 0.12s ease;
-  }
-
-  .loop-active-pill:hover {
-    background: rgba(245, 158, 11, 0.35);
   }
 
   .mtb-scrubber {

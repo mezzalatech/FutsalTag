@@ -25,6 +25,7 @@
     Copy,
     Trash2,
     RefreshCw,
+    Timer,
   } from "lucide-svelte";
 
   interface Props {

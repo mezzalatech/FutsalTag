@@ -26,6 +26,11 @@
   import VisualCodingBoard from "$lib/components/VisualCodingBoard.svelte";
   import MatchMinutesView from "$lib/components/MatchMinutesView.svelte";
   import KeyboardShortcutsModal from "$lib/components/KeyboardShortcutsModal.svelte";
+  import QuickExportClipModal from "$lib/components/QuickExportClipModal.svelte";
+  import type {
+    ExportAspectRatio,
+    ExportCrfPreset,
+  } from "$lib/export/exportEstimator";
   import {
     shortcutsStore,
     matchesCombo,
@@ -100,6 +105,7 @@
     "all",
   );
   let exportingQuickClipId = $state<string | null>(null);
+  let quickExportModalClip = $state<VideoTagEvent | null>(null);
 
   // 2-Tier Momen Layout State
   let showSpatialCanvas = $state<boolean>(true);
@@ -644,7 +650,7 @@
     });
   }
 
-  async function handleQuickExportSingleClip(tag: VideoTagEvent) {
+  function handleQuickExportSingleClip(tag: VideoTagEvent) {
     if (exportingQuickClipId) return;
     if (!isTauriDesktop()) {
       notifyUser("Quick Export MP4 memerlukan aplikasi desktop Tauri.");
@@ -655,30 +661,69 @@
       notifyUser("Buka file video asli di Hub Proyek sebelum ekspor MP4.");
       return;
     }
+    quickExportModalClip = tag;
+  }
+
+  async function executeQuickExportSingleClip(
+    tag: VideoTagEvent,
+    opts: {
+      resolution: "1080p" | "720p";
+      crf: ExportCrfPreset;
+      aspectRatio: ExportAspectRatio;
+      includeTelestration: boolean;
+    },
+  ) {
+    if (exportingQuickClipId) return;
+    const path = projectStore.videoFilePath;
+    if (!path) return;
 
     try {
       const { save } = await import("@tauri-apps/plugin-dialog");
       const cleanCat = tag.category.replace(/[^a-zA-Z0-9_-]/g, "_");
+      const ratioTag = opts.aspectRatio === "9:16" ? "_9x16" : "";
       const outPath = await save({
         title: `Quick Export MP4 — ${tag.category}`,
-        defaultPath: `FutsalTag_${cleanCat}_${Math.round(tag.startTime)}s.mp4`,
+        defaultPath: `FutsalTag_${cleanCat}_${Math.round(tag.startTime)}s${ratioTag}.mp4`,
         filters: [{ name: "MP4 Video", extensions: ["mp4"] }],
       });
       if (!outPath) return;
 
+      quickExportModalClip = null;
       exportingQuickClipId = tag.id;
-      notifyUser(`Mengekspor MP4 "${tag.category}"...`);
+      notifyUser(
+        `Mengekspor MP4 "${tag.category}" (${opts.aspectRatio} · ${opts.resolution})...`,
+      );
 
-      const hasDrawings = Boolean(tag.drawings && tag.drawings.length > 0);
-      const hasVoice = Boolean(tag.voiceoverAudioBase64);
-      const effectiveStops = getEffectiveFreezeStopsForTag(tag);
-      const appendCleanReplay = Boolean(tag.appendCleanReplay);
-      if (
+      const targetHeight = opts.resolution === "720p" ? 720 : 1080;
+      const renderW = targetHeight === 720 ? 1280 : 1920;
+      const renderH = targetHeight === 720 ? 720 : 1080;
+      const useTel = opts.includeTelestration;
+      const hasDrawings = useTel && Boolean(tag.drawings?.length);
+      const hasVoice = useTel && Boolean(tag.voiceoverAudioBase64);
+      const hasSubtitle =
+        useTel &&
+        Boolean(
+          tag.burnSubtitle &&
+            (tag.voiceoverTranscript?.trim() || (tag.subtitleCues?.length ?? 0) > 0),
+        );
+      const effectiveStops = useTel ? getEffectiveFreezeStopsForTag(tag) : [];
+      const appendCleanReplay = useTel && Boolean(tag.appendCleanReplay);
+      const needsBurnPass =
         hasDrawings ||
         hasVoice ||
-        effectiveStops.length > 1 ||
-        appendCleanReplay
-      ) {
+        hasSubtitle ||
+        effectiveStops.length > 0 ||
+        appendCleanReplay;
+      const needsFormatPass = opts.aspectRatio === "9:16" || opts.crf !== 23;
+      const clipDur = Math.max(0.4, tag.endTime - tag.startTime);
+
+      if (needsBurnPass) {
+        let burnTarget = outPath;
+        if (needsFormatPass) {
+          const tempDir = await invoke<string>("get_temp_dir");
+          const sep = tempDir.endsWith("/") || tempDir.endsWith("\\") ? "" : "/";
+          burnTarget = `${tempDir}${sep}futsaltag_qe_${Date.now()}.mp4`;
+        }
         const freezeSec =
           effectiveStops[0]?.time ??
           tag.freezeTimestamp ??
@@ -687,46 +732,68 @@
           effectiveStops.map((st) => ({
             time: st.time,
             duration: st.duration,
-            overlay_base64: hasDrawings
-              ? renderDrawingsToDataUrl(
-                  tag.drawings || [],
-                  1280,
-                  720,
-                  st.time,
-                  {
-                    chromaConfig: projectStore.chromaFloorConfig,
-                    clipStartTime: tag.startTime,
-                    clipEndTime: tag.endTime,
-                    subtitleText: tag.voiceoverTranscript,
-                    subtitleCues: tag.subtitleCues,
-                    burnSubtitle: tag.burnSubtitle,
-                    animElapsedSec: 1.0,
-                  },
-                ) || null
-              : null,
+            overlay_base64:
+              hasDrawings || hasSubtitle
+                ? renderDrawingsToDataUrl(
+                    tag.drawings || [],
+                    renderW,
+                    renderH,
+                    st.time,
+                    {
+                      chromaConfig: projectStore.chromaFloorConfig,
+                      clipStartTime: tag.startTime,
+                      clipEndTime: tag.endTime,
+                      subtitleText: tag.voiceoverTranscript,
+                      subtitleCues: tag.subtitleCues,
+                      burnSubtitle: tag.burnSubtitle,
+                      animElapsedSec: 1.0,
+                    },
+                  ) || null
+                : null,
           }));
         await invoke<string>("burn_telestration_clip_ffmpeg", {
           inputPath: path,
-          outputPath: outPath,
+          outputPath: burnTarget,
           startSec: tag.startTime,
-          durationSec: Math.max(0.4, tag.endTime - tag.startTime),
+          durationSec: clipDur,
           freezeSec,
           pauseDuration:
             effectiveStops[0]?.duration ?? tag.pauseDuration ?? 3.0,
           overlayBase64: freezeStopsPayload[0]?.overlay_base64 ?? null,
-          voiceoverBase64: tag.voiceoverAudioBase64 || null,
-          targetHeight: 720,
+          voiceoverBase64: useTel ? tag.voiceoverAudioBase64 || null : null,
+          targetHeight,
           freezeStops:
             freezeStopsPayload.length > 0 ? freezeStopsPayload : null,
           appendCleanReplay,
+        });
+        if (needsFormatPass) {
+          await invoke<string>("export_formatted_clip_ffmpeg", {
+            inputPath: burnTarget,
+            outputPath: outPath,
+            targetHeight,
+            crf: opts.crf,
+            vertical9x16: opts.aspectRatio === "9:16",
+            removeInput: true,
+          });
+        }
+      } else if (needsFormatPass) {
+        await invoke<string>("export_formatted_clip_ffmpeg", {
+          inputPath: path,
+          outputPath: outPath,
+          startSec: tag.startTime,
+          durationSec: clipDur,
+          targetHeight,
+          crf: opts.crf,
+          vertical9x16: opts.aspectRatio === "9:16",
         });
       } else {
         await invoke<string>("render_video_clip_ffmpeg", {
           inputPath: path,
           outputPath: outPath,
           startSec: tag.startTime,
-          durationSec: Math.max(0.4, tag.endTime - tag.startTime),
-          fastCopy: true,
+          durationSec: clipDur,
+          fastCopy: opts.resolution === "720p" ? false : true,
+          targetHeight: opts.resolution === "720p" ? 720 : undefined,
         });
       }
       notifyUser(`Klip MP4 berhasil disimpan!`);
@@ -3624,6 +3691,16 @@
       board={activeBoard}
     />
   {/if}
+
+  <QuickExportClipModal
+    clip={quickExportModalClip}
+    isExporting={exportingQuickClipId !== null}
+    onClose={() => (quickExportModalClip = null)}
+    onConfirmExport={(opts) => {
+      const target = quickExportModalClip;
+      if (target) executeQuickExportSingleClip(target, opts);
+    }}
+  />
 </div>
 
 <style>

@@ -37,6 +37,12 @@
   } from "$lib/export/freezeStops";
   import { hasAnimatedTelestration } from "$lib/tracking/playerTracker";
   import {
+    estimateExportSizeMb,
+    formatEstimatedSize,
+    type ExportAspectRatio,
+    type ExportCrfPreset,
+  } from "$lib/export/exportEstimator";
+  import {
     exportSportsCodeXml,
     importSportsCodeXml,
     exportNativeXlsxPortable,
@@ -68,10 +74,33 @@
   // Export Settings State
   let exportMode = $state<ExportMode>("merged_video");
   let outputResolution = $state<"1080p" | "720p">("1080p");
+  let outputAspectRatio = $state<ExportAspectRatio>("16:9");
+  let outputCrf = $state<ExportCrfPreset>(23);
   let isExporting = $state(false);
   let exportProgress = $state(0);
   let exportStatusMessage = $state("");
   let exportSuccessPath = $state<string | null>(null);
+
+  const totalEstimatedDurationSec = $derived.by(() => {
+    return filteredClips.reduce((sum, c) => {
+      const base = Math.max(0.2, c.tag.endTime - c.tag.startTime);
+      if (!c.useTelestration) return sum + base;
+      const stops = getEffectiveFreezeStopsForTag(c.tag, c.tag.pauseDuration ?? 3.0);
+      const freeze = stops.reduce((s, st) => s + st.duration, 0);
+      return sum + base + freeze + (c.tag.appendCleanReplay ? base : 0);
+    }, 0);
+  });
+
+  const estimatedTotalSizeText = $derived(
+    formatEstimatedSize(
+      estimateExportSizeMb(
+        totalEstimatedDurationSec,
+        outputResolution,
+        outputCrf,
+        outputAspectRatio,
+      ),
+    ),
+  );
 
   onMount(() => {
     if (isTauriDesktop() && projectStore.libraryMatches.length === 0) {
@@ -237,6 +266,22 @@
           const isAnimated =
             hasDrawings &&
             hasAnimatedTelestration(drawings, tag.startTime, tag.endTime);
+          const needsFormatPass =
+            outputAspectRatio === "9:16" || outputCrf !== 23;
+          const needsBurnPass =
+            isAnimated ||
+            hasDrawings ||
+            hasVoice ||
+            hasSubtitle ||
+            freezeStopsPayload.length > 0 ||
+            appendCleanReplay;
+
+          let burnOutputPath = outPath;
+          if (needsBurnPass && needsFormatPass) {
+            const tmp = await invoke<string>("get_temp_dir");
+            const tSep = tmp.endsWith("/") || tmp.endsWith("\\") ? "" : "/";
+            burnOutputPath = `${tmp}${tSep}futsaltag_fmt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.mp4`;
+          }
 
           if (isAnimated) {
             const tempDir = await invoke<string>("get_temp_dir");
@@ -277,7 +322,7 @@
 
               await invoke<string>("burn_animated_telestration_clip_ffmpeg", {
                 inputPath,
-                outputPath: outPath,
+                outputPath: burnOutputPath,
                 startSec: tag.startTime,
                 durationSec: clipDur,
                 overlayFramesDir: seqDir,
@@ -300,16 +345,10 @@
                 () => {},
               );
             }
-          } else if (
-            hasDrawings ||
-            hasVoice ||
-            hasSubtitle ||
-            freezeStopsPayload.length > 0 ||
-            appendCleanReplay
-          ) {
+          } else if (needsBurnPass) {
             await invoke<string>("burn_telestration_clip_ffmpeg", {
               inputPath,
-              outputPath: outPath,
+              outputPath: burnOutputPath,
               startSec: tag.startTime,
               durationSec: clipDur,
               freezeSec,
@@ -322,6 +361,16 @@
                 freezeStopsPayload.length > 0 ? freezeStopsPayload : null,
               appendCleanReplay,
             });
+          } else if (needsFormatPass) {
+            await invoke<string>("export_formatted_clip_ffmpeg", {
+              inputPath,
+              outputPath: outPath,
+              startSec: tag.startTime,
+              durationSec: clipDur,
+              targetHeight,
+              crf: outputCrf,
+              vertical9x16: outputAspectRatio === "9:16",
+            });
           } else {
             await invoke<string>("render_video_clip_ffmpeg", {
               inputPath,
@@ -330,6 +379,17 @@
               durationSec: clipDur,
               fastCopy: exportMode !== "merged_video",
               targetHeight,
+            });
+          }
+
+          if (needsBurnPass && needsFormatPass) {
+            await invoke<string>("export_formatted_clip_ffmpeg", {
+              inputPath: burnOutputPath,
+              outputPath: outPath,
+              targetHeight,
+              crf: outputCrf,
+              vertical9x16: outputAspectRatio === "9:16",
+              removeInput: true,
             });
           }
         };
@@ -955,6 +1015,60 @@
               </button>
             </div>
           </div>
+
+          <div class="res-row">
+            <span class="res-title">Rasio Video:</span>
+            <div class="res-buttons">
+              <button
+                class="btn-res"
+                class:active={outputAspectRatio === "16:9"}
+                onclick={() => (outputAspectRatio = "16:9")}
+              >
+                16:9 Landscape
+              </button>
+              <button
+                class="btn-res"
+                class:active={outputAspectRatio === "9:16"}
+                onclick={() => (outputAspectRatio = "9:16")}
+              >
+                9:16 Reels / IG
+              </button>
+            </div>
+          </div>
+
+          <div class="res-row">
+            <span class="res-title">Kualitas (CRF):</span>
+            <div class="res-buttons">
+              <button
+                class="btn-res"
+                class:active={outputCrf === 18}
+                onclick={() => (outputCrf = 18)}
+              >
+                Tinggi (18)
+              </button>
+              <button
+                class="btn-res"
+                class:active={outputCrf === 23}
+                onclick={() => (outputCrf = 23)}
+              >
+                Standar (23)
+              </button>
+              <button
+                class="btn-res"
+                class:active={outputCrf === 28}
+                onclick={() => (outputCrf = 28)}
+              >
+                Ringan WA (28)
+              </button>
+            </div>
+          </div>
+
+          {#if filteredClips.length > 0}
+            <div class="res-row">
+              <span class="res-title">Estimasi Ukuran ({totalEstimatedDurationSec.toFixed(0)} dtk):</span>
+              <span class="btn-res active">{estimatedTotalSizeText}</span>
+            </div>
+          {/if}
         </div>
 
         <!-- PROGRESS & STATUS -->

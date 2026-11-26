@@ -928,6 +928,140 @@ pub fn export_whatsapp_clip_ffmpeg(
     Ok(output_path)
 }
 
+pub fn build_format_filter_graph(
+    out_w: u32,
+    out_h: u32,
+    vertical_9x16: bool,
+) -> (Option<String>, Option<String>) {
+    if vertical_9x16 {
+        let fc = format!(
+            "[0:v]split=2[bg][fg];[bg]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},boxblur=20:5[bgb];[fg]scale={w}:-2:force_original_aspect_ratio=decrease[fgs];[bgb][fgs]overlay=(W-w)/2:(H-h)/2,setsar=1,fps=30,format=yuv420p[vout]",
+            w = out_w,
+            h = out_h
+        );
+        (None, Some(fc))
+    } else {
+        let vf = format!(
+            "scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p",
+            w = out_w,
+            h = out_h
+        );
+        (Some(vf), None)
+    }
+}
+
+#[tauri::command]
+pub fn export_formatted_clip_ffmpeg(
+    input_path: String,
+    output_path: String,
+    start_sec: Option<f64>,
+    duration_sec: Option<f64>,
+    target_height: Option<u32>,
+    crf: Option<u8>,
+    vertical_9x16: Option<bool>,
+    remove_input: Option<bool>,
+) -> Result<String, String> {
+    if !Path::new(&input_path).exists() {
+        return Err(format!("File video input tidak ditemukan: {}", input_path));
+    }
+    ensure_parent_dir(&output_path)?;
+
+    let q_crf = crf.unwrap_or(23).clamp(16, 32);
+    let is_vertical = vertical_9x16.unwrap_or(false);
+    let h = match target_height {
+        Some(v) if v <= 720 => 720u32,
+        _ => 1080u32,
+    };
+    let (out_w, out_h) = if is_vertical {
+        if h <= 720 { (720, 1280) } else { (1080, 1920) }
+    } else {
+        target_dimensions(Some(h))
+    };
+
+    let info = probe_video_info(&input_path)?;
+    let (vcodec, _) = detect_video_encoder();
+    let (vf_opt, fc_opt) = build_format_filter_graph(out_w, out_h, is_vertical);
+
+    let mut args = vec!["-y".into()];
+    if let Some(ss) = start_sec {
+        args.extend(["-ss".into(), format!("{:.3}", ss.max(0.0))]);
+    }
+    args.extend(["-i".into(), input_path.clone()]);
+    if !info.has_audio {
+        args.extend([
+            "-f".into(),
+            "lavfi".into(),
+            "-i".into(),
+            "anullsrc=channel_layout=stereo:sample_rate=44100".into(),
+        ]);
+    }
+    if let Some(dur) = duration_sec {
+        args.extend(["-t".into(), format!("{:.3}", dur.max(0.2))]);
+    }
+
+    let audio_in = if info.has_audio { "0:a:0" } else { "1:a:0" };
+    if let Some(fc) = fc_opt {
+        args.extend([
+            "-filter_complex".into(),
+            fc,
+            "-map".into(),
+            "[vout]".into(),
+            "-map".into(),
+            audio_in.into(),
+        ]);
+    } else if let Some(vf) = vf_opt {
+        args.extend([
+            "-vf".into(),
+            vf,
+            "-map".into(),
+            "0:v:0".into(),
+            "-map".into(),
+            audio_in.into(),
+        ]);
+    }
+
+    args.extend(["-c:v".into(), vcodec.into()]);
+    if vcodec == "h264_videotoolbox" {
+        let br = if q_crf <= 19 {
+            "8000k"
+        } else if q_crf <= 24 {
+            "4500k"
+        } else {
+            "1800k"
+        };
+        args.extend(["-b:v".into(), br.into(), "-allow_sw".into(), "1".into()]);
+    } else if vcodec == "h264_nvenc" {
+        args.extend(["-preset".into(), "p4".into(), "-cq".into(), q_crf.to_string()]);
+    } else {
+        args.extend([
+            "-crf".into(),
+            q_crf.to_string(),
+            "-preset".into(),
+            "veryfast".into(),
+        ]);
+    }
+
+    args.extend([
+        "-c:a".into(),
+        "aac".into(),
+        "-ar".into(),
+        "44100".into(),
+        "-ac".into(),
+        "2".into(),
+        "-b:a".into(),
+        "128k".into(),
+        "-movflags".into(),
+        "+faststart".into(),
+        output_path.clone(),
+    ]);
+
+    run_ffmpeg(&args)?;
+    if remove_input.unwrap_or(false) && input_path != output_path {
+        let _ = fs::remove_file(&input_path);
+    }
+    Ok(output_path)
+}
+
 #[tauri::command]
 pub fn save_overlay_frame_png(
     dir_path: String,
@@ -1691,5 +1825,21 @@ mod tests {
             clip_dur * 2.0 + total_freeze - 0.15,
             wa_info.duration
         );
+    }
+
+    #[test]
+    fn test_build_format_filter_graph_landscape_and_vertical() {
+        let (vf_land, fc_land) = build_format_filter_graph(1920, 1080, false);
+        assert!(fc_land.is_none());
+        let vf = vf_land.unwrap();
+        assert!(vf.contains("scale=1920:1080"));
+        assert!(vf.contains("pad=1920:1080"));
+
+        let (vf_vert, fc_vert) = build_format_filter_graph(720, 1280, true);
+        assert!(vf_vert.is_none());
+        let fc = fc_vert.unwrap();
+        assert!(fc.contains("boxblur=20:5"));
+        assert!(fc.contains("crop=720:1280"));
+        assert!(fc.contains("[vout]"));
     }
 }

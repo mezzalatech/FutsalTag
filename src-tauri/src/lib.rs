@@ -274,6 +274,7 @@ pub fn run() {
             ffmpeg::save_overlay_frame_png,
             ffmpeg::cleanup_temp_dir,
             ffmpeg::export_whatsapp_clip_ffmpeg,
+            ffmpeg::export_formatted_clip_ffmpeg,
             ai_tracker::check_ai_model_status,
             ai_tracker::detect_players_in_frame_onnx,
             ai_tracker::detect_player_boxes_range_onnx,

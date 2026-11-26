@@ -14,6 +14,8 @@ import type {
   ClubProfile,
   SubtitleCue,
   FreezeStop,
+  SpeedSegment,
+  WatermarkConfig,
   PresentationSlide,
   LibraryMatchSource,
   ClipLibraryFilter,
@@ -169,6 +171,12 @@ class ProjectStore {
   ]);
   presentationSlides = $state<PresentationSlide[]>([]);
   clubLogoDataUrl = $state<string | null>(null);
+  watermarkConfig = $state<WatermarkConfig>({
+    enabled: true,
+    position: 'top-right',
+    opacity: 0.78,
+    scaleRatio: 0.09,
+  });
   currentProjectFilePath = $state<string | null>(null);
   matchLibraryFolder = $state<string>(
     typeof localStorage !== 'undefined' ? localStorage.getItem('futsaltag_match_library_folder') || '' : ''
@@ -877,6 +885,7 @@ class ProjectStore {
     ];
     this.presentationSlides = [];
     this.clubLogoDataUrl = null;
+    this.watermarkConfig = { enabled: true, position: 'top-right', opacity: 0.78, scaleRatio: 0.09 };
     this.clearTagHistory();
     this.stage = 'tagging';
   }
@@ -1262,6 +1271,7 @@ class ProjectStore {
     },
     freezeMeta?: {
       freezeStops?: FreezeStop[];
+      speedSegments?: SpeedSegment[];
       appendCleanReplay?: boolean;
     }
   ) {
@@ -1271,6 +1281,11 @@ class ProjectStore {
         ? [...freezeMeta.freezeStops]
             .map((s) => ({ ...s }))
             .sort((a, b) => a.time - b.time)
+        : undefined;
+      const sortedSpeeds = freezeMeta?.speedSegments
+        ? [...freezeMeta.speedSegments]
+            .map((s) => ({ ...s }))
+            .sort((a, b) => a.startTime - b.startTime)
         : undefined;
       const firstStop = sortedStops && sortedStops.length > 0 ? sortedStops[0] : null;
       const updated: VideoTagEvent = {
@@ -1282,6 +1297,9 @@ class ProjectStore {
       };
       if (freezeMeta?.freezeStops !== undefined) {
         updated.freezeStops = sortedStops;
+      }
+      if (freezeMeta?.speedSegments !== undefined) {
+        updated.speedSegments = sortedSpeeds;
       }
       if (freezeMeta?.appendCleanReplay !== undefined) {
         updated.appendCleanReplay = freezeMeta.appendCleanReplay;
@@ -1311,6 +1329,7 @@ class ProjectStore {
     },
     freezeMeta?: {
       freezeStops?: FreezeStop[];
+      speedSegments?: SpeedSegment[];
       appendCleanReplay?: boolean;
     }
   ) {
@@ -1379,6 +1398,7 @@ class ProjectStore {
       playlists: this.playlists,
       presentationSlides: this.presentationSlides,
       clubLogoDataUrl: this.clubLogoDataUrl,
+      watermarkConfig: this.watermarkConfig,
       secondaryAngles: this.secondaryAngles.map((a) => ({
         id: a.id,
         name: a.name,
@@ -1563,6 +1583,22 @@ class ProjectStore {
       }
       this.presentationSlides = Array.isArray(data.presentationSlides) ? data.presentationSlides : [];
       this.clubLogoDataUrl = typeof data.clubLogoDataUrl === 'string' ? data.clubLogoDataUrl : null;
+      if (data.watermarkConfig && typeof data.watermarkConfig === 'object') {
+        const wc = data.watermarkConfig;
+        const pos = wc.position;
+        this.watermarkConfig = {
+          enabled: typeof wc.enabled === 'boolean' ? wc.enabled : true,
+          position:
+            pos === 'top-left' || pos === 'bottom-right' || pos === 'bottom-left' || pos === 'top-right'
+              ? pos
+              : 'top-right',
+          opacity: typeof wc.opacity === 'number' ? Math.max(0.15, Math.min(1, wc.opacity)) : 0.78,
+          scaleRatio:
+            typeof wc.scaleRatio === 'number' ? Math.max(0.04, Math.min(0.25, wc.scaleRatio)) : 0.09,
+        };
+      } else {
+        this.watermarkConfig = { enabled: true, position: 'top-right', opacity: 0.78, scaleRatio: 0.09 };
+      }
       this.secondaryAngles = Array.isArray(data.secondaryAngles)
         ? data.secondaryAngles.map((a: any, idx: number) => {
             const fp = typeof a?.filePath === 'string' ? a.filePath : null;
@@ -1702,6 +1738,7 @@ class ProjectStore {
     ];
     this.presentationSlides = [];
     this.clubLogoDataUrl = null;
+    this.watermarkConfig = { enabled: true, position: 'top-right', opacity: 0.78, scaleRatio: 0.09 };
     this.matchKind = 'match';
     this.competitionName = '';
     this.videoMissing = false;

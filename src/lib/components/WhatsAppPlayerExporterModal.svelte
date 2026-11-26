@@ -4,8 +4,11 @@
   import { renderDrawingsToDataUrl } from '$lib/export/telestrationRenderer';
   import {
     getEffectiveFreezeStopsForTag,
+    toSpeedSegmentsExportPayload,
+    estimateClipRenderedDuration,
     type FreezeStopExportPayload,
   } from '$lib/export/freezeStops';
+  import { buildWatermarkExportPayload } from '$lib/export/watermark';
   import {
     Share2,
     MessageCircle,
@@ -45,15 +48,7 @@
 
   let totalDurationSec = $derived(
     playerClips.reduce((acc, c) => {
-      const baseDur = Math.max(0.2, c.endTime - c.startTime);
-      if (!includeTelestrationAndVoice) return acc + baseDur;
-      const stops = getEffectiveFreezeStopsForTag(c);
-      const freezeDur =
-        (c.drawings?.length ?? 0) > 0 || c.burnSubtitle || (c.freezeStops?.length ?? 0) > 0
-          ? stops.reduce((sAcc, st) => sAcc + st.duration, 0)
-          : 0;
-      const replayMul = c.appendCleanReplay ? 2 : 1;
-      return acc + baseDur * replayMul + freezeDur;
+      return acc + estimateClipRenderedDuration(c, includeTelestrationAndVoice);
     }, 0)
   );
 
@@ -96,6 +91,10 @@
 
       const tempDir = await invoke<string>('get_temp_dir');
       const sep = tempDir.endsWith('/') || tempDir.endsWith('\\') ? '' : '/';
+      const watermarkPayload = await buildWatermarkExportPayload(
+        projectStore.clubLogoDataUrl,
+        projectStore.watermarkConfig
+      );
       const renderedClips: string[] = [];
 
       for (let i = 0; i < playerClips.length; i++) {
@@ -138,6 +137,7 @@
         }));
 
         const voiceoverBase64 = includeTelestrationAndVoice ? (clip.voiceoverAudioBase64 || null) : null;
+        const speedSegmentsPayload = toSpeedSegmentsExportPayload(clip);
 
         await invoke<string>('export_whatsapp_clip_ffmpeg', {
           inputPath: projectStore.videoFilePath,
@@ -150,6 +150,8 @@
           voiceoverBase64,
           freezeStops: freezeStopsPayload.length > 0 ? freezeStopsPayload : null,
           appendCleanReplay,
+          speedSegments: speedSegmentsPayload.length > 0 ? speedSegmentsPayload : null,
+          watermark: watermarkPayload,
         });
 
         renderedClips.push(tempPath);

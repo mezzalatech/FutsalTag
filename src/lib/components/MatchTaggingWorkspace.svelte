@@ -10,8 +10,10 @@
   import { renderDrawingsToDataUrl } from "$lib/export/telestrationRenderer";
   import {
     getEffectiveFreezeStopsForTag,
+    toSpeedSegmentsExportPayload,
     type FreezeStopExportPayload,
   } from "$lib/export/freezeStops";
+  import { buildWatermarkExportPayload } from "$lib/export/watermark";
   import type {
     VideoTagEvent,
     TagCategory,
@@ -770,6 +772,10 @@
       isBatchExporting = true;
       const sep =
         targetDir.endsWith("/") || targetDir.endsWith("\\") ? "" : "/";
+      const watermarkPayload = await buildWatermarkExportPayload(
+        projectStore.clubLogoDataUrl,
+        projectStore.watermarkConfig,
+      );
       for (let i = 0; i < targets.length; i++) {
         const tag = targets[i];
         const idxStr = String(i + 1).padStart(2, "0");
@@ -782,12 +788,15 @@
         const hasDrawings = Boolean(tag.drawings?.length);
         const hasVoice = Boolean(tag.voiceoverAudioBase64);
         const effectiveStops = getEffectiveFreezeStopsForTag(tag);
+        const speedSegmentsPayload = toSpeedSegmentsExportPayload(tag);
+        const hasSpeeds = speedSegmentsPayload.length > 0;
         const appendCleanReplay = Boolean(tag.appendCleanReplay);
         const clipDur = Math.max(0.4, tag.endTime - tag.startTime);
         if (
           hasDrawings ||
           hasVoice ||
           effectiveStops.length > 0 ||
+          hasSpeeds ||
           appendCleanReplay
         ) {
           const freezeSec =
@@ -824,6 +833,9 @@
             freezeStops:
               freezeStopsPayload.length > 0 ? freezeStopsPayload : null,
             appendCleanReplay,
+            speedSegments:
+              speedSegmentsPayload.length > 0 ? speedSegmentsPayload : null,
+            watermark: watermarkPayload,
           });
         } else {
           await invoke<string>("render_video_clip_ffmpeg", {
@@ -832,6 +844,7 @@
             startSec: tag.startTime,
             durationSec: clipDur,
             fastCopy: true,
+            watermark: watermarkPayload,
           });
         }
       }
@@ -907,15 +920,24 @@
             (tag.voiceoverTranscript?.trim() || (tag.subtitleCues?.length ?? 0) > 0),
         );
       const effectiveStops = useTel ? getEffectiveFreezeStopsForTag(tag) : [];
+      const speedSegmentsPayload = toSpeedSegmentsExportPayload(tag);
+      const hasSpeeds = speedSegmentsPayload.length > 0;
+      const watermarkPayload = await buildWatermarkExportPayload(
+        projectStore.clubLogoDataUrl,
+        projectStore.watermarkConfig,
+      );
       const appendCleanReplay = useTel && Boolean(tag.appendCleanReplay);
       const needsBurnPass =
         hasDrawings ||
         hasVoice ||
         hasSubtitle ||
         effectiveStops.length > 0 ||
+        hasSpeeds ||
         appendCleanReplay;
       const needsFormatPass = opts.aspectRatio === "9:16" || opts.crf !== 23;
       const clipDur = Math.max(0.4, tag.endTime - tag.startTime);
+      const passWatermark =
+        needsBurnPass && needsFormatPass ? null : watermarkPayload;
 
       if (needsBurnPass) {
         let burnTarget = outPath;
@@ -965,6 +987,9 @@
           freezeStops:
             freezeStopsPayload.length > 0 ? freezeStopsPayload : null,
           appendCleanReplay,
+          speedSegments:
+            speedSegmentsPayload.length > 0 ? speedSegmentsPayload : null,
+          watermark: passWatermark,
         });
         if (needsFormatPass) {
           await invoke<string>("export_formatted_clip_ffmpeg", {
@@ -974,6 +999,7 @@
             crf: opts.crf,
             vertical9x16: opts.aspectRatio === "9:16",
             removeInput: true,
+            watermark: watermarkPayload,
           });
         }
       } else if (needsFormatPass) {
@@ -985,6 +1011,7 @@
           targetHeight,
           crf: opts.crf,
           vertical9x16: opts.aspectRatio === "9:16",
+          watermark: watermarkPayload,
         });
       } else {
         await invoke<string>("render_video_clip_ffmpeg", {
@@ -994,6 +1021,7 @@
           durationSec: clipDur,
           fastCopy: opts.resolution === "720p" ? false : true,
           targetHeight: opts.resolution === "720p" ? 720 : undefined,
+          watermark: watermarkPayload,
         });
       }
       notifyUser(`Klip MP4 berhasil disimpan!`);

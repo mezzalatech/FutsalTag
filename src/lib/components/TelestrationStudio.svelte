@@ -18,7 +18,10 @@
     TemporalCalibrationFrame,
     SubtitleCue,
     FreezeStop,
+    SpeedSegment,
   } from "$lib/types";
+  import { buildWatermarkExportPayload } from "$lib/export/watermark";
+  import { toSpeedSegmentsExportPayload } from "$lib/export/freezeStops";
   import {
     runMultiPlayerAutoTracking,
     checkAiModelStatus,
@@ -82,6 +85,7 @@
     Download,
     Crosshair,
     Scissors,
+    Gauge,
   } from "lucide-svelte";
 
   // --- REFS & STATE ---
@@ -107,9 +111,14 @@
   let freezeTime = $state(0); // legacy single freeze timestamp
   let freezeStops = $state<FreezeStop[]>([]);
   let selectedFreezeStopId = $state<string | null>(null);
+  let speedSegments = $state<SpeedSegment[]>([]);
+  let selectedSpeedSegmentId = $state<string | null>(null);
   let appendCleanReplay = $state<boolean>(false);
   const selectedFreezeStop = $derived(
     freezeStops.find((s) => s.id === selectedFreezeStopId) ?? null,
+  );
+  const selectedSpeedSegment = $derived(
+    speedSegments.find((s) => s.id === selectedSpeedSegmentId) ?? null,
   );
   const sliderDur = $derived(
     selectedFreezeStop ? selectedFreezeStop.duration : pauseDuration,
@@ -131,7 +140,33 @@
     "player-cross",
     "magnifier",
     "vision-cone",
+    "player-ghost",
   ];
+
+  const MULTI_PLAYER_SNAP_TOOLS: DrawingToolType[] = [
+    "player-link",
+    "compactness-hull",
+    "pressing-zone",
+    "distance-line",
+  ];
+
+  let inProgressMatchedBoxes = new Map<number, DetectedPlayerBox>();
+
+  function snapPointToDetectedPlayer(pt: Point2D): {
+    point: Point2D;
+    box?: DetectedPlayerBox;
+  } {
+    if (!isPickerStale && detectedFrameBoxes.length > 0) {
+      const hit = findPickerBoxAtPoint(pt);
+      if (hit) {
+        return {
+          point: getBoxAnchor(hit.box, getAnchorMode(activeTool)),
+          box: hit.box,
+        };
+      }
+    }
+    return { point: pt };
+  }
 
   function getAnchorMode(type: DrawingToolType): "foot" | "center" {
     return type === "magnifier" || type === "player-cross" ? "center" : "foot";
@@ -374,6 +409,10 @@
       ? JSON.parse(JSON.stringify(clip.freezeStops))
       : [];
     selectedFreezeStopId = freezeStops[0]?.id ?? null;
+    speedSegments = clip.speedSegments
+      ? JSON.parse(JSON.stringify(clip.speedSegments))
+      : [];
+    selectedSpeedSegmentId = speedSegments[0]?.id ?? null;
     appendCleanReplay = Boolean(clip.appendCleanReplay);
     isReplayPass = false;
     triggeredStopIds.clear();
@@ -463,6 +502,7 @@
         finishInProgressMultiPoint();
       } else if (e.key === "Escape") {
         inProgressDrawing = null;
+        inProgressMatchedBoxes.clear();
         isLiveFollowDrag = false;
         isHoldingLiveFollow = false;
         if (videoEl) {
@@ -617,9 +657,77 @@
     }
   }
 
+  function addSlowMoAtPlayhead(rate = 0.5) {
+    const { start, end } = getEffectiveClipRange();
+    const existing = speedSegments.find(
+      (s) => currentTime >= s.startTime - 0.05 && currentTime <= s.endTime + 0.05,
+    );
+    if (existing) {
+      selectedSpeedSegmentId = existing.id;
+      exportNotice = `Segmen Slow-Mo sudah ada di ${(existing.startTime - start).toFixed(1)}s–${(existing.endTime - start).toFixed(1)}s (${existing.rate}x).`;
+      setTimeout(() => (exportNotice = null), 2400);
+      return;
+    }
+    const span = Math.min(2.4, Math.max(0.6, (end - start) * 0.45));
+    let segStart = Math.max(start, currentTime - span * 0.5);
+    let segEnd = Math.min(end, segStart + span);
+    if (segEnd - segStart < 0.4) {
+      segStart = Math.max(start, segEnd - 0.4);
+    }
+    const newSeg: SpeedSegment = {
+      id: `sp_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+      startTime: Number(segStart.toFixed(2)),
+      endTime: Number(segEnd.toFixed(2)),
+      rate,
+      label: rate < 1 ? `Slow-Mo ${rate}x` : `Speed ${rate}x`,
+    };
+    speedSegments = [...speedSegments, newSeg].sort((a, b) => a.startTime - b.startTime);
+    selectedSpeedSegmentId = newSeg.id;
+    exportNotice = `Segmen ${newSeg.rate}x ditambahkan (${(newSeg.startTime - start).toFixed(1)}s–${(newSeg.endTime - start).toFixed(1)}s).`;
+    setTimeout(() => (exportNotice = null), 2500);
+  }
+
+  function moveOrResizeSpeedSegment(id: string, nextStart: number, nextEnd: number) {
+    const { start, end } = getEffectiveClipRange();
+    const s = Number(Math.max(start, Math.min(end - 0.15, nextStart)).toFixed(2));
+    const e = Number(Math.min(end, Math.max(s + 0.15, nextEnd)).toFixed(2));
+    speedSegments = speedSegments
+      .map((seg) => (seg.id === id ? { ...seg, startTime: s, endTime: e } : seg))
+      .sort((a, b) => a.startTime - b.startTime);
+  }
+
+  function updateSpeedSegmentRate(id: string, nextRate: number) {
+    speedSegments = speedSegments.map((seg) =>
+      seg.id === id
+        ? {
+            ...seg,
+            rate: nextRate,
+            label: nextRate < 1 ? `Slow-Mo ${nextRate}x` : `Speed ${nextRate}x`,
+          }
+        : seg,
+    );
+  }
+
+  function deleteSpeedSegment(id: string) {
+    speedSegments = speedSegments.filter((s) => s.id !== id);
+    if (selectedSpeedSegmentId === id) {
+      selectedSpeedSegmentId = speedSegments[0]?.id ?? null;
+    }
+  }
+
   function renderLoop() {
     if (videoEl && !videoEl.paused) {
       currentTime = videoEl.currentTime;
+
+      if (!isHoldingLiveFollow && !isReplayPass && speedSegments.length > 0) {
+        const activeSeg = speedSegments.find(
+          (s) => currentTime >= s.startTime && currentTime < s.endTime,
+        );
+        const desiredRate = activeSeg ? activeSeg.rate : 1.0;
+        if (Math.abs(videoEl.playbackRate - desiredRate) > 0.01) {
+          videoEl.playbackRate = desiredRate;
+        }
+      }
 
       // Multi Freeze-Frame Stop trigger during Broadcast Preview (skipped in clean replay pass)
       if (isPreviewing && !isFreezeActive && !isReplayPass) {
@@ -886,7 +994,9 @@
   ) {
     const mode = getAnchorMode(activeTool);
     const scaleFactor = w / 1280;
-    const canAttachTool = SINGLE_PLAYER_TOOLS.includes(activeTool);
+    const canAttachTool =
+      SINGLE_PLAYER_TOOLS.includes(activeTool) ||
+      MULTI_PLAYER_SNAP_TOOLS.includes(activeTool);
 
     for (let i = 0; i < detectedFrameBoxes.length; i++) {
       const b = detectedFrameBoxes[i];
@@ -978,10 +1088,19 @@
     const minPts = inProgressDrawing.type === "player-link" ? 2 : 3;
     if (inProgressDrawing.points.length >= minPts) {
       const created = { ...inProgressDrawing };
+      const boxesSnap = new Map(inProgressMatchedBoxes);
+      inProgressMatchedBoxes.clear();
       drawings = [...drawings, created];
       selectedElementId = created.id;
       rightPanelTab = "elements";
       inProgressDrawing = null;
+      if (
+        created.type === "player-link" ||
+        created.type === "compactness-hull" ||
+        boxesSnap.size > 0
+      ) {
+        trackElementPointsAutomated(created, currentTime, boxesSnap);
+      }
     } else {
       exportNotice = `Tambahkan minimal ${minPts} titik terlebih dahulu.`;
       setTimeout(() => (exportNotice = null), 2500);
@@ -1243,12 +1362,15 @@
       activeTool === "pressing-zone" ||
       activeTool === "player-link"
     ) {
+      const snapped = snapPointToDetectedPlayer(pt);
       if (!inProgressDrawing || inProgressDrawing.type !== activeTool) {
+        inProgressMatchedBoxes.clear();
+        if (snapped.box) inProgressMatchedBoxes.set(0, snapped.box);
         inProgressDrawing = {
           id: `${activeTool}-${Date.now()}`,
           type: activeTool,
           color: activeColor,
-          points: [pt],
+          points: [snapped.point],
           timeStart: activeClip ? activeClip.startTime : currentTime,
           timeEnd: activeClip ? activeClip.endTime : currentTime + 5,
           isChromaFloor: isFloorBlend || isFloorElType(activeTool),
@@ -1264,25 +1386,38 @@
         if (
           activeTool !== "player-link" &&
           inProgressDrawing.points.length >= 3 &&
-          Math.hypot(pt.x - p0.x, pt.y - p0.y) < 0.05
+          Math.hypot(snapped.point.x - p0.x, snapped.point.y - p0.y) < 0.05
         ) {
           const created = { ...inProgressDrawing };
+          const boxesSnap = new Map(inProgressMatchedBoxes);
+          inProgressMatchedBoxes.clear();
           drawings = [...drawings, created];
           selectedElementId = created.id;
           rightPanelTab = "elements";
           inProgressDrawing = null;
+          if (created.type === "compactness-hull" || boxesSnap.size > 0) {
+            trackElementPointsAutomated(created, currentTime, boxesSnap);
+          }
         } else {
-          inProgressDrawing.points.push(pt);
+          const nextIdx = inProgressDrawing.points.length;
+          if (snapped.box) inProgressMatchedBoxes.set(nextIdx, snapped.box);
+          inProgressDrawing.points.push(snapped.point);
         }
       }
       return;
     }
 
+    const startSnap =
+      activeTool === "distance-line"
+        ? snapPointToDetectedPlayer(pt)
+        : { point: pt, box: undefined };
+    inProgressMatchedBoxes.clear();
+    if (startSnap.box) inProgressMatchedBoxes.set(0, startSnap.box);
     inProgressDrawing = {
       id: `el-${Date.now()}`,
       type: activeTool,
       color: activeColor,
-      points: [pt],
+      points: [startSnap.point],
       timeStart: activeClip ? activeClip.startTime : currentTime,
       timeEnd: activeClip ? activeClip.endTime : currentTime + 5,
       isChromaFloor: isFloorBlend || isFloorElType(activeTool),
@@ -1375,7 +1510,8 @@
       isPlayerPickMode &&
       !isPickerStale &&
       detectedFrameBoxes.length > 0 &&
-      SINGLE_PLAYER_TOOLS.includes(activeTool) &&
+      (SINGLE_PLAYER_TOOLS.includes(activeTool) ||
+        MULTI_PLAYER_SNAP_TOOLS.includes(activeTool)) &&
       !activeCornerDrag &&
       !activeCurveControl &&
       !inProgressDrawing
@@ -1445,10 +1581,21 @@
       };
     }
 
-    drawings.push({ ...inProgressDrawing });
-    selectedElementId = inProgressDrawing.id;
+    const finished = { ...inProgressDrawing };
+    const boxesSnap = new Map(inProgressMatchedBoxes);
+    inProgressMatchedBoxes.clear();
+    if (finished.type === "distance-line" && finished.points.length >= 2) {
+      const endSnap = snapPointToDetectedPlayer(finished.points[1]);
+      finished.points[1] = endSnap.point;
+      if (endSnap.box) boxesSnap.set(1, endSnap.box);
+    }
+    drawings.push(finished);
+    selectedElementId = finished.id;
     rightPanelTab = "elements";
     inProgressDrawing = null;
+    if (finished.type === "distance-line" && boxesSnap.size > 0) {
+      trackElementPointsAutomated(finished, currentTime, boxesSnap);
+    }
   }
 
   // --- KEYFRAME TRACKING ENGINE ---
@@ -1694,7 +1841,10 @@
       isPlayerPickMode = true;
       hoveredPlayerBoxIdx = null;
 
-      if (!SINGLE_PLAYER_TOOLS.includes(activeTool)) {
+      if (
+        !SINGLE_PLAYER_TOOLS.includes(activeTool) &&
+        !MULTI_PLAYER_SNAP_TOOLS.includes(activeTool)
+      ) {
         activeTool = "spotlight-3d";
       }
 
@@ -2008,11 +2158,12 @@
       },
       {
         freezeStops,
+        speedSegments,
         appendCleanReplay,
       },
     );
     if (!silent) {
-      exportNotice = "Telestrasi, subtitle & titik freeze-frame disimpan!";
+      exportNotice = "Telestrasi, subtitle, slow-mo & titik freeze-frame disimpan!";
       setTimeout(() => (exportNotice = null), 2500);
     }
   }
@@ -2032,6 +2183,7 @@
       },
       {
         freezeStops,
+        speedSegments,
         appendCleanReplay,
       },
     );
@@ -2265,56 +2417,99 @@
     setTimeout(() => (exportNotice = null), 3000);
   }
 
-  async function triggerMultiPointTracking() {
-    if (!selectedElement || !videoEl || selectedElement.points.length < 2)
-      return;
+  async function trackElementPointsAutomated(
+    el: DrawingElement,
+    anchorSec: number,
+    matchedBoxesByIdx?: Map<number, DetectedPlayerBox>,
+  ) {
+    if (el.points.length < 2) return;
     if (isMultiPointTracking) {
       trackAbortController?.abort();
       isMultiPointTracking = false;
       return;
     }
 
-    const start = activeClip ? activeClip.startTime : currentTime;
+    const start = activeClip ? activeClip.startTime : Math.max(0, anchorSec - 2.5);
     const end = activeClip
       ? activeClip.endTime
-      : Math.min(duration, currentTime + 5);
+      : Math.min(duration, anchorSec + 3.5);
+    const clampedAnchor = Math.max(start, Math.min(end, anchorSec));
+    const hasLocalPath =
+      isTauriDesktop() &&
+      Boolean(projectStore.videoFilePath) &&
+      (projectStore.videoFilePath!.startsWith("/") ||
+        /^[A-Za-z]:[\\/]/.test(projectStore.videoFilePath!));
+
     isMultiPointTracking = true;
     singleTrackProgress = 0;
     trackAbortController = new AbortController();
+    exportNotice = `Melacak ${el.points.length} titik elemen (${aiEngineLabel})...`;
 
     try {
       const nextPointTracks: Record<number, TrackingKeyframe[]> = {
-        ...(selectedElement.pointTracks || {}),
+        ...(el.pointTracks || {}),
       };
-      const ptsCount = selectedElement.points.length;
+      const ptsCount = el.points.length;
 
       for (let idx = 0; idx < ptsCount; idx++) {
         if (trackAbortController.signal.aborted) break;
-        const pt = selectedElement.points[idx];
-        const box = {
-          x: Math.max(0, pt.x - 0.025),
-          y: Math.max(0, pt.y - 0.06),
-          width: 0.05,
-          height: 0.09,
-        };
-        const kfs = await runPlayerAutoTracking(videoEl, box, start, end, {
-          stepSeconds: 0.08,
-          signal: trackAbortController.signal,
-          onProgress: (p) => {
-            singleTrackProgress = Math.round(((idx + p) / ptsCount) * 100);
-          },
-        });
+        const pt = el.points[idx];
+        const mBox = matchedBoxesByIdx?.get(idx);
+        let kfs: TrackingKeyframe[] = [];
+
+        if (hasLocalPath) {
+          try {
+            const res = await trackSinglePlayerOnnx({
+              inputPath: projectStore.videoFilePath,
+              startTime: start,
+              endTime: end,
+              anchorTime: clampedAnchor,
+              anchorX: pt.x,
+              anchorY: pt.y,
+              anchorW: mBox?.w,
+              anchorH: mBox?.h,
+              anchorMode: "foot",
+              direction: trackDirection,
+              fps: 15,
+            });
+            kfs = res.keyframes;
+            singleTrackProgress = Math.round(((idx + 1) / ptsCount) * 100);
+          } catch {
+            kfs = [];
+          }
+        }
+
+        if (kfs.length <= 1 && videoEl) {
+          const boxW = mBox?.w ?? 0.05;
+          const boxH = mBox?.h ?? 0.095;
+          const box = {
+            x: Math.max(0, pt.x - boxW * 0.5),
+            y: Math.max(0, pt.y - boxH * 0.85),
+            width: boxW,
+            height: boxH,
+          };
+          kfs = await runPlayerAutoTracking(videoEl, box, start, end, {
+            anchorTime: clampedAnchor,
+            stepSeconds: 0.08,
+            signal: trackAbortController.signal,
+            onProgress: (p) => {
+              singleTrackProgress = Math.round(((idx + p) / ptsCount) * 100);
+            },
+          });
+        }
+
         if (kfs.length > 0) {
           nextPointTracks[idx] = kfs;
         }
       }
 
-      if (selectedElement && Object.keys(nextPointTracks).length > 0) {
-        selectedElement.pointTracks = nextPointTracks;
-        selectedElement.isTracking = true;
+      const target = drawings.find((d) => d.id === el.id) ?? el;
+      if (Object.keys(nextPointTracks).length > 0) {
+        target.pointTracks = nextPointTracks;
+        target.isTracking = true;
         drawings = [...drawings];
-        exportNotice = `Multi-Point Tracking selesai (${Object.keys(nextPointTracks).length} titik).`;
-        setTimeout(() => (exportNotice = null), 3500);
+        exportNotice = `Multi-Point Tracking selesai (${Object.keys(nextPointTracks).length} titik ikut pemain!).`;
+        setTimeout(() => (exportNotice = null), 3800);
       }
     } catch (err: any) {
       exportNotice = `Multi-Point Tracking gagal: ${err?.message || err}`;
@@ -2323,6 +2518,11 @@
       isMultiPointTracking = false;
       trackAbortController = null;
     }
+  }
+
+  async function triggerMultiPointTracking() {
+    if (!selectedElement || selectedElement.points.length < 2) return;
+    await trackElementPointsAutomated(selectedElement, currentTime);
   }
 
   function toggleCameraZoomOnSelected() {
@@ -2380,6 +2580,15 @@
       const cameraZoomTuple = zoomObj
         ? [zoomObj.x, zoomObj.y, zoomObj.scale]
         : null;
+      const speedSegmentsPayload = toSpeedSegmentsExportPayload({
+        startTime: activeClip.startTime,
+        endTime: activeClip.endTime,
+        speedSegments,
+      });
+      const watermarkPayload = await buildWatermarkExportPayload(
+        projectStore.clubLogoDataUrl,
+        projectStore.watermarkConfig,
+      );
       const needsAnimatedExport =
         hasAnimatedTelestration(
           drawings,
@@ -2572,6 +2781,9 @@
           targetHeight: 720,
           freezeStops: freezeStopsPayload.length > 0 ? freezeStopsPayload : null,
           appendCleanReplay,
+          speedSegments:
+            speedSegmentsPayload.length > 0 ? speedSegmentsPayload : null,
+          watermark: watermarkPayload,
         });
       } else {
         const freezeStopsPayload: {
@@ -2646,6 +2858,9 @@
           cameraZoom: cameraZoomTuple,
           freezeStops: freezeStopsPayload.length > 0 ? freezeStopsPayload : null,
           appendCleanReplay,
+          speedSegments:
+            speedSegmentsPayload.length > 0 ? speedSegmentsPayload : null,
+          watermark: watermarkPayload,
         });
       }
 
@@ -3514,8 +3729,12 @@
           <div class="prop-row">
             <span class="prop-label">Keyframes:</span>
             <span class="kf-count-pill">
-              {selectedElement.keyframes ? selectedElement.keyframes.length : 0}
-              titik gerak
+              {#if selectedElement.pointTracks && Object.keys(selectedElement.pointTracks).length > 0}
+                {Object.keys(selectedElement.pointTracks).length} titik ter-track
+              {:else}
+                {selectedElement.keyframes ? selectedElement.keyframes.length : 0}
+                titik gerak
+              {/if}
             </span>
           </div>
 
@@ -3990,7 +4209,7 @@
     </div>
   </div>
 
-  {#if (drawings.length > 0 || freezeStops.length > 0) && activeClip}
+  {#if (drawings.length > 0 || freezeStops.length > 0 || speedSegments.length > 0) && activeClip}
     <TelestrationElementTimeline
       {drawings}
       {selectedElementId}
@@ -3999,6 +4218,8 @@
       {currentTime}
       {freezeStops}
       {selectedFreezeStopId}
+      {speedSegments}
+      {selectedSpeedSegmentId}
       onSelect={(id) => {
         selectedElementId = id;
         rightPanelTab = "elements";
@@ -4015,6 +4236,12 @@
       }}
       onMoveFreezeStop={moveFreezeStop}
       onDeleteFreezeStop={deleteFreezeStop}
+      onAddSpeedSegment={() => addSlowMoAtPlayhead(0.5)}
+      onSelectSpeedSegment={(id) => {
+        selectedSpeedSegmentId = id;
+      }}
+      onChangeSpeedSegmentSpan={moveOrResizeSpeedSegment}
+      onDeleteSpeedSegment={deleteSpeedSegment}
     />
   {/if}
 
@@ -4046,6 +4273,31 @@
         <span>Jeda Freeze (F)</span>
       </button>
 
+      <button
+        type="button"
+        class="btn-add-slowmo-ft"
+        onclick={() => addSlowMoAtPlayhead(0.5)}
+        title="Tambahkan segmen Slow-Mo 0.5x di sekitar posisi video saat ini"
+      >
+        <Gauge size={13} />
+        <span>+ Slow-Mo</span>
+      </button>
+
+      {#if selectedSpeedSegment}
+        <div class="speed-pills-wrap" title="Kecepatan segmen terpilih">
+          {#each [0.25, 0.5, 0.75, 1.5, 2] as r}
+            <button
+              type="button"
+              class="spd-pill-btn"
+              class:active={Math.abs(selectedSpeedSegment.rate - r) < 0.02}
+              onclick={() => updateSpeedSegmentRate(selectedSpeedSegment.id, r)}
+            >
+              {r}x
+            </button>
+          {/each}
+        </div>
+      {/if}
+
       <div class="pause-slider-wrap">
         <Clock size={15} />
         <span class="slider-label">
@@ -4076,6 +4328,17 @@
         <input type="checkbox" bind:checked={appendCleanReplay} />
         <span>+ Replay Bersih</span>
       </label>
+
+      {#if projectStore.clubLogoDataUrl}
+        <label
+          class="replay-toggle-pill wm-toggle-pill"
+          class:active={projectStore.watermarkConfig.enabled}
+          title="Sertakan Watermark Logo Klub di pojok video saat Ekspor MP4"
+        >
+          <input type="checkbox" bind:checked={projectStore.watermarkConfig.enabled} />
+          <span>Logo WM</span>
+        </label>
+      {/if}
     </div>
 
     <div class="footer-right">
@@ -5102,6 +5365,54 @@
   .btn-add-freeze-ft:hover {
     background: rgba(245, 158, 11, 0.28);
     border-color: #f59e0b;
+    color: #ffffff;
+  }
+
+  .btn-add-slowmo-ft {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: rgba(139, 92, 246, 0.14);
+    border: 1px solid rgba(167, 139, 250, 0.55);
+    color: #ddd6fe;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 5px 10px;
+    border-radius: 7px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .btn-add-slowmo-ft:hover {
+    background: rgba(139, 92, 246, 0.28);
+    border-color: #a78bfa;
+    color: #ffffff;
+  }
+
+  .speed-pills-wrap {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    background: #0c1a33;
+    border: 1px solid #4c1d95;
+    padding: 3px 5px;
+    border-radius: 7px;
+  }
+
+  .spd-pill-btn {
+    background: transparent;
+    border: none;
+    color: #c4b5fd;
+    font-size: 10px;
+    font-weight: 700;
+    font-family: monospace;
+    padding: 2px 6px;
+    border-radius: 5px;
+    cursor: pointer;
+  }
+
+  .spd-pill-btn.active {
+    background: #7c3aed;
     color: #ffffff;
   }
 

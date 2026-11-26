@@ -23,6 +23,21 @@ pub struct FreezeStopSpec {
     pub overlay_base64: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpeedSegmentSpec {
+    pub start_sec: f64,
+    pub end_sec: f64,
+    pub rate: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WatermarkSpec {
+    pub image_base64: String,
+    pub position: String,
+    pub opacity: f64,
+    pub scale_ratio: f64,
+}
+
 /// Normalize explicit multi freeze-frame stops or fall back to single legacy freeze parameters.
 fn normalize_freeze_stops(
     stops: Option<Vec<FreezeStopSpec>>,
@@ -438,6 +453,96 @@ fn decode_base64_to_temp(b64: &str, prefix: &str, ext: &str) -> Result<PathBuf, 
     Ok(p)
 }
 
+/// Normalize and deduplicate variable-speed segments clamped to `[start_sec, end_sec]`.
+fn normalize_speed_segments(
+    segments: Option<Vec<SpeedSegmentSpec>>,
+    start_sec: f64,
+    end_sec: f64,
+) -> Vec<SpeedSegmentSpec> {
+    let Some(list) = segments else {
+        return Vec::new();
+    };
+    let mut valid: Vec<SpeedSegmentSpec> = list
+        .into_iter()
+        .map(|mut s| {
+            s.start_sec = s.start_sec.clamp(start_sec, end_sec);
+            s.end_sec = s.end_sec.clamp(start_sec, end_sec);
+            s.rate = s.rate.clamp(0.25, 4.0);
+            s
+        })
+        .filter(|s| (s.end_sec - s.start_sec) >= 0.12 && (s.rate - 1.0).abs() > 0.02)
+        .collect();
+    valid.sort_by(|a, b| a.start_sec.total_cmp(&b.start_sec));
+
+    let mut clean: Vec<SpeedSegmentSpec> = Vec::with_capacity(valid.len());
+    for seg in valid {
+        if let Some(prev) = clean.last() {
+            if seg.start_sec < prev.end_sec {
+                if (seg.end_sec - prev.end_sec) >= 0.12 {
+                    clean.push(SpeedSegmentSpec {
+                        start_sec: prev.end_sec,
+                        end_sec: seg.end_sec,
+                        rate: seg.rate,
+                    });
+                }
+                continue;
+            }
+        }
+        clean.push(seg);
+    }
+    clean
+}
+
+/// Partition `[seg_start, seg_end]` along speed segment boundaries into `(slice_start, slice_end, rate)`.
+fn partition_moving_slices(
+    seg_start: f64,
+    seg_end: f64,
+    speed_segs: &[SpeedSegmentSpec],
+) -> Vec<(f64, f64, f64)> {
+    if seg_end - seg_start <= 0.08 {
+        return Vec::new();
+    }
+    let mut slices: Vec<(f64, f64, f64)> = Vec::new();
+    let mut cursor = seg_start;
+    for sp in speed_segs {
+        if sp.end_sec <= cursor {
+            continue;
+        }
+        if sp.start_sec >= seg_end {
+            break;
+        }
+        if sp.start_sec > cursor + 0.05 {
+            slices.push((cursor, sp.start_sec, 1.0));
+            cursor = sp.start_sec;
+        }
+        let s_end = sp.end_sec.min(seg_end);
+        if s_end > cursor + 0.05 {
+            slices.push((cursor, s_end, sp.rate));
+            cursor = s_end;
+        }
+    }
+    if seg_end > cursor + 0.05 {
+        slices.push((cursor, seg_end, 1.0));
+    }
+    slices
+}
+
+/// Decompose a speed multiplier in `0.25..=4.0` into valid chained FFmpeg `atempo` filters (`0.5..=2.0` each).
+fn build_atempo_chain(rate: f64) -> String {
+    let mut remaining = rate.clamp(0.25, 4.0);
+    let mut stages: Vec<String> = Vec::new();
+    while remaining < 0.5 - 1e-6 {
+        stages.push("atempo=0.5000".to_string());
+        remaining /= 0.5;
+    }
+    while remaining > 2.0 + 1e-6 {
+        stages.push("atempo=2.0000".to_string());
+        remaining /= 2.0;
+    }
+    stages.push(format!("atempo={:.4}", remaining.clamp(0.5, 2.0)));
+    stages.join(",")
+}
+
 fn build_norm_segment_args(
     input_path: &str,
     out_path: &str,
@@ -447,9 +552,30 @@ fn build_norm_segment_args(
     out_h: u32,
     has_audio: bool,
 ) -> Vec<String> {
+    build_norm_segment_args_with_speed(input_path, out_path, start_sec, dur_sec, out_w, out_h, has_audio, 1.0)
+}
+
+fn build_norm_segment_args_with_speed(
+    input_path: &str,
+    out_path: &str,
+    start_sec: f64,
+    dur_sec: f64,
+    out_w: u32,
+    out_h: u32,
+    has_audio: bool,
+    rate: f64,
+) -> Vec<String> {
     let (vcodec, vflags) = detect_video_encoder();
+    let speed = rate.clamp(0.25, 4.0);
+    let has_speed_change = (speed - 1.0).abs() > 0.02;
+    let pts_prefix = if has_speed_change {
+        format!("setpts={:.6}*PTS,", 1.0 / speed)
+    } else {
+        String::new()
+    };
     let vf = format!(
-        "scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p",
+        "{pts}scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p",
+        pts = pts_prefix,
         w = out_w,
         h = out_h
     );
@@ -457,10 +583,13 @@ fn build_norm_segment_args(
     let mut args = vec![
         "-y".into(),
         "-ss".into(),
-        format!("{:.3}", start_sec),
-        "-i".into(),
-        input_path.into(),
+        format!("{:.3}", start_sec.max(0.0)),
     ];
+    if has_speed_change {
+        // Trim source span at input before setpts expands/compresses output duration.
+        args.extend(["-t".into(), format!("{:.3}", dur_sec.max(0.08))]);
+    }
+    args.extend(["-i".into(), input_path.into()]);
 
     if !has_audio {
         args.extend([
@@ -471,7 +600,20 @@ fn build_norm_segment_args(
         ]);
     }
 
-    args.extend(["-t".into(), format!("{:.3}", dur_sec), "-vf".into(), vf]);
+    let out_dur = if has_speed_change {
+        (dur_sec / speed).max(0.1)
+    } else {
+        dur_sec
+    };
+    if !has_speed_change || !has_audio {
+        args.extend(["-t".into(), format!("{:.3}", out_dur)]);
+    }
+    args.extend(["-vf".into(), vf]);
+
+    if has_audio && has_speed_change {
+        args.extend(["-af".into(), build_atempo_chain(speed)]);
+    }
+
     args.extend(["-c:v".into(), vcodec.into()]);
     for f in vflags {
         args.push(f.into());
@@ -499,6 +641,114 @@ fn build_norm_segment_args(
     args
 }
 
+/// Render partitioned moving slices inside `[seg_start, seg_end]` respecting `speed_segs`.
+fn render_partitioned_moving_slices(
+    input_path: &str,
+    seg_start: f64,
+    seg_end: f64,
+    out_w: u32,
+    out_h: u32,
+    has_audio: bool,
+    speed_segs: &[SpeedSegmentSpec],
+    temp_prefix: &str,
+    parts: &mut Vec<String>,
+    cleanup: &mut TempCleanup,
+) -> Result<(), String> {
+    let temp_dir = std::env::temp_dir();
+    let slices = partition_moving_slices(seg_start, seg_end, speed_segs);
+    for (sub_idx, (s_start, s_end, rate)) in slices.into_iter().enumerate() {
+        let pm = temp_dir.join(format!("{}_{}.mp4", temp_prefix, sub_idx));
+        cleanup.0.push(pm.clone());
+        let pm_str = pm.to_string_lossy().to_string();
+        let args = build_norm_segment_args_with_speed(
+            input_path,
+            &pm_str,
+            s_start,
+            s_end - s_start,
+            out_w,
+            out_h,
+            has_audio,
+            rate,
+        );
+        run_ffmpeg(&args)?;
+        parts.push(pm_str);
+    }
+    Ok(())
+}
+
+/// Apply club logo watermark overlay to `video_path` in-place via a temporary file swap.
+fn apply_watermark_overlay_ffmpeg(
+    video_path: &str,
+    watermark: Option<&WatermarkSpec>,
+) -> Result<(), String> {
+    let Some(wm) = watermark else {
+        return Ok(());
+    };
+    if wm.image_base64.trim().is_empty() {
+        return Ok(());
+    }
+
+    let wm_png = decode_base64_to_temp(&wm.image_base64, "futsaltag_wm", "png")?;
+    let info = probe_video_info(video_path)?;
+    let vw = info.width.max(320);
+    let ratio = wm.scale_ratio.clamp(0.04, 0.25);
+    let wm_w = ((((vw as f64 * ratio).round() as u32) / 2) * 2).clamp(48, (vw / 2).max(48));
+    let pad = ((vw as f64 * 0.025).round() as u32).max(14);
+    let opacity = wm.opacity.clamp(0.15, 1.0);
+    let pos_expr = match wm.position.trim() {
+        "top-left" => format!("{}:{}", pad, pad),
+        "bottom-left" => format!("{}:H-h-{}", pad, pad),
+        "bottom-right" => format!("W-w-{}:H-h-{}", pad, pad),
+        _ => format!("W-w-{}:{}", pad, pad),
+    };
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let wm_out = std::env::temp_dir().join(format!("futsaltag_wm_out_{}.mp4", now));
+    let mut cleanup = TempCleanup(vec![wm_png.clone(), wm_out.clone()]);
+
+    let fc = format!(
+        "[1:v]format=rgba,scale={wm_w}:-1:flags=lanczos,colorchannelmixer=aa={op:.2}[wm];[0:v][wm]overlay={pos}:format=auto,format=yuv420p[vout]",
+        wm_w = wm_w,
+        op = opacity,
+        pos = pos_expr
+    );
+    let (vcodec, vflags) = detect_video_encoder();
+    let mut args = vec![
+        "-y".into(),
+        "-i".into(),
+        video_path.to_string(),
+        "-i".into(),
+        wm_png.to_string_lossy().to_string(),
+        "-filter_complex".into(),
+        fc,
+        "-map".into(),
+        "[vout]".into(),
+        "-map".into(),
+        "0:a?".into(),
+        "-c:v".into(),
+        vcodec.into(),
+    ];
+    for f in vflags {
+        args.push(f.into());
+    }
+    args.extend([
+        "-c:a".into(),
+        "copy".into(),
+        "-movflags".into(),
+        "+faststart".into(),
+        wm_out.to_string_lossy().to_string(),
+    ]);
+    run_ffmpeg(&args)?;
+
+    fs::copy(&wm_out, video_path)
+        .map_err(|e| format!("Gagal menyalin hasil video watermark: {}", e))?;
+    cleanup.0.retain(|p| p != Path::new(video_path));
+    Ok(())
+}
+
 #[tauri::command]
 pub fn render_video_clip_ffmpeg(
     input_path: String,
@@ -507,6 +757,7 @@ pub fn render_video_clip_ffmpeg(
     duration_sec: f64,
     fast_copy: Option<bool>,
     target_height: Option<u32>,
+    watermark: Option<WatermarkSpec>,
 ) -> Result<String, String> {
     if !Path::new(&input_path).exists() {
         return Err(format!("File video input tidak ditemukan: {}", input_path));
@@ -514,7 +765,11 @@ pub fn render_video_clip_ffmpeg(
     ensure_parent_dir(&output_path)?;
 
     let dur = duration_sec.max(0.2);
-    let use_copy = fast_copy.unwrap_or(true) && target_height.is_none();
+    let has_wm = watermark
+        .as_ref()
+        .map(|w| !w.image_base64.trim().is_empty())
+        .unwrap_or(false);
+    let use_copy = fast_copy.unwrap_or(true) && target_height.is_none() && !has_wm;
 
     if use_copy {
         let copy_args = vec![
@@ -554,6 +809,7 @@ pub fn render_video_clip_ffmpeg(
         info.has_audio,
     );
     run_ffmpeg(&args)?;
+    apply_watermark_overlay_ffmpeg(&output_path, watermark.as_ref())?;
     Ok(output_path)
 }
 
@@ -742,6 +998,8 @@ pub fn burn_telestration_clip_ffmpeg(
     camera_zoom: Option<[f64; 3]>,
     freeze_stops: Option<Vec<FreezeStopSpec>>,
     append_clean_replay: Option<bool>,
+    speed_segments: Option<Vec<SpeedSegmentSpec>>,
+    watermark: Option<WatermarkSpec>,
 ) -> Result<String, String> {
     if !Path::new(&input_path).exists() {
         return Err(format!("File video input tidak ditemukan: {}", input_path));
@@ -777,28 +1035,24 @@ pub fn burn_telestration_clip_ffmpeg(
         start_sec,
         end_sec,
     );
+    let speed_segs = normalize_speed_segments(speed_segments, start_sec.max(0.0), end_sec);
 
     let mut parts_to_concat: Vec<String> = Vec::new();
     let mut cursor = start_sec.max(0.0);
 
     for (idx, stop) in stops.iter().enumerate() {
-        let seg_dur = (stop.time - cursor).max(0.0);
-        if seg_dur > 0.08 {
-            let p_move = temp_dir.join(format!("futsaltag_mseg_{}_{}.mp4", now, idx));
-            cleanup.0.push(p_move.clone());
-            let p_move_str = p_move.to_string_lossy().to_string();
-            let args = build_norm_segment_args(
-                &input_path,
-                &p_move_str,
-                cursor,
-                seg_dur,
-                out_w,
-                out_h,
-                info.has_audio,
-            );
-            run_ffmpeg(&args)?;
-            parts_to_concat.push(p_move_str);
-        }
+        render_partitioned_moving_slices(
+            &input_path,
+            cursor,
+            stop.time,
+            out_w,
+            out_h,
+            info.has_audio,
+            &speed_segs,
+            &format!("futsaltag_mseg_{}_{}", now, idx),
+            &mut parts_to_concat,
+            &mut cleanup,
+        )?;
 
         let stop_ov_path = match stop.overlay_base64 {
             Some(ref b64) if !b64.trim().is_empty() => {
@@ -826,23 +1080,18 @@ pub fn burn_telestration_clip_ffmpeg(
         cursor = stop.time;
     }
 
-    let dur_tail = (end_sec - cursor).max(0.0);
-    if dur_tail > 0.08 {
-        let p_tail = temp_dir.join(format!("futsaltag_tail_{}.mp4", now));
-        cleanup.0.push(p_tail.clone());
-        let p_tail_str = p_tail.to_string_lossy().to_string();
-        let args = build_norm_segment_args(
-            &input_path,
-            &p_tail_str,
-            cursor,
-            dur_tail,
-            out_w,
-            out_h,
-            info.has_audio,
-        );
-        run_ffmpeg(&args)?;
-        parts_to_concat.push(p_tail_str);
-    }
+    render_partitioned_moving_slices(
+        &input_path,
+        cursor,
+        end_sec,
+        out_w,
+        out_h,
+        info.has_audio,
+        &speed_segs,
+        &format!("futsaltag_tail_{}", now),
+        &mut parts_to_concat,
+        &mut cleanup,
+    )?;
 
     if append_clean_replay.unwrap_or(false) {
         let p_replay = temp_dir.join(format!("futsaltag_replay_{}.mp4", now));
@@ -908,6 +1157,7 @@ pub fn burn_telestration_clip_ffmpeg(
         run_ffmpeg(&mix_args)?;
     }
 
+    apply_watermark_overlay_ffmpeg(&output_path, watermark.as_ref())?;
     Ok(output_path)
 }
 
@@ -923,6 +1173,8 @@ pub fn export_whatsapp_clip_ffmpeg(
     voiceover_base64: Option<String>,
     freeze_stops: Option<Vec<FreezeStopSpec>>,
     append_clean_replay: Option<bool>,
+    speed_segments: Option<Vec<SpeedSegmentSpec>>,
+    watermark: Option<WatermarkSpec>,
 ) -> Result<String, String> {
     if !Path::new(&input_path).exists() {
         return Err(format!("File video input tidak ditemukan: {}", input_path));
@@ -938,9 +1190,13 @@ pub fn export_whatsapp_clip_ffmpeg(
         .map(|s| !s.trim().is_empty())
         .unwrap_or(false);
     let has_stops = freeze_stops.as_ref().map(|v| !v.is_empty()).unwrap_or(false);
+    let has_speeds = speed_segments
+        .as_ref()
+        .map(|v| v.iter().any(|s| (s.rate - 1.0).abs() > 0.02))
+        .unwrap_or(false);
     let wants_replay = append_clean_replay.unwrap_or(false);
 
-    if has_overlay || has_vo || has_stops || wants_replay {
+    if has_overlay || has_vo || has_stops || has_speeds || wants_replay {
         let f_sec = freeze_sec.unwrap_or(start_sec + duration_sec / 2.0);
         let p_dur = pause_duration.unwrap_or(if has_overlay { 3.0 } else { 0.0 });
         return burn_telestration_clip_ffmpeg(
@@ -956,6 +1212,8 @@ pub fn export_whatsapp_clip_ffmpeg(
             None,
             freeze_stops,
             append_clean_replay,
+            speed_segments,
+            watermark,
         );
     }
 
@@ -1012,6 +1270,7 @@ pub fn export_whatsapp_clip_ffmpeg(
     ]);
 
     run_ffmpeg(&args)?;
+    apply_watermark_overlay_ffmpeg(&output_path, watermark.as_ref())?;
     Ok(output_path)
 }
 
@@ -1047,6 +1306,7 @@ pub fn export_formatted_clip_ffmpeg(
     crf: Option<u8>,
     vertical_9x16: Option<bool>,
     remove_input: Option<bool>,
+    watermark: Option<WatermarkSpec>,
 ) -> Result<String, String> {
     if !Path::new(&input_path).exists() {
         return Err(format!("File video input tidak ditemukan: {}", input_path));
@@ -1146,6 +1406,7 @@ pub fn export_formatted_clip_ffmpeg(
     if remove_input.unwrap_or(false) && input_path != output_path {
         let _ = fs::remove_file(&input_path);
     }
+    apply_watermark_overlay_ffmpeg(&output_path, watermark.as_ref())?;
     Ok(output_path)
 }
 
@@ -1198,6 +1459,8 @@ pub fn burn_animated_telestration_clip_ffmpeg(
     target_height: Option<u32>,
     freeze_stops: Option<Vec<FreezeStopSpec>>,
     append_clean_replay: Option<bool>,
+    speed_segments: Option<Vec<SpeedSegmentSpec>>,
+    watermark: Option<WatermarkSpec>,
 ) -> Result<String, String> {
     if !Path::new(&input_path).exists() {
         return Err(format!("File video input tidak ditemukan: {}", input_path));
@@ -1305,29 +1568,37 @@ pub fn burn_animated_telestration_clip_ffmpeg(
         output_path.clone()
     };
 
-    if !stops.is_empty() || clean_replay {
+    let rel_speed_segs: Vec<SpeedSegmentSpec> = normalize_speed_segments(
+        speed_segments,
+        start_sec.max(0.0),
+        start_sec.max(0.0) + dur_total,
+    )
+    .into_iter()
+    .map(|s| SpeedSegmentSpec {
+        start_sec: (s.start_sec - start_sec.max(0.0)).max(0.0),
+        end_sec: (s.end_sec - start_sec.max(0.0)).clamp(0.0, dur_total),
+        rate: s.rate,
+    })
+    .collect();
+
+    if !stops.is_empty() || !rel_speed_segs.is_empty() || clean_replay {
         let mut parts: Vec<String> = Vec::new();
         let mut cursor_offset = 0.0;
 
         for (idx, stop) in stops.iter().enumerate() {
             let stop_offset = (stop.time - start_sec).clamp(0.0, dur_total);
-            let seg_len = (stop_offset - cursor_offset).max(0.0);
-            if seg_len > 0.08 {
-                let pm = temp_dir.join(format!("futsaltag_anim_m_{}_{}.mp4", now, idx));
-                cleanup.0.push(pm.clone());
-                let pm_str = pm.to_string_lossy().to_string();
-                let args = build_norm_segment_args(
-                    &moving_str,
-                    &pm_str,
-                    cursor_offset,
-                    seg_len,
-                    out_w,
-                    out_h,
-                    true,
-                );
-                run_ffmpeg(&args)?;
-                parts.push(pm_str);
-            }
+            render_partitioned_moving_slices(
+                &moving_str,
+                cursor_offset,
+                stop_offset,
+                out_w,
+                out_h,
+                true,
+                &rel_speed_segs,
+                &format!("futsaltag_anim_m_{}_{}", now, idx),
+                &mut parts,
+                &mut cleanup,
+            )?;
 
             let freeze_overlay_path = match stop.overlay_base64 {
                 Some(ref b64) if !b64.trim().is_empty() => {
@@ -1359,23 +1630,18 @@ pub fn burn_animated_telestration_clip_ffmpeg(
             cursor_offset = stop_offset;
         }
 
-        let dur_tail = (dur_total - cursor_offset).max(0.0);
-        if dur_tail > 0.08 {
-            let p_tail = temp_dir.join(format!("futsaltag_anim_tail_{}.mp4", now));
-            cleanup.0.push(p_tail.clone());
-            let p_tail_str = p_tail.to_string_lossy().to_string();
-            let args = build_norm_segment_args(
-                &moving_str,
-                &p_tail_str,
-                cursor_offset,
-                dur_tail,
-                out_w,
-                out_h,
-                true,
-            );
-            run_ffmpeg(&args)?;
-            parts.push(p_tail_str);
-        }
+        render_partitioned_moving_slices(
+            &moving_str,
+            cursor_offset,
+            dur_total,
+            out_w,
+            out_h,
+            true,
+            &rel_speed_segs,
+            &format!("futsaltag_anim_tail_{}", now),
+            &mut parts,
+            &mut cleanup,
+        )?;
 
         if clean_replay {
             let p_replay = temp_dir.join(format!("futsaltag_anim_replay_{}.mp4", now));
@@ -1433,6 +1699,7 @@ pub fn burn_animated_telestration_clip_ffmpeg(
         run_ffmpeg(&mix_args)?;
     }
 
+    apply_watermark_overlay_ffmpeg(&output_path, watermark.as_ref())?;
     Ok(output_path)
 }
 
@@ -2182,6 +2449,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
         );
         assert!(res.is_ok(), "burn_telestration_clip_ffmpeg failed: {:?}", res);
 
@@ -2278,6 +2547,7 @@ mod tests {
             2.0,
             Some(true),
             None,
+            None,
         )
         .expect("render_video_clip_ffmpeg (fast_copy=true) failed");
         let copy_info = probe_video_info(&clip_copy_mp4.to_string_lossy()).expect("probe copy clip failed");
@@ -2290,6 +2560,7 @@ mod tests {
             2.0,
             Some(false),
             Some(720),
+            None,
         )
         .expect("render_video_clip_ffmpeg (fast_copy=false, 720p) failed");
         let norm_info = probe_video_info(&clip_norm_mp4.to_string_lossy()).expect("probe norm clip failed");
@@ -2307,6 +2578,8 @@ mod tests {
             Some(vo_b64.clone()),
             Some(720),
             Some([0.5, 0.5, 1.35]),
+            None,
+            None,
             None,
             None,
         )
@@ -2334,6 +2607,8 @@ mod tests {
             Some([0.45, 0.55, 1.25]),
             Some(vo_b64.clone()),
             Some(720),
+            None,
+            None,
             None,
             None,
         )
@@ -2368,6 +2643,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
         )
         .expect("export_whatsapp_clip_ffmpeg (plain) failed");
         let wa_plain_info = probe_video_info(&wa_plain_mp4.to_string_lossy()).expect("probe wa plain failed");
@@ -2385,6 +2662,8 @@ mod tests {
             Some(1.0),
             Some(tiny_png_b64.to_string()),
             Some(vo_b64),
+            None,
+            None,
             None,
             None,
         )
@@ -2486,6 +2765,8 @@ mod tests {
             None,
             Some(stops.clone()),
             Some(true),
+            None,
+            None,
         )
         .expect("burn_telestration_clip_ffmpeg multi-stop + clean replay failed");
 
@@ -2512,6 +2793,8 @@ mod tests {
             None,
             Some(stops),
             Some(true),
+            None,
+            None,
         )
         .expect("export_whatsapp_clip_ffmpeg multi-stop + clean replay failed");
 
@@ -2671,5 +2954,127 @@ DirectShow audio devices
         let info = probe_video_info(&out_mp4.to_string_lossy()).expect("probe finalized mp4 failed");
         assert!(info.duration >= 0.85, "expected finalized >= 0.85s, got {:.3}s", info.duration);
         assert!(!Path::new(&part_path).exists(), "part file should be cleaned up");
+    }
+
+    #[test]
+    fn test_speed_segment_partition_and_atempo_chain() {
+        assert_eq!(build_atempo_chain(0.5), "atempo=0.5000");
+        assert_eq!(build_atempo_chain(0.25), "atempo=0.5000,atempo=0.5000");
+        assert_eq!(build_atempo_chain(2.0), "atempo=2.0000");
+        assert_eq!(build_atempo_chain(4.0), "atempo=2.0000,atempo=2.0000");
+
+        let segs = normalize_speed_segments(
+            Some(vec![
+                SpeedSegmentSpec { start_sec: 12.0, end_sec: 14.0, rate: 0.5 },
+                SpeedSegmentSpec { start_sec: 13.0, end_sec: 15.0, rate: 0.25 },
+                SpeedSegmentSpec { start_sec: 16.0, end_sec: 17.0, rate: 1.0 },
+            ]),
+            10.0,
+            20.0,
+        );
+        assert_eq!(segs.len(), 2);
+        assert!((segs[0].start_sec - 12.0).abs() < 1e-6);
+        assert!((segs[0].end_sec - 14.0).abs() < 1e-6);
+        assert!((segs[1].start_sec - 14.0).abs() < 1e-6);
+        assert!((segs[1].end_sec - 15.0).abs() < 1e-6);
+
+        let slices = partition_moving_slices(10.0, 18.0, &segs);
+        assert_eq!(slices.len(), 4);
+        assert!((slices[0].2 - 1.0).abs() < 1e-6);
+        assert!((slices[1].2 - 0.5).abs() < 1e-6);
+        assert!((slices[2].2 - 0.25).abs() < 1e-6);
+        assert!((slices[3].2 - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_slow_mo_and_watermark_e2e_ffmpeg() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let tmp = std::env::temp_dir();
+        let src_mp4 = tmp.join(format!("futsaltag_slm_src_{}.mp4", now));
+        let out_slm_mp4 = tmp.join(format!("futsaltag_slm_out_{}.mp4", now));
+        let out_wm_mp4 = tmp.join(format!("futsaltag_wm_plain_{}.mp4", now));
+        let _cleanup = TempCleanup(vec![
+            src_mp4.clone(),
+            out_slm_mp4.clone(),
+            out_wm_mp4.clone(),
+        ]);
+
+        let gen_args = vec![
+            "-y".into(),
+            "-f".into(),
+            "lavfi".into(),
+            "-i".into(),
+            "testsrc2=size=640x360:rate=30:duration=3".into(),
+            "-f".into(),
+            "lavfi".into(),
+            "-i".into(),
+            "sine=frequency=440:sample_rate=44100:duration=3".into(),
+            "-c:v".into(),
+            "libx264".into(),
+            "-preset".into(),
+            "ultrafast".into(),
+            "-pix_fmt".into(),
+            "yuv420p".into(),
+            "-c:a".into(),
+            "aac".into(),
+            src_mp4.to_string_lossy().to_string(),
+        ];
+        run_ffmpeg(&gen_args).expect("generate 3s slow-mo source mp4 failed");
+
+        let tiny_png_b64 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+        let wm = WatermarkSpec {
+            image_base64: tiny_png_b64.to_string(),
+            position: "bottom-right".to_string(),
+            opacity: 0.8,
+            scale_ratio: 0.1,
+        };
+
+        // 3s source with [1.0..2.5] at 0.5x -> 1.0 + 3.0 + 0.5 = 4.5s output
+        burn_telestration_clip_ffmpeg(
+            src_mp4.to_string_lossy().to_string(),
+            out_slm_mp4.to_string_lossy().to_string(),
+            0.0,
+            3.0,
+            1.5,
+            0.0,
+            None,
+            None,
+            Some(720),
+            None,
+            None,
+            Some(false),
+            Some(vec![SpeedSegmentSpec {
+                start_sec: 1.0,
+                end_sec: 2.5,
+                rate: 0.5,
+            }]),
+            Some(wm.clone()),
+        )
+        .expect("burn_telestration_clip_ffmpeg slow-mo + watermark failed");
+
+        let slm_info = probe_video_info(&out_slm_mp4.to_string_lossy()).expect("probe slm out failed");
+        assert!(slm_info.has_audio);
+        assert!(
+            slm_info.duration >= 4.1,
+            "expected 0.5x slow-mo clip duration >= 4.1s, got {:.3}s",
+            slm_info.duration
+        );
+
+        render_video_clip_ffmpeg(
+            src_mp4.to_string_lossy().to_string(),
+            out_wm_mp4.to_string_lossy().to_string(),
+            0.0,
+            2.0,
+            Some(true),
+            None,
+            Some(wm),
+        )
+        .expect("render_video_clip_ffmpeg with watermark failed");
+
+        let wm_info = probe_video_info(&out_wm_mp4.to_string_lossy()).expect("probe wm out failed");
+        assert!(wm_info.duration >= 1.7, "expected watermarked clip >= 1.7s, got {:.3}s", wm_info.duration);
     }
 }

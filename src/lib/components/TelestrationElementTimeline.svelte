@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import type { DrawingElement, DrawingToolType, FreezeStop } from '$lib/types';
+  import type { DrawingElement, DrawingToolType, FreezeStop, SpeedSegment } from '$lib/types';
   import { isElementVisibleAtTime } from '$lib/tracking/playerTracker';
-  import { ChevronDown, ChevronUp, RotateCcw, Clock, Pause, Plus, X, Pin } from 'lucide-svelte';
+  import { ChevronDown, ChevronUp, RotateCcw, Clock, Pause, Plus, X, Pin, Gauge } from 'lucide-svelte';
 
   interface Props {
     drawings: DrawingElement[];
@@ -12,6 +12,8 @@
     currentTime: number;
     freezeStops?: FreezeStop[];
     selectedFreezeStopId?: string | null;
+    speedSegments?: SpeedSegment[];
+    selectedSpeedSegmentId?: string | null;
     onSelect: (id: string) => void;
     onChangeLifespan: (id: string, timeStart: number, timeEnd: number) => void;
     onResetLifespan: (id: string) => void;
@@ -20,6 +22,10 @@
     onSelectFreezeStop?: (id: string) => void;
     onMoveFreezeStop?: (id: string, time: number) => void;
     onDeleteFreezeStop?: (id: string) => void;
+    onAddSpeedSegment?: () => void;
+    onSelectSpeedSegment?: (id: string) => void;
+    onChangeSpeedSegmentSpan?: (id: string, startTime: number, endTime: number) => void;
+    onDeleteSpeedSegment?: (id: string) => void;
   }
 
   let {
@@ -30,6 +36,8 @@
     currentTime,
     freezeStops = [],
     selectedFreezeStopId = null,
+    speedSegments = [],
+    selectedSpeedSegmentId = null,
     onSelect,
     onChangeLifespan,
     onResetLifespan,
@@ -38,6 +46,10 @@
     onSelectFreezeStop,
     onMoveFreezeStop,
     onDeleteFreezeStop,
+    onAddSpeedSegment,
+    onSelectSpeedSegment,
+    onChangeSpeedSegmentSpan,
+    onDeleteSpeedSegment,
   }: Props = $props();
 
   const MIN_SPAN = 0.15;
@@ -64,6 +76,7 @@
 
   let collapsed = $state(false);
   let activeDrag = $state<{
+    kind: 'element' | 'speed';
     id: string;
     mode: 'start' | 'end' | 'move';
     laneRect: DOMRect;
@@ -144,20 +157,25 @@
     if (!activeDrag) return;
     const width = Math.max(20, activeDrag.laneRect.width);
     const deltaSec = ((e.clientX - activeDrag.originX) / width) * clipDur;
-    const { id, mode, origStart, origEnd } = activeDrag;
+    const { kind, id, mode, origStart, origEnd } = activeDrag;
 
+    let nextStart = origStart;
+    let nextEnd = origEnd;
     if (mode === 'start') {
-      const nextStart = Math.max(clipStart, Math.min(origEnd - MIN_SPAN, origStart + deltaSec));
-      onChangeLifespan(id, Number(nextStart.toFixed(3)), Number(origEnd.toFixed(3)));
+      nextStart = Math.max(clipStart, Math.min(origEnd - MIN_SPAN, origStart + deltaSec));
     } else if (mode === 'end') {
-      const nextEnd = Math.min(clipEnd, Math.max(origStart + MIN_SPAN, origEnd + deltaSec));
-      onChangeLifespan(id, Number(origStart.toFixed(3)), Number(nextEnd.toFixed(3)));
+      nextEnd = Math.min(clipEnd, Math.max(origStart + MIN_SPAN, origEnd + deltaSec));
     } else {
       const span = Math.max(MIN_SPAN, origEnd - origStart);
-      let nextStart = origStart + deltaSec;
-      nextStart = Math.max(clipStart, Math.min(clipEnd - span, nextStart));
-      const nextEnd = Math.min(clipEnd, nextStart + span);
-      onChangeLifespan(id, Number(nextStart.toFixed(3)), Number(nextEnd.toFixed(3)));
+      nextStart = Math.max(clipStart, Math.min(clipEnd - span, origStart + deltaSec));
+      nextEnd = Math.min(clipEnd, nextStart + span);
+    }
+    const ns = Number(nextStart.toFixed(3));
+    const ne = Number(nextEnd.toFixed(3));
+    if (kind === 'speed') {
+      onChangeSpeedSegmentSpan?.(id, ns, ne);
+    } else {
+      onChangeLifespan(id, ns, ne);
     }
   }
 
@@ -208,12 +226,43 @@
     const [origStart, origEnd] = getElSpan(el);
     stopDragListeners();
     activeDrag = {
+      kind: 'element',
       id: el.id,
       mode,
       laneRect: laneEl.getBoundingClientRect(),
       originX: e.clientX,
       origStart,
       origEnd,
+    };
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('pointermove', handleWindowPointerMove);
+      window.addEventListener('pointerup', stopDragListeners);
+      window.addEventListener('pointercancel', stopDragListeners);
+    }
+  }
+
+  function startSpeedBarDrag(
+    e: PointerEvent,
+    seg: SpeedSegment,
+    mode: 'start' | 'end' | 'move'
+  ) {
+    e.stopPropagation();
+    e.preventDefault();
+    onSelectSpeedSegment?.(seg.id);
+    const target = e.currentTarget as HTMLElement | null;
+    const laneEl = target?.closest('.el-track-lane') as HTMLElement | null;
+    if (!laneEl) return;
+
+    stopDragListeners();
+    activeDrag = {
+      kind: 'speed',
+      id: seg.id,
+      mode,
+      laneRect: laneEl.getBoundingClientRect(),
+      originX: e.clientX,
+      origStart: seg.startTime,
+      origEnd: seg.endTime,
     };
 
     if (typeof window !== 'undefined') {
@@ -290,6 +339,17 @@
         >
           <Plus size={11} />
           <span>Jeda Freeze (F)</span>
+        </button>
+      {/if}
+      {#if onAddSpeedSegment}
+        <button
+          type="button"
+          class="tl-btn tl-btn-speed"
+          onclick={onAddSpeedSegment}
+          title="Tambah segmen Slow-Mo 0.5x di posisi playhead"
+        >
+          <Gauge size={11} />
+          <span>+ Slow-Mo</span>
         </button>
       {/if}
       <button
@@ -376,6 +436,63 @@
                     <X size={9} />
                   </button>
                 {/if}
+              </div>
+            {/each}
+          </div>
+        </div>
+      {/if}
+
+      {#if onAddSpeedSegment || speedSegments.length > 0}
+        <div class="el-track-row speed-track-row">
+          <div class="el-label-col" title="Segmen Slow-Mo / Fast-Forward dalam klip ini">
+            <Gauge size={10} class="text-violet-400 shrink-0" />
+            <span class="el-name speed-lbl">Slow-Mo ({speedSegments.length})</span>
+          </div>
+
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div class="el-track-lane" onclick={handleLaneClick}>
+            <div class="el-playhead" style="left: {playheadPct}%"></div>
+            {#if speedSegments.length === 0}
+              <span class="freeze-empty-hint">Klik "+ Slow-Mo" untuk menambah gerak lambat di tengah klip</span>
+            {/if}
+            {#each speedSegments as seg (seg.id)}
+              {@const [s, e] = clampSpan(seg.startTime, seg.endTime)}
+              {@const leftPct = Math.max(0, Math.min(100, ((s - clipStart) / clipDur) * 100))}
+              {@const rightPct = Math.max(0, Math.min(100, ((e - clipStart) / clipDur) * 100))}
+              {@const widthPct = Math.max(4, rightPct - leftPct)}
+              {@const isSelSeg = seg.id === selectedSpeedSegmentId}
+              <div
+                class="el-duration-bar speed-bar"
+                class:active-bar={isSelSeg}
+                style="left: {leftPct}%; width: {widthPct}%;"
+                onpointerdown={(ev) => startSpeedBarDrag(ev, seg, 'move')}
+                title="Segmen {seg.rate}x ({(s - clipStart).toFixed(1)}s - {(e - clipStart).toFixed(1)}s) | Seret sisi untuk ubah durasi"
+              >
+                <div
+                  class="el-trim-handle left speed-handle"
+                  onpointerdown={(ev) => startSpeedBarDrag(ev, seg, 'start')}
+                  title="Trim awal Slow-Mo"
+                ></div>
+                <span class="speed-bar-tag">{seg.rate}x</span>
+                {#if onDeleteSpeedSegment}
+                  <button
+                    type="button"
+                    class="speed-bar-del"
+                    onclick={(ev) => {
+                      ev.stopPropagation();
+                      onDeleteSpeedSegment(seg.id);
+                    }}
+                    title="Hapus segmen Slow-Mo"
+                  >
+                    <X size={9} />
+                  </button>
+                {/if}
+                <div
+                  class="el-trim-handle right speed-handle"
+                  onpointerdown={(ev) => startSpeedBarDrag(ev, seg, 'end')}
+                  title="Trim akhir Slow-Mo"
+                ></div>
               </div>
             {/each}
           </div>
@@ -787,5 +904,64 @@
     border-left: 1px dashed rgba(245, 158, 11, 0.5);
     pointer-events: none;
     z-index: 1;
+  }
+
+  .tl-btn-speed {
+    border-color: rgba(167, 139, 250, 0.55);
+    color: #ddd6fe;
+  }
+
+  .tl-btn-speed:hover {
+    background: rgba(139, 92, 246, 0.2);
+    border-color: #a78bfa;
+    color: #ffffff;
+  }
+
+  .speed-track-row {
+    background: rgba(139, 92, 246, 0.08);
+    border-color: rgba(139, 92, 246, 0.28);
+  }
+
+  .speed-lbl {
+    color: #c4b5fd;
+  }
+
+  .speed-bar {
+    background: rgba(139, 92, 246, 0.32);
+    border-color: #a78bfa;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+  }
+
+  .speed-bar.active-bar {
+    background: rgba(124, 58, 237, 0.55);
+    border-color: #f5f3ff;
+  }
+
+  .speed-handle {
+    background-color: #c4b5fd;
+  }
+
+  .speed-bar-tag {
+    font-size: 9px;
+    font-weight: 800;
+    color: #f5f3ff;
+    pointer-events: none;
+    font-family: monospace;
+  }
+
+  .speed-bar-del {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(15, 23, 42, 0.65);
+    border: none;
+    border-radius: 999px;
+    color: #fecaca;
+    padding: 1px;
+    cursor: pointer;
+    z-index: 5;
   }
 </style>

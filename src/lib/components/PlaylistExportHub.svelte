@@ -33,8 +33,12 @@
   import { renderDrawingsToDataUrl } from "$lib/export/telestrationRenderer";
   import {
     getEffectiveFreezeStopsForTag,
+    getEffectiveSpeedSegmentsForTag,
+    toSpeedSegmentsExportPayload,
+    estimateClipRenderedDuration,
     type FreezeStopExportPayload,
   } from "$lib/export/freezeStops";
+  import { buildWatermarkExportPayload } from "$lib/export/watermark";
   import { hasAnimatedTelestration } from "$lib/tracking/playerTracker";
   import {
     estimateExportSizeMb,
@@ -70,6 +74,24 @@
   let isPlayingPresentation = $state(false);
   let presentationVideoEl = $state<HTMLVideoElement | null>(null);
   let xmlImportInputEl = $state<HTMLInputElement | undefined>(undefined);
+  let wmLogoInputEl = $state<HTMLInputElement | undefined>(undefined);
+
+  function handleWmLogoSelected(e: Event) {
+    const file = (e.currentTarget as HTMLInputElement).files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        projectStore.clubLogoDataUrl = reader.result;
+        projectStore.watermarkConfig = {
+          ...projectStore.watermarkConfig,
+          enabled: true,
+        };
+        projectStore.markDirty();
+      }
+    };
+    reader.readAsDataURL(file);
+  }
 
   // Export Settings State
   let exportMode = $state<ExportMode>("merged_video");
@@ -83,11 +105,7 @@
 
   const totalEstimatedDurationSec = $derived.by(() => {
     return filteredClips.reduce((sum, c) => {
-      const base = Math.max(0.2, c.tag.endTime - c.tag.startTime);
-      if (!c.useTelestration) return sum + base;
-      const stops = getEffectiveFreezeStopsForTag(c.tag, c.tag.pauseDuration ?? 3.0);
-      const freeze = stops.reduce((s, st) => s + st.duration, 0);
-      return sum + base + freeze + (c.tag.appendCleanReplay ? base : 0);
+      return sum + estimateClipRenderedDuration(c.tag, c.useTelestration);
     }, 0);
   });
 
@@ -143,7 +161,20 @@
     const clip = filteredClips[selectedItemIndex];
     if (!clip) return;
 
-    if (presentationVideoEl.currentTime >= clip.tag.endTime) {
+    const ct = presentationVideoEl.currentTime;
+    const speedSegs = getEffectiveSpeedSegmentsForTag(clip.tag);
+    if (speedSegs.length > 0 && !presentationVideoEl.paused) {
+      const hit = speedSegs.find((s) => ct >= s.startTime && ct < s.endTime);
+      const nextRate = hit ? hit.rate : 1.0;
+      if (Math.abs(presentationVideoEl.playbackRate - nextRate) > 0.01) {
+        presentationVideoEl.playbackRate = nextRate;
+      }
+    } else if (Math.abs(presentationVideoEl.playbackRate - 1.0) > 0.01) {
+      presentationVideoEl.playbackRate = 1.0;
+    }
+
+    if (ct >= clip.tag.endTime) {
+      presentationVideoEl.playbackRate = 1.0;
       if (selectedItemIndex + 1 < filteredClips.length) {
         playPresentationItem(selectedItemIndex + 1);
       } else {
@@ -200,6 +231,10 @@
 
         const { open, save } = await import("@tauri-apps/plugin-dialog");
         const clips = filteredClips;
+        const watermarkPayload = await buildWatermarkExportPayload(
+          projectStore.clubLogoDataUrl,
+          projectStore.watermarkConfig,
+        );
 
         const renderClipToPath = async (
           clip: ResolvedPlaylistClip,
@@ -266,6 +301,8 @@
           const isAnimated =
             hasDrawings &&
             hasAnimatedTelestration(drawings, tag.startTime, tag.endTime);
+          const speedSegmentsPayload = toSpeedSegmentsExportPayload(tag);
+          const hasSpeeds = speedSegmentsPayload.length > 0;
           const needsFormatPass =
             outputAspectRatio === "9:16" || outputCrf !== 23;
           const needsBurnPass =
@@ -274,7 +311,10 @@
             hasVoice ||
             hasSubtitle ||
             freezeStopsPayload.length > 0 ||
+            hasSpeeds ||
             appendCleanReplay;
+          const passWatermark =
+            needsBurnPass && needsFormatPass ? null : watermarkPayload;
 
           let burnOutputPath = outPath;
           if (needsBurnPass && needsFormatPass) {
@@ -339,6 +379,9 @@
                 freezeStops:
                   freezeStopsPayload.length > 0 ? freezeStopsPayload : null,
                 appendCleanReplay,
+                speedSegments:
+                  speedSegmentsPayload.length > 0 ? speedSegmentsPayload : null,
+                watermark: passWatermark,
               });
             } finally {
               await invoke("cleanup_temp_dir", { dirPath: seqDir }).catch(
@@ -360,6 +403,9 @@
               freezeStops:
                 freezeStopsPayload.length > 0 ? freezeStopsPayload : null,
               appendCleanReplay,
+              speedSegments:
+                speedSegmentsPayload.length > 0 ? speedSegmentsPayload : null,
+              watermark: passWatermark,
             });
           } else if (needsFormatPass) {
             await invoke<string>("export_formatted_clip_ffmpeg", {
@@ -370,6 +416,7 @@
               targetHeight,
               crf: outputCrf,
               vertical9x16: outputAspectRatio === "9:16",
+              watermark: watermarkPayload,
             });
           } else {
             await invoke<string>("render_video_clip_ffmpeg", {
@@ -379,6 +426,7 @@
               durationSec: clipDur,
               fastCopy: exportMode !== "merged_video",
               targetHeight,
+              watermark: watermarkPayload,
             });
           }
 
@@ -390,6 +438,7 @@
               crf: outputCrf,
               vertical9x16: outputAspectRatio === "9:16",
               removeInput: true,
+              watermark: watermarkPayload,
             });
           }
         };
@@ -1065,10 +1114,85 @@
 
           {#if filteredClips.length > 0}
             <div class="res-row">
-              <span class="res-title">Estimasi Ukuran ({totalEstimatedDurationSec.toFixed(0)} dtk):</span>
+              <span class="res-title"
+                >Estimasi Ukuran ({totalEstimatedDurationSec.toFixed(0)} dtk):</span
+              >
               <span class="btn-res active">{estimatedTotalSizeText}</span>
             </div>
           {/if}
+
+          <div class="wm-export-box">
+            <input
+              bind:this={wmLogoInputEl}
+              type="file"
+              accept="image/*"
+              class="hidden"
+              onchange={handleWmLogoSelected}
+            />
+            <div class="wm-box-hdr">
+              <span class="res-title">Watermark Logo Klub di Video:</span>
+              <div class="wm-box-actions">
+                <button
+                  type="button"
+                  class="btn-res"
+                  onclick={() => wmLogoInputEl?.click()}
+                >
+                  {projectStore.clubLogoDataUrl
+                    ? "Ganti Logo"
+                    : "+ Upload Logo"}
+                </button>
+                {#if projectStore.clubLogoDataUrl}
+                  <button
+                    type="button"
+                    class="btn-res"
+                    class:active={projectStore.watermarkConfig.enabled}
+                    onclick={() => {
+                      projectStore.watermarkConfig.enabled =
+                        !projectStore.watermarkConfig.enabled;
+                      projectStore.markDirty();
+                    }}
+                  >
+                    {projectStore.watermarkConfig.enabled
+                      ? "Aktif"
+                      : "Nonaktif"}
+                  </button>
+                {/if}
+              </div>
+            </div>
+            {#if projectStore.clubLogoDataUrl && projectStore.watermarkConfig.enabled}
+              <div class="res-buttons">
+                {#each [{ id: "top-right", lbl: "Atas Kanan" }, { id: "top-left", lbl: "Atas Kiri" }, { id: "bottom-right", lbl: "Bawah Kanan" }, { id: "bottom-left", lbl: "Bawah Kiri" }] as pos}
+                  <button
+                    type="button"
+                    class="btn-res"
+                    class:active={projectStore.watermarkConfig.position ===
+                      pos.id}
+                    onclick={() => {
+                      projectStore.watermarkConfig.position = pos.id as any;
+                      projectStore.markDirty();
+                    }}
+                  >
+                    {pos.lbl}
+                  </button>
+                {/each}
+              </div>
+              <div class="res-row">
+                <span class="res-title"
+                  >Opasitas ({Math.round(
+                    projectStore.watermarkConfig.opacity * 100,
+                  )}%):</span
+                >
+                <input
+                  type="range"
+                  min="0.2"
+                  max="1"
+                  step="0.05"
+                  bind:value={projectStore.watermarkConfig.opacity}
+                  onchange={() => projectStore.markDirty()}
+                />
+              </div>
+            {/if}
+          </div>
         </div>
 
         <!-- PROGRESS & STATUS -->
@@ -1643,6 +1767,33 @@
     border-color: #38bdf8;
     color: #ffffff;
     background: #132c52;
+  }
+
+  .wm-export-box {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 8px 10px;
+    background: #07101f;
+    border: 1px solid #1a355d;
+    border-radius: 8px;
+  }
+
+  .wm-box-hdr {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .wm-box-actions {
+    display: flex;
+    gap: 6px;
+  }
+
+  .hidden {
+    display: none;
   }
 
   .btn-interop-excel {

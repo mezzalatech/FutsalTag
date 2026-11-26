@@ -231,6 +231,23 @@ export interface FreezeStop {
   label?: string;   // optional short label e.g. 'Jeda #1'
 }
 
+export interface SpeedSegment {
+  id: string;
+  startTime: number; // absolute video timestamp in seconds
+  endTime: number;   // absolute video timestamp in seconds
+  rate: number;      // playback rate multiplier (0.25..4.0, e.g. 0.5 for slow-mo)
+  label?: string;    // optional short label e.g. 'Slow-Mo 0.5x'
+}
+
+export type WatermarkPosition = 'top-right' | 'top-left' | 'bottom-right' | 'bottom-left';
+
+export interface WatermarkConfig {
+  enabled: boolean;
+  position: WatermarkPosition;
+  opacity: number;    // 0.15..1.0
+  scaleRatio: number; // fraction of output width, e.g. 0.09
+}
+
 export interface VideoTagEvent {
   id: string;
   title: string;
@@ -254,6 +271,7 @@ export interface VideoTagEvent {
   pauseDuration?: number;     // duration to freeze keyframe during playback / export (default: 3s)
   freezeTimestamp?: number;   // frame timestamp where drawings apply
   freezeStops?: FreezeStop[]; // multi freeze-frame stops for Once Sport style Stop-and-Draw
+  speedSegments?: SpeedSegment[]; // variable playback speed segments (e.g. mid-clip slow-mo 0.5x)
   appendCleanReplay?: boolean; // append 1x clean full-speed clip replay at the end
   voiceoverAudioBase64?: string; // Recorded coach audio instructions (WebM/WAV)
   voiceoverTranscript?: string;

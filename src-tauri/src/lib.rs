@@ -215,6 +215,28 @@ fn scan_match_library_folder(
     })
 }
 
+#[tauri::command]
+fn check_file_exists(file_path: String) -> bool {
+    Path::new(&file_path).is_file()
+}
+
+#[tauri::command]
+fn delete_project_file(file_path: String) -> Result<(), String> {
+    let path = Path::new(&file_path);
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_lowercase())
+        .unwrap_or_default();
+    if ext != "futsal" && ext != "json" {
+        return Err("Hanya file proyek .futsal atau .json yang dapat dihapus.".into());
+    }
+    if !path.is_file() {
+        return Err(format!("File proyek '{}' tidak ditemukan.", file_path));
+    }
+    fs::remove_file(path).map_err(|e| format!("Gagal menghapus file proyek: {}", e))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -243,6 +265,8 @@ pub fn run() {
             clear_autosave_project,
             save_binary_file,
             scan_match_library_folder,
+            check_file_exists,
+            delete_project_file,
             ffmpeg::render_video_clip_ffmpeg,
             ffmpeg::concat_playlist_ffmpeg,
             ffmpeg::burn_telestration_clip_ffmpeg,
@@ -273,7 +297,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::scan_match_dir;
+    use super::{delete_project_file, scan_match_dir};
     use std::fs;
 
     #[test]
@@ -294,6 +318,30 @@ mod tests {
         let scanned = scan_match_dir(&dir).unwrap();
         let names: Vec<&str> = scanned.iter().map(|f| f.file_name.as_str()).collect();
         assert_eq!(names, vec!["match_a.json", "match_b.futsal"]);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_delete_project_file_validates_extension() {
+        let dir = std::env::temp_dir().join(format!(
+            "futsaltag_del_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let futsal_path = dir.join("sample.futsal");
+        let mp4_path = dir.join("video.mp4");
+        fs::write(&futsal_path, "{}").unwrap();
+        fs::write(&mp4_path, "dummy").unwrap();
+
+        assert!(delete_project_file(mp4_path.to_string_lossy().to_string()).is_err());
+        assert!(mp4_path.exists());
+
+        assert!(delete_project_file(futsal_path.to_string_lossy().to_string()).is_ok());
+        assert!(!futsal_path.exists());
 
         let _ = fs::remove_dir_all(&dir);
     }

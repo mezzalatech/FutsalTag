@@ -18,6 +18,10 @@
     CheckCircle2,
     Calendar,
     BarChart3,
+    Search,
+    Copy,
+    Trash2,
+    RefreshCw,
   } from 'lucide-svelte';
 
   interface Props {
@@ -31,6 +35,24 @@
   let awayTeam = $state('Tim Lawan');
   let tournamentName = $state('Liga Futsal Profesional 2026');
   let matchHalf = $state<'Babak 1' | 'Babak 2' | 'Full Time'>('Babak 1');
+  let matchKind = $state<'match' | 'training'>('match');
+  let libSearch = $state('');
+  let libKind = $state<'all' | 'match' | 'training'>('all');
+  let libStatus = $state<'all' | 'analysed' | 'empty'>('all');
+
+  const filteredLibrary = $derived.by(() => {
+    const q = libSearch.trim().toLowerCase();
+    return projectStore.libraryMatches.filter((m) => {
+      if (libKind !== 'all' && (m.matchKind ?? 'match') !== libKind) return false;
+      if (libStatus === 'analysed' && m.tags.length === 0) return false;
+      if (libStatus === 'empty' && m.tags.length > 0) return false;
+      if (q) {
+        const hay = `${m.title} ${m.competition || ''} ${m.matchDate || ''}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  });
   let homeColor = $state('#0284c7');
   let awayColor = $state('#ef4444');
   let selectedHomeClubId = $state<string>('');
@@ -47,6 +69,7 @@
       projectStore.loadClubLibrary();
     }
     if (isTauriDesktop()) {
+      projectStore.scanMatchLibrary();
       try {
         const { getCurrentWebview } = await import('@tauri-apps/api/webview');
         unlistenTauriDrop = await getCurrentWebview().onDragDropEvent(async (event) => {
@@ -59,13 +82,11 @@
             const droppedPath = event.payload.paths?.[0];
             if (!droppedPath) return;
 
+            if (!projectStore.confirmDiscardIfDirty('membuka berkas baru')) return;
+
             if (/\.(futsal|json)$/i.test(droppedPath)) {
               try {
-                const content = await invoke<string>('load_project_file', { filePath: droppedPath });
-                const ok = projectStore.importProjectJson(content);
-                if (!ok) {
-                  alert('Format berkas proyek tidak valid.');
-                }
+                await projectStore.openProjectFromPath(droppedPath);
               } catch (err: any) {
                 alert(`Gagal membuka berkas proyek: ${err?.message || err}`);
               }
@@ -80,6 +101,8 @@
                 `${homeTeam} vs ${awayTeam} (${matchHalf})`,
                 180
               );
+              projectStore.matchKind = matchKind;
+              projectStore.competitionName = tournamentName.trim();
               if (selectedHomeClubId || selectedAwayClubId) {
                 projectStore.applyClubsToMatchRoster(selectedHomeClubId || null, selectedAwayClubId || null);
               }
@@ -121,6 +144,7 @@
   const TEAM_COLORS = ['#0284c7', '#ef4444', '#10b981', '#f59e0b', '#ffffff', '#1e293b'];
 
   async function handleTauriVideoClick(quickTelestrate = false) {
+    if (!projectStore.confirmDiscardIfDirty('membuka video baru')) return;
     if (!isTauriDesktop()) {
       if (quickTelestrate) {
         quickVideoInputEl?.click();
@@ -162,6 +186,8 @@
           `${homeTeam} vs ${awayTeam} (${matchHalf})`,
           180
         );
+        projectStore.matchKind = matchKind;
+        projectStore.competitionName = tournamentName.trim();
         if (selectedHomeClubId || selectedAwayClubId) {
           projectStore.applyClubsToMatchRoster(selectedHomeClubId || null, selectedAwayClubId || null);
         }
@@ -173,15 +199,13 @@
   }
 
   async function handleTauriProjectOpenClick() {
+    if (!projectStore.confirmDiscardIfDirty('membuka berkas proyek lain')) return;
     if (!isTauriDesktop()) {
       projectFileInputEl?.click();
       return;
     }
     try {
-      const ok = await projectStore.openProjectFromDisk();
-      if (ok) {
-        alert(`Berkas proyek "${projectStore.videoTitle}" berhasil dimuat!`);
-      }
+      await projectStore.openProjectFromDisk();
     } catch (err: any) {
       alert(`Gagal membuka berkas proyek: ${err?.message || err}`);
     }
@@ -204,6 +228,7 @@
   }
 
   function processSelectedFile(file: File) {
+    if (!projectStore.confirmDiscardIfDirty('membuka video baru')) return;
     const url = URL.createObjectURL(file);
     projectStore.loadVideo(
       url,
@@ -211,6 +236,8 @@
       `${homeTeam} vs ${awayTeam} (${matchHalf})`,
       180
     );
+    projectStore.matchKind = matchKind;
+    projectStore.competitionName = tournamentName.trim();
     if (selectedHomeClubId || selectedAwayClubId) {
       projectStore.applyClubsToMatchRoster(selectedHomeClubId || null, selectedAwayClubId || null);
     }
@@ -246,7 +273,28 @@
   }
 
   function loadSampleMatch() {
+    if (!projectStore.confirmDiscardIfDirty('memuat sampel demo')) return;
     projectStore.loadSampleDemo();
+  }
+
+  async function handleOpenLibraryMatch(filePath: string | null) {
+    if (!filePath) return;
+    if (!projectStore.confirmDiscardIfDirty('membuka pertandingan ini')) return;
+    try {
+      await projectStore.openProjectFromPath(filePath);
+    } catch (err: any) {
+      alert(`Gagal membuka pertandingan: ${err?.message || err}`);
+    }
+  }
+
+  async function handleDeleteLibraryMatch(filePath: string | null, title: string) {
+    if (!filePath) return;
+    if (!confirm(`Hapus file analisis "${title}" dari folder pustaka? File video MP4 asli tidak akan terhapus.`)) return;
+    try {
+      await projectStore.deleteMatchFile(filePath);
+    } catch (err: any) {
+      alert(`Gagal menghapus file: ${err?.message || err}`);
+    }
   }
 
   function handleProjectFileOpen(event: Event) {
@@ -328,7 +376,7 @@
 
       <!-- MATCH SETUP FORM -->
       <div class="match-meta-form">
-        <!-- Tournament Name -->
+        <!-- Tournament Name & Kind -->
         <div class="form-row-sm">
           <Trophy size={11} class="text-sky-400" />
           <input
@@ -337,6 +385,10 @@
             placeholder="Nama Turnamen / Latihan"
             bind:value={tournamentName}
           />
+          <select class="club-select kind-mini-sel" bind:value={matchKind} title="Jenis sesi analisis">
+            <option value="match">Pertandingan</option>
+            <option value="training">Latihan</option>
+          </select>
         </div>
 
         <!-- Club Library Dropdowns -->
@@ -506,39 +558,106 @@
     </div>
   </div>
 
-  <!-- RECENT PROJECTS BAR (MOMEN SPORTS STYLE) -->
-  <div class="recent-projects-bar">
-    <div class="recent-title">
-      <Clock size={15} class="text-sky-400" />
-      <span>Proyek & Sampel Tersedia:</span>
+  <!-- MATCH LIBRARY & RECENT PROJECTS PANEL (MOMEN SPORTS STYLE) -->
+  <div class="library-hub-panel">
+    <div class="lhp-top">
+      <div class="recent-title">
+        <FolderOpen size={15} class="text-sky-400" />
+        <span>Daftar Pertandingan Pustaka ({projectStore.libraryMatches.length})</span>
+      </div>
+
+      <div class="lhp-controls">
+        <div class="lhp-search">
+          <Search size={12} />
+          <input type="text" bind:value={libSearch} placeholder="Cari laga / turnamen..." />
+        </div>
+        <div class="lhp-seg">
+          <button type="button" class:active={libKind === 'all'} onclick={() => (libKind = 'all')}>Semua</button>
+          <button type="button" class:active={libKind === 'match'} onclick={() => (libKind = 'match')}>Pertandingan</button>
+          <button type="button" class:active={libKind === 'training'} onclick={() => (libKind = 'training')}>Latihan</button>
+        </div>
+        <div class="lhp-seg">
+          <button type="button" class:active={libStatus === 'all'} onclick={() => (libStatus = 'all')}>Semua Status</button>
+          <button type="button" class:active={libStatus === 'analysed'} onclick={() => (libStatus = 'analysed')}>Ada Klip</button>
+          <button type="button" class:active={libStatus === 'empty'} onclick={() => (libStatus = 'empty')}>Kosong</button>
+        </div>
+        {#if isTauriDesktop()}
+          <button type="button" class="recent-chip" onclick={() => projectStore.pickMatchLibraryFolder()} title={projectStore.matchLibraryFolder || 'Pilih Folder Pustaka'}>
+            <FolderOpen size={12} class="text-sky-400" />
+            <span class="chip-name">Folder</span>
+          </button>
+          <button type="button" class="recent-chip" onclick={() => projectStore.scanMatchLibrary()} title="Scan ulang folder .futsal">
+            <RefreshCw size={12} class="text-emerald-400" />
+            <span class="chip-name">Scan</span>
+          </button>
+        {/if}
+      </div>
     </div>
-    <div class="recent-chips-row">
-      <button class="recent-chip" onclick={loadSampleMatch}>
-        <span class="chip-status">⚽ Sampel Demo</span>
-        <span class="chip-name">Pendekar United vs Blacksteel</span>
-        <span class="chip-meta">(Babak 1 • 3 Klip Taktis)</span>
-      </button>
-      {#if onOpenTeamDatabase}
-        <button type="button" class="recent-chip" onclick={onOpenTeamDatabase}>
-          <Shield size={12} class="text-sky-400" />
-          <span class="chip-name">Library Klub ({projectStore.clubLibrary.length})</span>
+
+    {#if filteredLibrary.length > 0}
+      <div class="lhp-grid">
+        {#each filteredLibrary as m (m.id)}
+          <div class="lhp-card">
+            <div class="lhp-card-main">
+              <span class="lhp-kind-badge" class:training={m.matchKind === 'training'}>
+                {m.matchKind === 'training' ? 'Latihan' : 'Laga'}
+              </span>
+              <span class="lhp-card-title" title={m.filePath || m.title}>{m.title}</span>
+              <span class="chip-meta">{m.tags.length} Klip{m.competition ? ` · ${m.competition}` : ''}</span>
+            </div>
+            <div class="lhp-card-actions">
+              <button type="button" class="lhp-btn open" onclick={() => handleOpenLibraryMatch(m.filePath)}>
+                Lanjutkan
+              </button>
+              <button type="button" class="lhp-btn" onclick={() => projectStore.duplicateMatchFile(m)} title="Duplikat file analisis">
+                <Copy size={11} />
+              </button>
+              <button type="button" class="lhp-btn del" onclick={() => handleDeleteLibraryMatch(m.filePath, m.title)} title="Hapus file .futsal">
+                <Trash2 size={11} />
+              </button>
+            </div>
+          </div>
+        {/each}
+      </div>
+    {:else}
+      <div class="lhp-empty">
+        Belum ada file `.futsal` tersimpan di folder pustaka{projectStore.matchLibraryFolder ? ` (${projectStore.matchLibraryFolder})` : ''}. Simpan proyek dengan Ctrl+S atau pilih folder pustaka.
+      </div>
+    {/if}
+
+    <div class="recent-projects-bar">
+      <div class="recent-title">
+        <Clock size={14} class="text-sky-400" />
+        <span>Pintasan Cepat:</span>
+      </div>
+      <div class="recent-chips-row">
+        <button class="recent-chip" onclick={loadSampleMatch}>
+          <span class="chip-status">⚽ Sampel Demo</span>
+          <span class="chip-name">Pendekar United vs Blacksteel</span>
+          <span class="chip-meta">(Babak 1 • 3 Klip Taktis)</span>
         </button>
-      {/if}
-      {#if onOpenSeasonAnalytics}
-        <button type="button" class="recent-chip" onclick={onOpenSeasonAnalytics}>
-          <BarChart3 size={12} class="text-emerald-400" />
-          <span class="chip-name">Season Analytics Hub</span>
-        </button>
-      {/if}
-      <div class="workflow-breadcrumbs">
-        <span class="crumb-text">Alur 4 Tahap:</span>
-        <span class="crumb active">1. Hub</span>
-        <span class="crumb-arrow">→</span>
-        <span class="crumb">2. Tagging</span>
-        <span class="crumb-arrow">→</span>
-        <span class="crumb">3. Telestrasi</span>
-        <span class="crumb-arrow">→</span>
-        <span class="crumb">4. Playlist & Ekspor</span>
+        {#if onOpenTeamDatabase}
+          <button type="button" class="recent-chip" onclick={onOpenTeamDatabase}>
+            <Shield size={12} class="text-sky-400" />
+            <span class="chip-name">Library Klub ({projectStore.clubLibrary.length})</span>
+          </button>
+        {/if}
+        {#if onOpenSeasonAnalytics}
+          <button type="button" class="recent-chip" onclick={onOpenSeasonAnalytics}>
+            <BarChart3 size={12} class="text-emerald-400" />
+            <span class="chip-name">Season Analytics Hub</span>
+          </button>
+        {/if}
+        <div class="workflow-breadcrumbs">
+          <span class="crumb-text">Alur 4 Tahap:</span>
+          <span class="crumb active">1. Hub</span>
+          <span class="crumb-arrow">→</span>
+          <span class="crumb">2. Tagging</span>
+          <span class="crumb-arrow">→</span>
+          <span class="crumb">3. Telestrasi</span>
+          <span class="crumb-arrow">→</span>
+          <span class="crumb">4. Playlist & Ekspor</span>
+        </div>
       </div>
     </div>
   </div>
@@ -1165,5 +1284,170 @@
     border-radius: 5px;
     outline: none;
     min-width: 0;
+  }
+
+  .kind-mini-sel {
+    max-width: 110px;
+    flex-shrink: 0;
+  }
+
+  .library-hub-panel {
+    background: linear-gradient(180deg, #0b172a 0%, #070e1c 100%);
+    border: 1px solid #1a355d;
+    border-radius: 12px;
+    padding: 12px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-width: 1200px;
+    width: 100%;
+    margin: 0 auto;
+    box-sizing: border-box;
+  }
+
+  .lhp-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .lhp-controls {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .lhp-search {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    background: #060b14;
+    border: 1px solid #1e3b68;
+    border-radius: 6px;
+    padding: 3px 8px;
+    color: #64748b;
+  }
+
+  .lhp-search input {
+    background: transparent;
+    border: none;
+    outline: none;
+    color: #f8fafc;
+    font-size: 10.5px;
+    width: 140px;
+  }
+
+  .lhp-seg {
+    display: inline-flex;
+    background: #060b14;
+    border: 1px solid #1e3b68;
+    border-radius: 6px;
+    overflow: hidden;
+  }
+
+  .lhp-seg button {
+    background: transparent;
+    border: none;
+    color: #94a3b8;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 4px 7px;
+    cursor: pointer;
+  }
+
+  .lhp-seg button.active {
+    background: #0284c7;
+    color: #ffffff;
+  }
+
+  .lhp-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 8px;
+    max-height: 185px;
+    overflow-y: auto;
+  }
+
+  .lhp-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    background: #091322;
+    border: 1px solid #1e3b68;
+    border-radius: 8px;
+    padding: 8px 10px;
+  }
+
+  .lhp-card-main {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .lhp-kind-badge {
+    align-self: flex-start;
+    font-size: 8.5px;
+    font-weight: 800;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: rgba(2, 132, 199, 0.25);
+    color: #38bdf8;
+  }
+
+  .lhp-kind-badge.training {
+    background: rgba(16, 185, 129, 0.22);
+    color: #34d399;
+  }
+
+  .lhp-card-title {
+    font-size: 11px;
+    font-weight: 700;
+    color: #f8fafc;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .lhp-card-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+
+  .lhp-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: #0f172a;
+    border: 1px solid #243b61;
+    color: #cbd5e1;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 4px 7px;
+    border-radius: 5px;
+    cursor: pointer;
+  }
+
+  .lhp-btn.open {
+    background: #0284c7;
+    border-color: #38bdf8;
+    color: #ffffff;
+  }
+
+  .lhp-btn.del:hover {
+    border-color: #ef4444;
+    color: #fca5a5;
+  }
+
+  .lhp-empty {
+    font-size: 10.5px;
+    color: #64748b;
+    padding: 6px 2px;
   }
 </style>

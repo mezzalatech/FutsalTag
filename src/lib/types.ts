@@ -385,6 +385,17 @@ export interface ExportOptions {
   includeAudio: boolean;
 }
 
+export type MatchKind = 'match' | 'training';
+
+export interface RecentProjectEntry {
+  filePath: string;
+  title: string;
+  matchKind: MatchKind;
+  competition?: string;
+  tagCount: number;
+  openedAt: string;
+}
+
 export type TelestrationFilterMode = 'all' | 'with_telestration' | 'without_telestration';
 
 export interface LibraryMatchSource {
@@ -394,6 +405,9 @@ export interface LibraryMatchSource {
   videoFilePath: string | null;
   videoSrc: string | null;
   exportedAt?: string;
+  matchKind?: MatchKind;
+  competition?: string;
+  matchDate?: string;
   chromaFloorConfig?: ChromaFloorConfig;
   tags: VideoTagEvent[];
   roster: RosterPlayer[];

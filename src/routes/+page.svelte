@@ -19,6 +19,13 @@
     MonitorPlay,
     Shield,
     BarChart3,
+    FilePlus,
+    ChevronDown,
+    Link2,
+    Pencil,
+    XCircle,
+    AlertTriangle,
+    Clock,
   } from "lucide-svelte";
 
   let isChalkboardOpen = $state(false);
@@ -27,21 +34,59 @@
   let isPresentationOpen = $state(false);
   let isTeamDbOpen = $state(false);
   let isSeasonAnalyticsOpen = $state(false);
+  let isProjectMenuOpen = $state(false);
+  let isEditMetaOpen = $state(false);
+  let metaTitle = $state("");
+  let metaKind = $state<"match" | "training">("match");
+  let metaComp = $state("");
+  let metaDate = $state("");
+  let saveToast = $state<string | null>(null);
   let openProjectInputEl: HTMLInputElement | undefined = $state();
+
+  function showSaveToast(msg: string) {
+    saveToast = msg;
+    setTimeout(() => {
+      if (saveToast === msg) saveToast = null;
+    }, 2800);
+  }
 
   onMount(() => {
     projectStore.checkAutoSaveRecovery();
     const timer = setInterval(() => {
       projectStore.runAutoSave();
     }, 60_000);
-    return () => clearInterval(timer);
+
+    const onWindowKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        handleSaveProject(e.shiftKey);
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "n") {
+        const tag = (e.target as HTMLElement)?.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+        e.preventDefault();
+        handleNewProject();
+      }
+    };
+    const onWindowClick = () => {
+      if (isProjectMenuOpen) isProjectMenuOpen = false;
+    };
+
+    window.addEventListener("keydown", onWindowKeyDown);
+    window.addEventListener("click", onWindowClick);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("keydown", onWindowKeyDown);
+      window.removeEventListener("click", onWindowClick);
+    };
   });
 
-  async function handleSaveProject() {
+  async function handleSaveProject(forceSaveAs = false) {
+    isProjectMenuOpen = false;
     try {
-      const savedPath = await projectStore.saveProjectToDisk();
+      const savedPath = await projectStore.saveProjectToDisk(forceSaveAs);
       if (savedPath) {
-        alert(`Proyek berhasil disimpan ke "${savedPath}"`);
+        const fname = savedPath.split(/[\\/]/).pop() || savedPath;
+        showSaveToast(`Tersimpan: ${fname}`);
       }
     } catch (err: any) {
       alert(`Gagal menyimpan proyek: ${err?.message || err}`);
@@ -49,17 +94,76 @@
   }
 
   async function handleOpenProjectClick() {
+    isProjectMenuOpen = false;
+    if (!projectStore.confirmDiscardIfDirty("membuka proyek lain")) return;
     if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
       try {
         const ok = await projectStore.openProjectFromDisk();
         if (ok) {
-          alert(`Proyek "${projectStore.videoTitle}" berhasil dimuat!`);
+          showSaveToast(`Dimuat: ${projectStore.videoTitle}`);
         }
       } catch (err: any) {
         alert(`Gagal membuka proyek: ${err?.message || err}`);
       }
     } else {
       openProjectInputEl?.click();
+    }
+  }
+
+  async function handleOpenRecent(filePath: string) {
+    isProjectMenuOpen = false;
+    if (!projectStore.confirmDiscardIfDirty("pindah ke proyek ini")) return;
+    try {
+      const ok = await projectStore.openProjectFromPath(filePath);
+      if (ok) {
+        showSaveToast(`Pindah ke: ${projectStore.videoTitle}`);
+      } else {
+        alert("Format berkas proyek tidak valid.");
+      }
+    } catch (err: any) {
+      alert(`Gagal membuka riwayat proyek: ${err?.message || err}`);
+    }
+  }
+
+  function handleNewProject() {
+    isProjectMenuOpen = false;
+    if (!projectStore.confirmDiscardIfDirty("membuat analisis baru")) return;
+    projectStore.resetProject();
+  }
+
+  function handleCloseProject() {
+    isProjectMenuOpen = false;
+    if (!projectStore.confirmDiscardIfDirty("menutup proyek aktif")) return;
+    projectStore.resetProject();
+  }
+
+  function openEditMetaModal() {
+    isProjectMenuOpen = false;
+    metaTitle = projectStore.videoTitle;
+    metaKind = projectStore.matchKind;
+    metaComp = projectStore.competitionName;
+    metaDate = projectStore.matchDate;
+    isEditMetaOpen = true;
+  }
+
+  function saveEditMeta() {
+    projectStore.updateMatchMeta({
+      title: metaTitle,
+      matchKind: metaKind,
+      competition: metaComp,
+      matchDate: metaDate,
+    });
+    isEditMetaOpen = false;
+    showSaveToast("Info pertandingan diperbarui");
+  }
+
+  async function handleRelinkVideo() {
+    isProjectMenuOpen = false;
+    try {
+      const ok = await projectStore.relinkVideoFile();
+      if (ok) showSaveToast("Video berhasil ditautkan ulang");
+    } catch (err: any) {
+      alert(`Gagal menautkan video: ${err?.message || err}`);
     }
   }
 
@@ -290,11 +394,18 @@
         <button
           type="button"
           class="btn-header-io"
-          title="Buka Berkas Proyek Futsal (.futsal)"
-          onclick={handleOpenProjectClick}
+          title="Menu Manajemen Proyek (Proyek Baru, Simpan Cepat, Terakhir Dibuka, Relink)"
+          onclick={(e) => {
+            e.stopPropagation();
+            isProjectMenuOpen = !isProjectMenuOpen;
+          }}
         >
           <FolderOpen size={12} />
-          <span>Buka</span>
+          <span>Proyek</span>
+          {#if projectStore.hasUnsavedChanges}
+            <span class="dirty-dot" title="Ada perubahan belum disimpan"></span>
+          {/if}
+          <ChevronDown size={11} />
         </button>
         <input
           bind:this={openProjectInputEl}
@@ -306,15 +417,96 @@
         <button
           type="button"
           class="btn-header-io btn-io-save"
-          onclick={handleSaveProject}
-          title="Simpan Proyek & Seluruh Klip ke Berkas (.futsal)"
+          onclick={() => handleSaveProject(false)}
+          title={projectStore.currentProjectFilePath
+            ? `Simpan Cepat ke ${projectStore.currentProjectFilePath} (Ctrl+S)`
+            : "Simpan Proyek (.futsal) (Ctrl+S)"}
         >
           <Save size={12} />
-          <span>Simpan</span>
+          <span>{projectStore.hasUnsavedChanges ? "Simpan*" : "Simpan"}</span>
         </button>
       </div>
     </div>
   </header>
+
+  {#if isProjectMenuOpen}
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <div
+      class="project-dropdown"
+      role="menu"
+      tabindex="-1"
+      onclick={(e) => e.stopPropagation()}
+    >
+      <button type="button" class="pd-item" onclick={handleNewProject}>
+        <FilePlus size={13} />
+        <span>Proyek Baru</span>
+        <kbd>Ctrl+N</kbd>
+      </button>
+      <button type="button" class="pd-item" onclick={handleOpenProjectClick}>
+        <FolderOpen size={13} />
+        <span>Buka Berkas Proyek...</span>
+      </button>
+      <button type="button" class="pd-item" onclick={() => handleSaveProject(false)}>
+        <Save size={13} />
+        <span>{projectStore.currentProjectFilePath ? "Simpan Cepat" : "Simpan Proyek..."}</span>
+        <kbd>Ctrl+S</kbd>
+      </button>
+      <button type="button" class="pd-item" onclick={() => handleSaveProject(true)}>
+        <Save size={13} />
+        <span>Simpan Sebagai File Baru...</span>
+        <kbd>Ctrl+Shift+S</kbd>
+      </button>
+      <div class="pd-divider"></div>
+      <button type="button" class="pd-item" onclick={openEditMetaModal}>
+        <Pencil size={13} />
+        <span>Edit Info Pertandingan</span>
+      </button>
+      <button type="button" class="pd-item" onclick={handleRelinkVideo}>
+        <Link2 size={13} />
+        <span>Tautkan Ulang Video (Relink)</span>
+      </button>
+      <button type="button" class="pd-item pd-danger" onclick={handleCloseProject}>
+        <XCircle size={13} />
+        <span>Tutup Proyek Aktif</span>
+      </button>
+
+      {#if projectStore.recentProjects.length > 0}
+        <div class="pd-divider"></div>
+        <div class="pd-sec-label">TERAKHIR DIBUKA</div>
+        {#each projectStore.recentProjects.slice(0, 6) as rec (rec.filePath)}
+          <button
+            type="button"
+            class="pd-recent-item"
+            onclick={() => handleOpenRecent(rec.filePath)}
+            title={rec.filePath}
+          >
+            <Clock size={12} />
+            <span class="pd-rec-title">{rec.title}</span>
+            <span class="pd-rec-meta">{rec.matchKind === "training" ? "Lat" : "Laga"} · {rec.tagCount}</span>
+          </button>
+        {/each}
+      {/if}
+    </div>
+  {/if}
+
+  {#if saveToast}
+    <div class="save-toast" role="status">{saveToast}</div>
+  {/if}
+
+  {#if projectStore.videoMissing}
+    <div class="missing-video-banner" role="alert">
+      <div class="mvb-left">
+        <AlertTriangle size={14} />
+        <span>
+          Video pertandingan tidak ditemukan di path tersimpan (<code>{projectStore.videoFilePath}</code>). Klip, label, dan telestrasi tetap aman.
+        </span>
+      </div>
+      <button type="button" class="mvb-btn" onclick={handleRelinkVideo}>
+        <Link2 size={12} />
+        <span>Cari Videonya (Relink)</span>
+      </button>
+    </div>
+  {/if}
 
   <!-- WORKSPACE VIEWPORT -->
   <main class="app-workspace">
@@ -391,6 +583,40 @@
         onClose={() => (isSeasonAnalyticsOpen = false)}
       />
     {/await}
+  {/if}
+
+  {#if isEditMetaOpen}
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <div class="meta-modal-backdrop" role="presentation" onclick={() => (isEditMetaOpen = false)}>
+      <div class="meta-modal-card" role="dialog" tabindex="-1" onclick={(e) => e.stopPropagation()}>
+        <h3>Edit Info Pertandingan / Sesi</h3>
+        <label class="mm-field">
+          <span>Judul Pertandingan / Sesi</span>
+          <input type="text" bind:value={metaTitle} placeholder="Misal: Futsal Pro vs Blacksteel" />
+        </label>
+        <div class="mm-row">
+          <label class="mm-field">
+            <span>Jenis Sesi</span>
+            <select bind:value={metaKind}>
+              <option value="match">Pertandingan</option>
+              <option value="training">Latihan</option>
+            </select>
+          </label>
+          <label class="mm-field">
+            <span>Tanggal</span>
+            <input type="date" bind:value={metaDate} />
+          </label>
+        </div>
+        <label class="mm-field">
+          <span>Kompetisi / Turnamen</span>
+          <input type="text" bind:value={metaComp} placeholder="Opsional: Pro Futsal League..." />
+        </label>
+        <div class="mm-actions">
+          <button type="button" class="mm-btn" onclick={() => (isEditMetaOpen = false)}>Batal</button>
+          <button type="button" class="mm-btn primary" onclick={saveEditMeta}>Simpan Info</button>
+        </div>
+      </div>
+    </div>
   {/if}
 </div>
 
@@ -951,5 +1177,227 @@
     overflow: hidden;
     position: relative;
     background-color: #060b14;
+  }
+
+  .dirty-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #f59e0b;
+    display: inline-block;
+  }
+
+  .project-dropdown {
+    position: fixed;
+    top: 52px;
+    right: 12px;
+    z-index: 320;
+    width: 280px;
+    background: #0a1426;
+    border: 1px solid #1e3b68;
+    border-radius: 10px;
+    padding: 6px;
+    box-shadow: 0 16px 36px rgba(2, 6, 23, 0.85);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .pd-item,
+  .pd-recent-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    padding: 7px 9px;
+    color: #e2e8f0;
+    font-size: 11.5px;
+    font-weight: 600;
+    cursor: pointer;
+    text-align: left;
+  }
+
+  .pd-item:hover,
+  .pd-recent-item:hover {
+    background: #13284b;
+    color: #ffffff;
+  }
+
+  .pd-item span,
+  .pd-rec-title {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .pd-item kbd {
+    font-size: 9.5px;
+    color: #64748b;
+    background: #060b14;
+    border: 1px solid #1e293b;
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
+
+  .pd-danger {
+    color: #fca5a5;
+  }
+
+  .pd-divider {
+    height: 1px;
+    background: #1a355d;
+    margin: 4px 2px;
+  }
+
+  .pd-sec-label {
+    font-size: 9.5px;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    color: #38bdf8;
+    padding: 4px 8px 2px;
+  }
+
+  .pd-rec-meta {
+    font-size: 9.5px;
+    color: #94a3b8;
+    flex-shrink: 0;
+  }
+
+  .save-toast {
+    position: fixed;
+    bottom: 16px;
+    right: 16px;
+    z-index: 330;
+    background: #065f46;
+    border: 1px solid #10b981;
+    color: #ecfdf5;
+    font-size: 12px;
+    font-weight: 700;
+    padding: 8px 14px;
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+  }
+
+  .missing-video-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 6px 14px;
+    background: rgba(120, 53, 15, 0.45);
+    border-bottom: 1px solid #d97706;
+    color: #fde68a;
+    font-size: 11.5px;
+  }
+
+  .mvb-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .mvb-left code {
+    font-size: 10.5px;
+    color: #fef3c7;
+  }
+
+  .mvb-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: #d97706;
+    border: 1px solid #f59e0b;
+    color: #ffffff;
+    font-size: 11px;
+    font-weight: 800;
+    padding: 4px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .meta-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 340;
+    background: rgba(2, 6, 23, 0.78);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+  }
+
+  .meta-modal-card {
+    width: 100%;
+    max-width: 420px;
+    background: #0b1629;
+    border: 1px solid #1e3b68;
+    border-radius: 12px;
+    padding: 18px;
+    color: #f8fafc;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .meta-modal-card h3 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 800;
+  }
+
+  .mm-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .mm-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 11px;
+    font-weight: 700;
+    color: #94a3b8;
+  }
+
+  .mm-field input,
+  .mm-field select {
+    background: #060b14;
+    border: 1px solid #334155;
+    border-radius: 6px;
+    color: #f8fafc;
+    font-size: 12px;
+    padding: 6px 8px;
+  }
+
+  .mm-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 4px;
+  }
+
+  .mm-btn {
+    background: #1e293b;
+    border: 1px solid #334155;
+    color: #e2e8f0;
+    border-radius: 6px;
+    padding: 6px 12px;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .mm-btn.primary {
+    background: #0284c7;
+    border-color: #38bdf8;
+    color: #ffffff;
   }
 </style>

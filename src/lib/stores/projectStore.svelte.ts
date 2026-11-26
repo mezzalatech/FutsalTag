@@ -19,7 +19,20 @@ import type {
   ClipLibraryFilter,
   ResolvedPlaylistClip,
   TelestrationFilterMode,
+  MatchKind,
+  RecentProjectEntry,
 } from '$lib/types';
+
+function loadInitialRecentProjects(): RecentProjectEntry[] {
+  if (typeof localStorage === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem('futsaltag_recent_projects_v1');
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
 import {
   BUILTIN_TAGGING_BOARDS,
   cloneBoard,
@@ -161,6 +174,16 @@ class ProjectStore {
   clipTelestrationOverrides = $state<Record<string, boolean>>({});
   clipCustomOrderKeys = $state<string[]>([]);
   clipExcludedKeys = $state<Record<string, boolean>>({});
+  matchKind = $state<MatchKind>('match');
+  competitionName = $state<string>('');
+  matchDate = $state<string>(new Date().toISOString().slice(0, 10));
+  hasUnsavedChanges = $state<boolean>(false);
+  videoMissing = $state<boolean>(false);
+  recentProjects = $state<RecentProjectEntry[]>(loadInitialRecentProjects());
+
+  markDirty() {
+    this.hasUnsavedChanges = true;
+  }
 
   // Full NLE Tag Undo/Redo History Stack
   private tagHistoryPast: { label: string; tags: VideoTagEvent[] }[] = [];
@@ -297,6 +320,7 @@ class ProjectStore {
     }
     this.periodKickoffs = [...this.periodKickoffs].sort((a, b) => a.videoTime - b.videoTime);
     this.useMatchClock = true;
+    this.markDirty();
   }
 
   clearPeriodKickoff(period?: 1 | 2 | 3) {
@@ -308,6 +332,7 @@ class ProjectStore {
     if (this.periodKickoffs.length === 0) {
       this.useMatchClock = false;
     }
+    this.markDirty();
   }
 
   getPeriodAtTime(videoTime: number): 1 | 2 | 3 {
@@ -388,6 +413,7 @@ class ProjectStore {
 
   setStartingLineup(ids: string[]) {
     this.startingLineupIds = Array.from(new Set(ids)).slice(0, 5);
+    this.markDirty();
   }
 
   recordSubstitution(
@@ -407,11 +433,13 @@ class ProjectStore {
       teamSide,
     };
     this.substitutions = [...this.substitutions, event].sort((a, b) => a.atTime - b.atTime);
+    this.markDirty();
     return event;
   }
 
   deleteSubstitution(id: string) {
     this.substitutions = this.substitutions.filter((s) => s.id !== id);
+    this.markDirty();
   }
 
   // --- PERSISTENT CLUB & ROSTER LIBRARY ---
@@ -657,6 +685,7 @@ class ProjectStore {
         role: 'Pemain Rotasi',
         color: '#0ea5e9',
       });
+      this.markDirty();
     }
     return norm;
   }
@@ -668,6 +697,8 @@ class ProjectStore {
   // Load a real user video: CLEARS previous tags so analyst starts fresh
   loadVideo(url: string, path: string | null, title: string, dur = 0) {
     this.currentProjectFilePath = null;
+    this.videoMissing = false;
+    this.hasUnsavedChanges = false;
     this.videoSrc = url;
     this.videoFilePath = path;
     this.videoTitle = title || 'Video Pertandingan Futsal';
@@ -702,6 +733,10 @@ class ProjectStore {
   // Load sample demo match with pre-tagged futsal events (with real courtCoord & passing links)
   loadSampleDemo() {
     this.currentProjectFilePath = null;
+    this.videoMissing = false;
+    this.hasUnsavedChanges = false;
+    this.matchKind = 'match';
+    this.competitionName = 'Pro Futsal League (Demo)';
     this.videoSrc = null;
     this.videoFilePath = null;
     this.videoTitle = 'Sampel Demo: Pendekar United vs Blacksteel (Babak 1)';
@@ -849,6 +884,7 @@ class ProjectStore {
         tagEvent: normalized,
       });
     }
+    this.markDirty();
   }
 
   updateTag(updated: VideoTagEvent) {
@@ -869,6 +905,7 @@ class ProjectStore {
         pl.items[pIdx].pauseDuration = norm.pauseDuration ?? 3.0;
       }
     }
+    this.markDirty();
   }
 
   deleteTag(id: string) {
@@ -881,6 +918,7 @@ class ProjectStore {
     if (this.activeClipForDrawing?.id === id) {
       this.activeClipForDrawing = null;
     }
+    this.markDirty();
   }
 
   splitTag(tagId: string, splitTime: number): [VideoTagEvent, VideoTagEvent] | null {
@@ -1100,6 +1138,9 @@ class ProjectStore {
         title: this.videoTitle,
         duration: this.duration,
         videoFilePath: this.videoFilePath,
+        matchKind: this.matchKind,
+        competition: this.competitionName,
+        matchDate: this.matchDate,
       },
       roster: this.roster,
       calibrationPoints: this.calibrationPoints,
@@ -1118,30 +1159,81 @@ class ProjectStore {
     return JSON.stringify(projectData, null, 2);
   }
 
-  async saveProjectToDisk(): Promise<string | null> {
+  recordRecentProject(filePath: string) {
+    if (!filePath) return;
+    const norm = this.normalizePathKey(filePath);
+    const entry: RecentProjectEntry = {
+      filePath,
+      title: this.videoTitle || filePath.split(/[\\/]/).pop() || 'Proyek Futsal',
+      matchKind: this.matchKind,
+      competition: this.competitionName || undefined,
+      tagCount: this.tags.length,
+      openedAt: new Date().toISOString(),
+    };
+    const next = [
+      entry,
+      ...this.recentProjects.filter((r) => this.normalizePathKey(r.filePath) !== norm),
+    ].slice(0, 10);
+    this.recentProjects = next;
+    if (typeof localStorage !== 'undefined') {
+      try {
+        localStorage.setItem('futsaltag_recent_projects_v1', JSON.stringify(next));
+      } catch {
+        // Ignore storage quota errors
+      }
+    }
+  }
+
+  async saveProjectToDisk(forceSaveAs = false): Promise<string | null> {
     const json = this.exportProjectJson();
     const safeName = (this.videoTitle || 'proyek_futsal')
       .replace(/[^a-zA-Z0-9_-]/g, '_')
       .toLowerCase();
 
     if (isTauriDesktop()) {
-      const { save } = await import('@tauri-apps/plugin-dialog');
-      const selected = await save({
-        title: 'Simpan Proyek FutsalTag Pro',
-        defaultPath: `${safeName}.futsal`,
-        filters: [{ name: 'FutsalTag Project', extensions: ['futsal', 'json'] }],
-      });
-      if (!selected) return null;
-      await invoke<string>('save_project_file', { filePath: selected, content: json });
-      this.currentProjectFilePath = selected;
+      let targetPath = !forceSaveAs ? this.currentProjectFilePath : null;
+      if (!targetPath) {
+        const { save } = await import('@tauri-apps/plugin-dialog');
+        const defaultDirSep =
+          this.matchLibraryFolder &&
+          !this.matchLibraryFolder.endsWith('/') &&
+          !this.matchLibraryFolder.endsWith('\\')
+            ? '\\'
+            : '';
+        const defaultPath = this.matchLibraryFolder
+          ? `${this.matchLibraryFolder}${defaultDirSep}${safeName}.futsal`
+          : `${safeName}.futsal`;
+        targetPath = await save({
+          title: forceSaveAs ? 'Simpan Proyek Sebagai...' : 'Simpan Proyek FutsalTag Pro',
+          defaultPath,
+          filters: [{ name: 'FutsalTag Project', extensions: ['futsal', 'json'] }],
+        });
+      }
+      if (!targetPath) return null;
+      await invoke<string>('save_project_file', { filePath: targetPath, content: json });
+      this.currentProjectFilePath = targetPath;
+      this.hasUnsavedChanges = false;
+      this.recordRecentProject(targetPath);
       if (this.matchLibraryFolder) {
         this.scanMatchLibrary().catch(() => {});
       }
-      return selected;
+      return targetPath;
     }
 
     this.downloadProjectFile(safeName);
+    this.hasUnsavedChanges = false;
     return `${safeName}.futsal`;
+  }
+
+  async openProjectFromPath(filePath: string): Promise<boolean> {
+    if (!isTauriDesktop() || !filePath) return false;
+    const content = await invoke<string>('load_project_file', { filePath });
+    const ok = this.importProjectJson(content);
+    if (ok) {
+      this.currentProjectFilePath = filePath;
+      this.recordRecentProject(filePath);
+    }
+    return ok;
   }
 
   async openProjectFromDisk(): Promise<boolean> {
@@ -1153,12 +1245,7 @@ class ProjectStore {
       filters: [{ name: 'FutsalTag Project', extensions: ['futsal', 'json'] }],
     });
     if (!selected || typeof selected !== 'string') return false;
-    const content = await invoke<string>('load_project_file', { filePath: selected });
-    const ok = this.importProjectJson(content);
-    if (ok) {
-      this.currentProjectFilePath = selected;
-    }
-    return ok;
+    return this.openProjectFromPath(selected);
   }
 
   downloadProjectFile(filename?: string) {
@@ -1182,8 +1269,29 @@ class ProjectStore {
         this.videoTitle = data.matchInfo.title || this.videoTitle;
         this.duration = data.matchInfo.duration || this.duration;
         this.videoFilePath = data.matchInfo.videoFilePath || null;
-        if (this.videoFilePath && isTauriDesktop() && (this.videoFilePath.startsWith('/') || /^[A-Za-z]:[\\/]/.test(this.videoFilePath))) {
+        this.matchKind = data.matchInfo.matchKind === 'training' ? 'training' : 'match';
+        this.competitionName = typeof data.matchInfo.competition === 'string' ? data.matchInfo.competition : '';
+        this.matchDate =
+          typeof data.matchInfo.matchDate === 'string'
+            ? data.matchInfo.matchDate
+            : new Date().toISOString().slice(0, 10);
+        this.videoMissing = false;
+        const isAbs =
+          this.videoFilePath &&
+          isTauriDesktop() &&
+          (this.videoFilePath.startsWith('/') || /^[A-Za-z]:[\\/]/.test(this.videoFilePath));
+        if (isAbs && this.videoFilePath) {
           this.videoSrc = convertFileSrc(this.videoFilePath);
+          const checkPath = this.videoFilePath;
+          invoke<boolean>('check_file_exists', { filePath: checkPath })
+            .then((exists) => {
+              if (this.videoFilePath === checkPath) {
+                this.videoMissing = !exists;
+              }
+            })
+            .catch(() => {});
+        } else {
+          this.videoSrc = null;
         }
       }
       if (Array.isArray(data.roster) && data.roster.length > 0) {
@@ -1228,6 +1336,7 @@ class ProjectStore {
           .map((p) => p.id);
       }
       this.substitutions = Array.isArray(data.substitutions) ? data.substitutions : [];
+      this.hasUnsavedChanges = false;
       this.clearTagHistory();
       this.stage = 'tagging';
       return true;
@@ -1336,8 +1445,82 @@ class ProjectStore {
     ];
     this.presentationSlides = [];
     this.clubLogoDataUrl = null;
+    this.matchKind = 'match';
+    this.competitionName = '';
+    this.videoMissing = false;
+    this.hasUnsavedChanges = false;
     this.clearTagHistory();
     this.stage = 'hub';
+  }
+
+  confirmDiscardIfDirty(actionLabel = 'melanjutkan'): boolean {
+    if (!this.hasUnsavedChanges || (this.tags.length === 0 && !this.videoSrc)) return true;
+    if (typeof window === 'undefined') return true;
+    return window.confirm(
+      `Proyek "${this.videoTitle}" memiliki perubahan yang belum disimpan.\n\nTetap ${actionLabel} tanpa menyimpan?`
+    );
+  }
+
+  updateMatchMeta(patch: {
+    title?: string;
+    matchKind?: MatchKind;
+    competition?: string;
+    matchDate?: string;
+  }) {
+    if (patch.title !== undefined && patch.title.trim()) this.videoTitle = patch.title.trim();
+    if (patch.matchKind !== undefined) this.matchKind = patch.matchKind;
+    if (patch.competition !== undefined) this.competitionName = patch.competition;
+    if (patch.matchDate !== undefined) this.matchDate = patch.matchDate;
+    this.markDirty();
+  }
+
+  async relinkVideoFile(): Promise<boolean> {
+    if (!isTauriDesktop()) return false;
+    const { open } = await import('@tauri-apps/plugin-dialog');
+    const selected = await open({
+      title: `Cari Video untuk "${this.videoTitle}"`,
+      multiple: false,
+      filters: [{ name: 'Video Files', extensions: ['mp4', 'mov', 'mkv', 'webm', 'avi', 'm4v'] }],
+    });
+    if (!selected || typeof selected !== 'string') return false;
+    this.videoFilePath = selected;
+    this.videoSrc = convertFileSrc(selected);
+    this.videoMissing = false;
+    this.markDirty();
+    return true;
+  }
+
+  async duplicateMatchFile(source: LibraryMatchSource): Promise<boolean> {
+    if (!isTauriDesktop() || !source.filePath) return false;
+    const raw = await invoke<string>('load_project_file', { filePath: source.filePath });
+    const data = JSON.parse(raw);
+    if (!data.matchInfo) data.matchInfo = {};
+    data.matchInfo.title = `${data.matchInfo.title || source.title} (Salinan)`;
+    data.exportedAt = new Date().toISOString();
+    const base = source.filePath.replace(/\.(futsal|json)$/i, '');
+    const copyPath = `${base}_copy_${Date.now()}.futsal`;
+    await invoke<string>('save_project_file', {
+      filePath: copyPath,
+      content: JSON.stringify(data, null, 2),
+    });
+    await this.scanMatchLibrary();
+    return true;
+  }
+
+  async deleteMatchFile(filePath: string): Promise<boolean> {
+    if (!isTauriDesktop() || !filePath) return false;
+    await invoke('delete_project_file', { filePath });
+    const norm = this.normalizePathKey(filePath);
+    this.recentProjects = this.recentProjects.filter((r) => this.normalizePathKey(r.filePath) !== norm);
+    if (typeof localStorage !== 'undefined') {
+      try {
+        localStorage.setItem('futsaltag_recent_projects_v1', JSON.stringify(this.recentProjects));
+      } catch {
+        // Ignore storage errors
+      }
+    }
+    await this.scanMatchLibrary();
+    return true;
   }
 
   tagHasTelestration(tag: VideoTagEvent): boolean {
@@ -1374,6 +1557,9 @@ class ProjectStore {
         videoFilePath,
         videoSrc,
         exportedAt: typeof data.exportedAt === 'string' ? data.exportedAt : undefined,
+        matchKind: data.matchInfo?.matchKind === 'training' ? 'training' : 'match',
+        competition: typeof data.matchInfo?.competition === 'string' ? data.matchInfo.competition : undefined,
+        matchDate: typeof data.matchInfo?.matchDate === 'string' ? data.matchInfo.matchDate : undefined,
         chromaFloorConfig: data.chromaFloorConfig,
         tags: data.tags.map((t: VideoTagEvent) => this.normalizeTagPlayers(t)),
         roster: Array.isArray(data.roster) ? data.roster : [],

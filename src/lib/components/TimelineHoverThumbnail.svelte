@@ -26,12 +26,29 @@
   let hiddenVideoEl: HTMLVideoElement | null = $state(null);
   let canvasEl: HTMLCanvasElement | null = $state(null);
   let isFrameReady = $state(false);
+  let hasLoadError = $state(false);
 
   const THUMB_W = 160;
   const THUMB_H = 90;
 
   let lastSeekTime = -1;
   let rafPending = false;
+  let trackedVideoSrc: string | null = null;
+
+  function isDirectPlayableVideo(src: string | null): boolean {
+    if (!src) return false;
+    const low = src.toLowerCase();
+    if (
+      low.includes('youtube.com/') ||
+      low.includes('youtu.be/') ||
+      low.includes('youtube-nocookie.com/')
+    ) {
+      return false;
+    }
+    return true;
+  }
+
+  let canShowVideoFrame = $derived(isDirectPlayableVideo(videoSrc) && !hasLoadError);
 
   // Format mm:ss.d
   function formatTime(sec: number): string {
@@ -45,15 +62,16 @@
   // Calculate clamped horizontal position
   let popupLeft = $derived.by(() => {
     if (typeof window === 'undefined') return anchorX;
-    const halfW = (THUMB_W + 16) / 2;
+    const cardW = canShowVideoFrame ? THUMB_W + 16 : 116;
+    const halfW = cardW / 2;
     const minX = 12;
-    const maxX = window.innerWidth - (THUMB_W + 16) - 12;
+    const maxX = window.innerWidth - cardW - 12;
     return Math.max(minX, Math.min(maxX, anchorX - halfW));
   });
 
   // Calculate vertical position (above timeline bar with 12px gap)
   let popupTop = $derived.by(() => {
-    const popH = THUMB_H + 42; // thumb + badge + arrow
+    const popH = canShowVideoFrame ? THUMB_H + 42 : 46; // thumb + badge + arrow, or compact
     const aboveY = anchorY - popH - 10;
     if (aboveY < 10) {
       // If no room above, place below
@@ -64,7 +82,8 @@
 
   // Triangle pointer position relative to thumbnail card
   let pointerLeft = $derived.by(() => {
-    return Math.max(14, Math.min(THUMB_W + 2, anchorX - popupLeft));
+    const maxPtr = canShowVideoFrame ? THUMB_W + 2 : 102;
+    return Math.max(14, Math.min(maxPtr, anchorX - popupLeft));
   });
 
   function drawVideoFrame() {
@@ -81,17 +100,30 @@
   }
 
   $effect(() => {
-    if (!visible || !videoSrc || !hiddenVideoEl) return;
+    if (videoSrc !== trackedVideoSrc) {
+      trackedVideoSrc = videoSrc;
+      isFrameReady = false;
+      hasLoadError = false;
+      lastSeekTime = -1;
+    }
+  });
 
-    // Throttle seek requests to ~30-60fps
+  $effect(() => {
+    if (!visible || !canShowVideoFrame || !hiddenVideoEl) return;
+    if (hiddenVideoEl.readyState < 1) return;
+
+    // Throttle seek requests to ~25fps
     if (Math.abs(hoverTime - lastSeekTime) >= 0.04) {
       lastSeekTime = hoverTime;
       if (!rafPending) {
         rafPending = true;
         requestAnimationFrame(() => {
           rafPending = false;
-          if (hiddenVideoEl && isFinite(hoverTime)) {
-            hiddenVideoEl.currentTime = Math.max(0, hoverTime);
+          if (hiddenVideoEl && hiddenVideoEl.readyState >= 1 && isFinite(hoverTime)) {
+            const maxT = Number.isFinite(hiddenVideoEl.duration) && hiddenVideoEl.duration > 0
+              ? hiddenVideoEl.duration
+              : hoverTime;
+            hiddenVideoEl.currentTime = Math.max(0, Math.min(maxT, hoverTime));
           }
         });
       }
@@ -103,55 +135,74 @@
   }
 
   function onLoadedMetadata() {
+    hasLoadError = false;
     if (hiddenVideoEl && isFinite(hoverTime)) {
-      hiddenVideoEl.currentTime = Math.max(0, hoverTime);
+      const target = Math.max(0, hoverTime);
+      lastSeekTime = target;
+      hiddenVideoEl.currentTime = target;
     }
+  }
+
+  function onVideoError() {
+    hasLoadError = true;
+    isFrameReady = false;
   }
 </script>
 
 <!-- Hidden auxiliary video element for decoding hover frame -->
-{#if videoSrc}
+{#if canShowVideoFrame && videoSrc}
   <video
     bind:this={hiddenVideoEl}
     src={videoSrc}
-    preload="auto"
+    preload="metadata"
     muted
     playsinline
     class="sr-only"
     onseeked={onSeeked}
     onloadedmetadata={onLoadedMetadata}
+    onerror={onVideoError}
   ></video>
 {/if}
 
-{#if visible && videoSrc}
+{#if visible && (videoSrc || activeActionLabel || hoverTime >= 0)}
   <div
     class="timeline-hover-popover"
+    class:compact={!canShowVideoFrame}
     style="left: {popupLeft}px; top: {popupTop}px;"
     role="tooltip"
   >
-    <div class="thumbnail-wrapper">
-      <canvas
-        bind:this={canvasEl}
-        width={THUMB_W}
-        height={THUMB_H}
-        class="thumbnail-canvas"
-        class:ready={isFrameReady}
-      ></canvas>
+    {#if canShowVideoFrame}
+      <div class="thumbnail-wrapper">
+        <canvas
+          bind:this={canvasEl}
+          width={THUMB_W}
+          height={THUMB_H}
+          class="thumbnail-canvas"
+          class:ready={isFrameReady}
+        ></canvas>
 
-      {#if !isFrameReady}
-        <div class="thumb-skeleton">
-          <span class="loading-dot"></span>
+        {#if !isFrameReady}
+          <div class="thumb-skeleton">
+            <span class="loading-dot"></span>
+          </div>
+        {/if}
+
+        <!-- Time badge overlay inside video thumbnail -->
+        <div class="thumb-time-badge">
+          <span class="time-main">{formatTime(hoverTime)}</span>
+          {#if matchClockLabel}
+            <span class="time-clock">({matchClockLabel})</span>
+          {/if}
         </div>
-      {/if}
-
-      <!-- Time badge overlay inside video thumbnail -->
-      <div class="thumb-time-badge">
+      </div>
+    {:else}
+      <div class="thumb-time-only">
         <span class="time-main">{formatTime(hoverTime)}</span>
         {#if matchClockLabel}
           <span class="time-clock">({matchClockLabel})</span>
         {/if}
       </div>
-    </div>
+    {/if}
 
     <!-- Category / Action label if hovering over a clip -->
     {#if activeActionLabel}
@@ -205,6 +256,21 @@
       opacity: 1;
       transform: translateY(0) scale(1);
     }
+  }
+
+  .timeline-hover-popover.compact {
+    min-width: 96px;
+    padding: 5px 8px;
+  }
+
+  .thumb-time-only {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    font-weight: 700;
+    color: #38bdf8;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   }
 
   .thumbnail-wrapper {

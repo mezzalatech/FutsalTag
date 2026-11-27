@@ -236,7 +236,18 @@
       <div class="mpm-body">
         {#if !sourceProject}
           <!-- STEP 1: FILE PICKER EMPTY STATE -->
-          <div class="mpm-upload-zone" onclick={handleBrowseFile} role="button" tabindex="0">
+          <div
+            class="mpm-upload-zone"
+            onclick={handleBrowseFile}
+            onkeydown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                handleBrowseFile();
+              }
+            }}
+            role="button"
+            tabindex="0"
+          >
             <UploadCloud size={44} class="text-cyan-400 mpm-upload-icon" />
             <h4>Pilih Berkas Proyek (.futsal / .json)</h4>
             <p>
@@ -349,6 +360,16 @@
                       >
                         Babak 2
                       </button>
+                      {#if projectStore.periodKickoffs.some((k) => k.period === 3) || (Array.isArray(sourceProject?.periodKickoffs) && sourceProject.periodKickoffs.some((k: any) => k.period === 3))}
+                        <button
+                          type="button"
+                          class="mpm-period-btn"
+                          class:active={referencePeriod === 3}
+                          onclick={() => (referencePeriod = 3)}
+                        >
+                          Extra
+                        </button>
+                      {/if}
                     </div>
                   </div>
 

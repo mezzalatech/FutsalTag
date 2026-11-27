@@ -254,8 +254,11 @@
       const parts: string[] = [];
       if (res.mainRelinked) parts.push("Video utama");
       if (res.anglesRelinked > 0) parts.push(`${res.anglesRelinked} sudut kamera`);
+      if (res.otherProjectsRelinked > 0) parts.push(`${res.otherProjectsRelinked} proyek lain di pustaka`);
       if (parts.length > 0) {
         showSaveToast(`Berhasil relink massal: ${parts.join(", ")}`);
+      } else if (res.noTargets) {
+        showSaveToast("Belum ada video referensi untuk dicocokkan; gunakan Relink Video untuk memilih file");
       } else {
         showSaveToast("Tidak ditemukan file video yang cocok di folder tersebut");
       }

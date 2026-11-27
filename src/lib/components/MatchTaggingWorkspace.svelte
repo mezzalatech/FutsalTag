@@ -87,6 +87,7 @@
     Columns2,
     Smartphone,
     Clock,
+    GitMerge,
   } from "lucide-svelte";
 
   // --- REFS & STATE ---
@@ -183,6 +184,7 @@
   let showPhoneRemoteModal = $state(false);
   let isPhoneRemoteRunning = $state(false);
   let showShiftTimesModal = $state(false);
+  let showMergeProjectModal = $state(false);
   let copiedMeta = $state<{
     labels: TagDescriptor[];
     players: string[];
@@ -219,8 +221,9 @@
   });
 
   function handleScrubberMouseMove(e: MouseEvent) {
-    if (!projectStore.videoSrc) return;
+    if (!projectStore.videoSrc && !ytVideoId) return;
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    if (rect.width <= 0) return;
     const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     scrubberHoverTime = ratio * Math.max(duration, 0.1);
     scrubberHoverX = e.clientX;
@@ -239,8 +242,11 @@
       const parts: string[] = [];
       if (res.mainRelinked) parts.push("Video utama");
       if (res.anglesRelinked > 0) parts.push(`${res.anglesRelinked} sudut kamera`);
+      if (res.otherProjectsRelinked > 0) parts.push(`${res.otherProjectsRelinked} proyek lain di pustaka`);
       if (parts.length > 0) {
         lastTaggedNotification = `Berhasil relink massal: ${parts.join(", ")}`;
+      } else if (res.noTargets) {
+        lastTaggedNotification = "Belum ada video referensi untuk dicocokkan; gunakan Tautkan Video MP4";
       } else {
         lastTaggedNotification = "Tidak ditemukan file video yang cocok di folder tersebut";
       }
@@ -2849,6 +2855,16 @@
 
           <button
             type="button"
+            class="hdr-tool-btn hdr-icon-compact"
+            onclick={() => (showMergeProjectModal = true)}
+            title="Gabung tag dari laptop/analis lain dengan sinkronisasi kickoff"
+          >
+            <GitMerge size={11} />
+            <span>Gabung Tag</span>
+          </button>
+
+          <button
+            type="button"
             class="hdr-tool-btn hdr-auto-btn hdr-icon-compact"
             class:active={isPhoneRemoteRunning}
             onclick={() => (showPhoneRemoteModal = true)}
@@ -3651,11 +3667,7 @@
                 </span>
               </div>
 
-              <div
-                class="mtb-scrubber"
-                onmousemove={handleScrubberMouseMove}
-                onmouseleave={handleScrubberMouseLeave}
-              >
+              <div class="mtb-scrubber">
                 <input
                   type="range"
                   min="0"
@@ -3664,13 +3676,15 @@
                   value={currentTime}
                   oninput={(e) =>
                     seekTo(Number((e.currentTarget as HTMLInputElement).value))}
+                  onmousemove={handleScrubberMouseMove}
+                  onmouseleave={handleScrubberMouseLeave}
                   class="video-range-slider"
                   aria-label="Posisi Video"
                 />
                 <span class="dur-total-lbl">{formatTime(duration)}</span>
 
                 <TimelineHoverThumbnail
-                  videoSrc={projectStore.videoSrc}
+                  videoSrc={projectStore.onlineSourceType === "youtube" ? null : projectStore.videoSrc}
                   hoverTime={scrubberHoverTime}
                   visible={scrubberHoverVisible}
                   anchorX={scrubberHoverX}
@@ -4161,6 +4175,14 @@
                                     ? ` +${clipPlayers.length - 1}`
                                     : ""}</span
                                 >
+                              </span>
+                            {/if}
+                            {#if tag.analystName}
+                              <span
+                                class="clip-analyst-chip"
+                                title="Ditandai oleh: {tag.analystName}"
+                              >
+                                {tag.analystName}
                               </span>
                             {/if}
                           </div>
@@ -4758,6 +4780,20 @@
         `${n} klip digeser ${delta >= 0 ? "+" : ""}${delta.toFixed(1)}s (Ctrl+Z untuk batal)`,
       )}
   />
+
+  {#if showMergeProjectModal}
+    {#await import("$lib/components/MergeProjectModal.svelte") then { default: MergeProjectModal }}
+      <MergeProjectModal
+        isOpen={showMergeProjectModal}
+        onClose={() => (showMergeProjectModal = false)}
+        onMerged={(res) => {
+          notifyUser(
+            `Berhasil menggabungkan ${res.mergedCount} tag dari analis lain! (Ctrl+Z untuk batal)`,
+          );
+        }}
+      />
+    {/await}
+  {/if}
 
   <QuickExportClipModal
     clip={quickExportModalClip}
@@ -6386,6 +6422,22 @@
     text-overflow: ellipsis;
     flex-shrink: 1;
     min-width: 0;
+  }
+
+  .clip-analyst-chip {
+    display: inline-flex;
+    align-items: center;
+    font-size: 8.5px;
+    font-weight: 700;
+    color: #38bdf8;
+    background: rgba(14, 165, 233, 0.14);
+    border: 1px solid rgba(56, 189, 248, 0.35);
+    border-radius: 3px;
+    padding: 0 4px;
+    max-width: 90px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .clip-row-actions {

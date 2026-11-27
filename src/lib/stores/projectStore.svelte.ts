@@ -2035,7 +2035,7 @@ class ProjectStore {
     }
 
     const filtered = sourceTags.filter((t) => {
-      if (options.categoryFilter && options.categoryFilter.length > 0) {
+      if (options.categoryFilter !== undefined) {
         return options.categoryFilter.includes(t.category);
       }
       return true;
@@ -2101,13 +2101,16 @@ class ProjectStore {
     const label = `Gabung ${sourceTags.length} Tag dari ${analyst} (${offset >= 0 ? '+' : ''}${offset.toFixed(1)}s)`;
 
     this.runBatchTagMutation(label, () => {
+      const originalTags = [...this.tags];
       let currentTags = [...this.tags];
+      const tagIdMap = new Map<string, string>();
+      const baseTs = Date.now();
 
-      for (const st of sourceTags) {
-        if (options.categoryFilter && options.categoryFilter.length > 0) {
+      sourceTags.forEach((st, idx) => {
+        if (options.categoryFilter !== undefined) {
           if (!options.categoryFilter.includes(st.category)) {
             skippedCount++;
-            continue;
+            return;
           }
         }
 
@@ -2117,23 +2120,26 @@ class ProjectStore {
         const actualDur = shiftedEnd - shiftedStart;
         const finalEnd = actualDur < 0.2 ? Number((shiftedStart + originalDur).toFixed(2)) : shiftedEnd;
 
-        // Check duplicate
-        const dupIdx = currentTags.findIndex(
+        // Compare duplicates against pre-merge tags snapshot
+        const originalDup = originalTags.find(
           (t) => t.category === st.category && Math.abs(t.startTime - shiftedStart) <= tol
         );
 
-        if (dupIdx !== -1) {
+        if (originalDup) {
           if (options.duplicateStrategy === 'skip_duplicate') {
+            tagIdMap.set(st.id, originalDup.id);
             skippedCount++;
-            continue;
+            return;
           }
           if (options.duplicateStrategy === 'overwrite_existing') {
-            currentTags.splice(dupIdx, 1);
+            const idxInCur = currentTags.findIndex((t) => t.id === originalDup.id);
+            if (idxInCur !== -1) currentTags.splice(idxInCur, 1);
           }
         }
 
         // Clone tag with shifted times and analyst attribution
-        const newId = `tag_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        const newId = `tag_${baseTs}_${idx}_${Math.random().toString(36).slice(2, 6)}`;
+        tagIdMap.set(st.id, newId);
         const newTitle = prefix ? `[${prefix}] ${st.title || st.category}` : (st.title || st.category);
 
         const shiftedLabels = st.labels?.map((l) => ({
@@ -2174,23 +2180,32 @@ class ProjectStore {
 
         currentTags.push(newTag);
         mergedCount++;
-      }
+      });
 
       // Sort tags chronologically by startTime
       currentTags.sort((a, b) => a.startTime - b.startTime);
       this.tags = currentTags;
-      this.syncPlaylistsAfterTagsRestore();
+
+      // Inherit period kickoffs if active project has none yet
+      if (this.periodKickoffs.length === 0 && Array.isArray(sourceProject.periodKickoffs) && sourceProject.periodKickoffs.length > 0) {
+        this.periodKickoffs = sourceProject.periodKickoffs.map((k: PeriodKickoff) => ({
+          ...k,
+          videoTime: Number(Math.max(0, k.videoTime + offset).toFixed(2)),
+        }));
+        this.useMatchClock = Boolean(sourceProject.useMatchClock || this.periodKickoffs.length > 0);
+      }
 
       // Merge Roster if opted
       if (options.mergeRoster && Array.isArray(sourceProject.roster)) {
         const myRosterKeys = new Set(this.roster.map((p) => `${p.num}_${p.name.toLowerCase()}`));
         const rosterToAdd: RosterPlayer[] = [];
-        for (const sp of sourceProject.roster) {
+        for (let rIdx = 0; rIdx < sourceProject.roster.length; rIdx++) {
+          const sp = sourceProject.roster[rIdx];
           const key = `${sp.num}_${(sp.name || '').toLowerCase()}`;
           if (!myRosterKeys.has(key)) {
             rosterToAdd.push({
               ...sp,
-              id: `r_merged_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+              id: `r_merged_${baseTs}_${rIdx}_${Math.random().toString(36).slice(2, 5)}`,
             });
             myRosterKeys.add(key);
             newRosterCount++;
@@ -2201,19 +2216,51 @@ class ProjectStore {
         }
       }
 
-      // Merge Playlists if opted
+      // Merge Playlists if opted (ActionPlaylist uses items: ActionPlaylistItem[])
       if (options.mergePlaylists && Array.isArray(sourceProject.playlists)) {
+        const currentTagMap = new Map(this.tags.map((t) => [t.id, t]));
         const existingPlNames = new Set(this.playlists.map((pl) => pl.title.toLowerCase()));
-        for (const pl of sourceProject.playlists) {
-          if (!existingPlNames.has((pl.title || '').toLowerCase()) && Array.isArray(pl.tagIds) && pl.tagIds.length > 0) {
-            this.playlists.push({
-              ...pl,
-              id: `pl_merged_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-              title: `${pl.title} (${analyst})`,
+        sourceProject.playlists.forEach((pl: any, plIdx: number) => {
+          const rawItems = Array.isArray(pl?.items) ? pl.items : [];
+          if (rawItems.length === 0) return;
+
+          const remappedItems: any[] = [];
+          for (const item of rawItems) {
+            const origTagId = item?.tagEventId || item?.tagEvent?.id;
+            const mappedId = origTagId ? tagIdMap.get(origTagId) : undefined;
+            const tagObj = mappedId ? currentTagMap.get(mappedId) : undefined;
+            if (!mappedId || !tagObj) continue;
+            remappedItems.push({
+              id: `pli_merged_${baseTs}_${plIdx}_${remappedItems.length}`,
+              tagEventId: mappedId,
+              order: remappedItems.length + 1,
+              pauseDuration: tagObj.pauseDuration ?? item.pauseDuration ?? 3.0,
+              title: tagObj.title,
+              tagEvent: tagObj,
             });
           }
-        }
+
+          if (remappedItems.length > 0) {
+            const baseTitle = pl.title || `Playlist ${plIdx + 1}`;
+            const finalTitle = existingPlNames.has(baseTitle.toLowerCase())
+              ? `${baseTitle} (${analyst})`
+              : `${baseTitle} (${analyst})`;
+            this.playlists = [
+              ...this.playlists,
+              {
+                id: `pl_merged_${baseTs}_${plIdx}`,
+                title: finalTitle,
+                description: pl.description || `Digabung dari ${analyst}`,
+                createdAt: new Date().toISOString(),
+                items: remappedItems,
+              },
+            ];
+            existingPlNames.add(finalTitle.toLowerCase());
+          }
+        });
       }
+
+      this.syncPlaylistsAfterTagsRestore();
     });
 
     this.markDirty();
@@ -2362,6 +2409,104 @@ class ProjectStore {
     this.markDirty();
   }
 
+  private async relinkLibraryProjectsInFolder(folderPath: string, askConfirm: boolean): Promise<number> {
+    if (!isTauriDesktop() || !folderPath) return 0;
+    try {
+      if (this.libraryMatches.length === 0) {
+        await this.scanMatchLibrary();
+      }
+      const activeKey = this.normalizePathKey(this.currentProjectFilePath);
+      const candidates: LibraryMatchSource[] = [];
+      const targetNames: string[] = [];
+
+      for (const lib of this.libraryMatches) {
+        if (!lib.filePath || !lib.videoFilePath) continue;
+        if (activeKey && this.normalizePathKey(lib.filePath) === activeKey) continue;
+        const exists = await invoke<boolean>('check_file_exists', { filePath: lib.videoFilePath }).catch(() => false);
+        if (!exists) {
+          candidates.push(lib);
+          targetNames.push(lib.videoFilePath);
+        }
+      }
+
+      if (candidates.length === 0) return 0;
+
+      const matches = await invoke<Record<string, string>>('scan_folder_for_relink', {
+        folderPath,
+        targetFilenames: targetNames,
+      });
+      const matchesLower = new Map<string, string>();
+      for (const [k, v] of Object.entries(matches)) {
+        matchesLower.set(k.toLowerCase(), v);
+      }
+
+      const toUpdate = candidates.filter((lib) => {
+        const fname = (lib.videoFilePath || '').split(/[\\/]/).pop()?.toLowerCase() || '';
+        return Boolean(fname && matchesLower.get(fname));
+      });
+
+      if (toUpdate.length === 0) return 0;
+
+      if (askConfirm && typeof window !== 'undefined') {
+        const ok = window.confirm(
+          `Ditemukan ${toUpdate.length} proyek lain di pustaka yang file videonya berada di folder ini. Sambungkan otomatis juga?`
+        );
+        if (!ok) return 0;
+      }
+
+      let updatedCount = 0;
+      for (const lib of toUpdate) {
+        if (!lib.filePath) continue;
+        try {
+          const raw = await invoke<string>('load_project_file', { filePath: lib.filePath });
+          const data = JSON.parse(raw);
+          const fname = (lib.videoFilePath || '').split(/[\\/]/).pop()?.toLowerCase() || '';
+          const newPath = matchesLower.get(fname);
+          if (!newPath) continue;
+          if (!data.matchInfo) data.matchInfo = {};
+          data.matchInfo.videoFilePath = newPath;
+
+          // Also relink secondary angles in that project if present in same folder
+          if (Array.isArray(data.secondaryAngles) && data.secondaryAngles.length > 0) {
+            const angleNames = data.secondaryAngles
+              .map((a: any) => a?.filePath)
+              .filter((p: any) => typeof p === 'string' && p.length > 0);
+            if (angleNames.length > 0) {
+              const angleMatches = await invoke<Record<string, string>>('scan_folder_for_relink', {
+                folderPath,
+                targetFilenames: angleNames,
+              });
+              const angleLower = new Map<string, string>();
+              for (const [ak, av] of Object.entries(angleMatches)) {
+                angleLower.set(ak.toLowerCase(), av);
+              }
+              data.secondaryAngles = data.secondaryAngles.map((a: any) => {
+                const af = (a?.filePath || '').split(/[\\/]/).pop()?.toLowerCase() || '';
+                const np = af ? angleLower.get(af) : undefined;
+                return np ? { ...a, filePath: np } : a;
+              });
+            }
+          }
+
+          await invoke<string>('save_project_file', {
+            filePath: lib.filePath,
+            content: JSON.stringify(data, null, 2),
+          });
+          updatedCount++;
+        } catch {
+          // Ignore individual file error
+        }
+      }
+
+      if (updatedCount > 0) {
+        await this.scanMatchLibrary();
+      }
+      return updatedCount;
+    } catch {
+      return 0;
+    }
+  }
+
   async relinkVideoFile(): Promise<boolean> {
     if (!isTauriDesktop()) return false;
     const { open } = await import('@tauri-apps/plugin-dialog');
@@ -2376,30 +2521,38 @@ class ProjectStore {
     this.onlineSourceType = null;
     this.videoMissing = false;
 
-    // Auto-scan parent folder to relink any secondary angles that match by filename
+    // Auto-scan parent folder to relink secondary angles & offer cross-project relink
     try {
       const parentDir = selected.replace(/[\\/][^\\/]+$/, '');
-      if (parentDir && this.secondaryAngles.length > 0) {
-        const angleTargets = this.secondaryAngles
-          .filter((a) => a.filePath)
-          .map((a) => a.filePath!);
-        if (angleTargets.length > 0) {
-          const matches = await invoke<Record<string, string>>('scan_folder_for_relink', {
-            folderPath: parentDir,
-            targetFilenames: angleTargets,
-          });
-          this.secondaryAngles = this.secondaryAngles.map((a) => {
-            const fname = (a.filePath || '').split(/[\\/]/).pop() || '';
-            if (matches[fname]) {
-              return {
-                ...a,
-                filePath: matches[fname],
-                videoSrc: convertFileSrc(matches[fname]),
-              };
+      if (parentDir) {
+        if (this.secondaryAngles.length > 0) {
+          const angleTargets = this.secondaryAngles
+            .filter((a) => a.filePath)
+            .map((a) => a.filePath!);
+          if (angleTargets.length > 0) {
+            const matches = await invoke<Record<string, string>>('scan_folder_for_relink', {
+              folderPath: parentDir,
+              targetFilenames: angleTargets,
+            });
+            const matchesLower = new Map<string, string>();
+            for (const [k, v] of Object.entries(matches)) {
+              matchesLower.set(k.toLowerCase(), v);
             }
-            return a;
-          });
+            this.secondaryAngles = this.secondaryAngles.map((a) => {
+              const fname = (a.filePath || '').split(/[\\/]/).pop()?.toLowerCase() || '';
+              const found = fname ? matchesLower.get(fname) : undefined;
+              if (found) {
+                return {
+                  ...a,
+                  filePath: found,
+                  videoSrc: convertFileSrc(found),
+                };
+              }
+              return a;
+            });
+          }
         }
+        await this.relinkLibraryProjectsInFolder(parentDir, true);
       }
     } catch {
       // Non-blocking auto-relink fallback
@@ -2409,7 +2562,12 @@ class ProjectStore {
     return true;
   }
 
-  async relinkFolderMassal(): Promise<{ mainRelinked: boolean; anglesRelinked: number } | null> {
+  async relinkFolderMassal(): Promise<{
+    mainRelinked: boolean;
+    anglesRelinked: number;
+    otherProjectsRelinked: number;
+    noTargets?: boolean;
+  } | null> {
     if (!isTauriDesktop()) return null;
     const { open } = await import('@tauri-apps/plugin-dialog');
     const selectedDir = await open({
@@ -2425,43 +2583,58 @@ class ProjectStore {
       if (a.filePath) targets.push(a.filePath);
     }
 
-    const matches = await invoke<Record<string, string>>('scan_folder_for_relink', {
-      folderPath: selectedDir,
-      targetFilenames: targets,
-    });
-
     let mainRelinked = false;
     let anglesRelinked = 0;
 
-    if (this.videoFilePath) {
-      const fname = this.videoFilePath.split(/[\\/]/).pop() || '';
-      if (matches[fname]) {
-        this.videoFilePath = matches[fname];
-        this.videoSrc = convertFileSrc(matches[fname]);
-        this.videoMissing = false;
-        this.onlineSourceType = null;
-        mainRelinked = true;
+    if (targets.length > 0) {
+      const matches = await invoke<Record<string, string>>('scan_folder_for_relink', {
+        folderPath: selectedDir,
+        targetFilenames: targets,
+      });
+      const matchesLower = new Map<string, string>();
+      for (const [k, v] of Object.entries(matches)) {
+        matchesLower.set(k.toLowerCase(), v);
       }
+
+      if (this.videoFilePath) {
+        const fname = this.videoFilePath.split(/[\\/]/).pop()?.toLowerCase() || '';
+        const found = fname ? matchesLower.get(fname) : undefined;
+        if (found) {
+          this.videoFilePath = found;
+          this.videoSrc = convertFileSrc(found);
+          this.videoMissing = false;
+          this.onlineSourceType = null;
+          mainRelinked = true;
+        }
+      }
+
+      this.secondaryAngles = this.secondaryAngles.map((a) => {
+        const fname = (a.filePath || '').split(/[\\/]/).pop()?.toLowerCase() || '';
+        const found = fname ? matchesLower.get(fname) : undefined;
+        if (found) {
+          anglesRelinked++;
+          return {
+            ...a,
+            filePath: found,
+            videoSrc: convertFileSrc(found),
+          };
+        }
+        return a;
+      });
     }
 
-    this.secondaryAngles = this.secondaryAngles.map((a) => {
-      const fname = (a.filePath || '').split(/[\\/]/).pop() || '';
-      if (matches[fname]) {
-        anglesRelinked++;
-        return {
-          ...a,
-          filePath: matches[fname],
-          videoSrc: convertFileSrc(matches[fname]),
-        };
-      }
-      return a;
-    });
+    const otherProjectsRelinked = await this.relinkLibraryProjectsInFolder(selectedDir, false);
 
     if (mainRelinked || anglesRelinked > 0) {
       this.markDirty();
     }
 
-    return { mainRelinked, anglesRelinked };
+    return {
+      mainRelinked,
+      anglesRelinked,
+      otherProjectsRelinked,
+      noTargets: targets.length === 0 && otherProjectsRelinked === 0,
+    };
   }
 
   async duplicateMatchFile(source: LibraryMatchSource): Promise<boolean> {

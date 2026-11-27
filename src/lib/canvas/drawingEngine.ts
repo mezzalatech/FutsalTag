@@ -12,6 +12,37 @@ import {
   distanceMeters,
 } from '$lib/pitch/futsal';
 
+function toRgbaColor(
+  color: string | undefined,
+  alpha: number,
+  fallbackRgb: string = '0, 240, 255'
+): string {
+  const a = Math.max(0, Math.min(1, alpha));
+  if (!color) return `rgba(${fallbackRgb}, ${a})`;
+  const c = color.trim();
+  if (c.startsWith('#')) {
+    const hex = c.slice(1);
+    let r = 0, g = 0, b = 0;
+    if (hex.length === 3) {
+      r = parseInt(hex[0] + hex[0], 16);
+      g = parseInt(hex[1] + hex[1], 16);
+      b = parseInt(hex[2] + hex[2], 16);
+    } else if (hex.length >= 6) {
+      r = parseInt(hex.slice(0, 2), 16);
+      g = parseInt(hex.slice(2, 4), 16);
+      b = parseInt(hex.slice(4, 6), 16);
+    }
+    if (!Number.isNaN(r) && !Number.isNaN(g) && !Number.isNaN(b)) {
+      return `rgba(${r}, ${g}, ${b}, ${a})`;
+    }
+  }
+  const rgbMatch = c.match(/^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/i);
+  if (rgbMatch) {
+    return `rgba(${rgbMatch[1]}, ${rgbMatch[2]}, ${rgbMatch[3]}, ${a})`;
+  }
+  return `rgba(${fallbackRgb}, ${a})`;
+}
+
 export interface RenderContextOptions {
   selectedElementId?: string | null;
   hoveredElementId?: string | null;
@@ -360,9 +391,9 @@ export function drawSingleElement(
       const radiusY = radiusX * 0.45; // Perspective tilt
 
       // Glow halo
-      const grad = ctx.createRadialGradient(center.x, center.y, radiusY * 0.2, center.x, center.y, radiusX);
-      grad.addColorStop(0, el.color || 'rgba(0, 240, 255, 0.4)');
-      grad.addColorStop(0.7, el.color ? el.color.replace(')', ', 0.25)').replace('rgb', 'rgba') : 'rgba(0, 240, 255, 0.15)');
+      const grad = ctx.createRadialGradient(center.x, center.y, Math.max(1, radiusY * 0.2), center.x, center.y, radiusX);
+      grad.addColorStop(0, toRgbaColor(el.color, 0.55));
+      grad.addColorStop(0.7, toRgbaColor(el.color, 0.22));
       grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
 
       ctx.beginPath();
@@ -373,14 +404,14 @@ export function drawSingleElement(
       // Outer illuminated boundary ring
       ctx.beginPath();
       ctx.ellipse(center.x, center.y, radiusX, radiusY, 0, 0, Math.PI * 2);
-      ctx.strokeStyle = el.color || '#00f0ff';
-      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = toRgbaColor(el.color, 0.95);
+      ctx.lineWidth = isSelected ? 3.5 : 2.5;
       ctx.stroke();
 
       // Vertical spotlight beam rays upwards
       const beamGrad = ctx.createLinearGradient(center.x, center.y, center.x, center.y - 80);
-      beamGrad.addColorStop(0, 'rgba(0, 240, 255, 0.25)');
-      beamGrad.addColorStop(1, 'rgba(0, 240, 255, 0.0)');
+      beamGrad.addColorStop(0, toRgbaColor(el.color, 0.28));
+      beamGrad.addColorStop(1, toRgbaColor(el.color, 0.0));
       ctx.beginPath();
       ctx.moveTo(center.x - radiusX * 0.7, center.y);
       ctx.lineTo(center.x - radiusX * 0.3, center.y - 80);
@@ -397,7 +428,7 @@ export function drawSingleElement(
       const target = metersToPixels(el.points[1].x, el.points[1].y, transform);
 
       const angle = Math.atan2(target.y - origin.y, target.x - origin.x);
-      const length = Math.hypot(target.x - origin.x, target.y - origin.y);
+      const length = Math.max(4, Math.hypot(target.x - origin.x, target.y - origin.y));
       const halfSpread = (Math.PI / 180) * 30; // 60 deg cone
 
       ctx.beginPath();
@@ -406,13 +437,13 @@ export function drawSingleElement(
       ctx.closePath();
 
       const coneGrad = ctx.createRadialGradient(origin.x, origin.y, 0, origin.x, origin.y, length);
-      coneGrad.addColorStop(0, el.color || 'rgba(234, 179, 8, 0.35)');
-      coneGrad.addColorStop(1, 'rgba(234, 179, 8, 0.05)');
+      coneGrad.addColorStop(0, toRgbaColor(el.color, 0.4, '234, 179, 8'));
+      coneGrad.addColorStop(1, toRgbaColor(el.color, 0.06, '234, 179, 8'));
 
       ctx.fillStyle = coneGrad;
       ctx.fill();
-      ctx.strokeStyle = el.color || 'rgba(234, 179, 8, 0.7)';
-      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = toRgbaColor(el.color, 0.85, '234, 179, 8');
+      ctx.lineWidth = isSelected ? 2.5 : 1.5;
       ctx.stroke();
       break;
     }
@@ -475,9 +506,9 @@ export function drawSingleElement(
       }
       ctx.closePath();
 
-      ctx.fillStyle = el.color || 'rgba(239, 68, 68, 0.2)';
+      ctx.fillStyle = toRgbaColor(el.color, 0.22, '239, 68, 68');
       ctx.fill();
-      ctx.strokeStyle = el.secondaryColor || el.color || '#ef4444';
+      ctx.strokeStyle = el.secondaryColor || toRgbaColor(el.color, 0.9, '239, 68, 68');
       ctx.lineWidth = 2;
       ctx.setLineDash([6, 4]);
       ctx.stroke();
@@ -624,7 +655,7 @@ function drawWavyLine(
   const dy = y2 - y1;
   const dist = Math.hypot(dx, dy);
   const angle = Math.atan2(dy, dx);
-  const steps = Math.floor(dist / frequency);
+  const steps = Math.max(1, Math.floor(dist / frequency));
 
   ctx.beginPath();
   ctx.moveTo(x1, y1);

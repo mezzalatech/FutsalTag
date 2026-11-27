@@ -1,6 +1,5 @@
 <script lang="ts">
   import { projectStore } from "$lib/stores/projectStore.svelte";
-  import { exportTrainingSessionToPDF } from "$lib/export/pdfExporter";
   import type {
     TacticalDrill,
     TrainingIntensity,
@@ -333,8 +332,9 @@
     reader.readAsText(input.files[0]);
   }
 
-  function handleExportPDF() {
+  async function handleExportPDF() {
     plan.totalDurationMinutes = computedTotalDuration;
+    const { exportTrainingSessionToPDF } = await import("$lib/export/pdfExporter");
     exportTrainingSessionToPDF(plan, projectStore.clubLogoDataUrl);
     showToast("PDF Rencana Sesi Latihan berhasil diekspor!");
   }

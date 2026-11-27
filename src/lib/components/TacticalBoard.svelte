@@ -26,7 +26,6 @@
     createDefaultTeamB,
     createDefaultBall,
   } from '$lib/coachboard/presets';
-  import { exportDrillToPDF } from '$lib/export/pdfExporter';
   import {
     Play,
     Pause,
@@ -110,10 +109,29 @@
   onMount(() => {
     resizeCanvas();
     window.addEventListener('resize', resizeCanvas);
+
+    let ro: ResizeObserver | null = null;
+    if (container && typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(() => resizeCanvas());
+      ro.observe(container);
+    }
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId && selectedType === 'drawing') {
+        const tag = (e.target as HTMLElement)?.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+        e.preventDefault();
+        deleteSelectedElement();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+
     renderRafId = requestAnimationFrame(renderLoop);
 
     return () => {
       window.removeEventListener('resize', resizeCanvas);
+      window.removeEventListener('keydown', onKeyDown);
+      ro?.disconnect();
       if (animFrameId !== null) cancelAnimationFrame(animFrameId);
       if (renderRafId !== null) cancelAnimationFrame(renderRafId);
     };
@@ -122,20 +140,25 @@
   function resizeCanvas() {
     if (!container || !canvas) return;
     const rect = container.getBoundingClientRect();
+    if (rect.width < 10 || rect.height < 10) return;
     const dpr = window.devicePixelRatio || 1;
-    
-    canvas.width = rect.width * dpr;
-    canvas.height = rect.height * dpr;
+
+    canvas.width = Math.round(rect.width * dpr);
+    canvas.height = Math.round(rect.height * dpr);
     canvas.style.width = `${rect.width}px`;
     canvas.style.height = `${rect.height}px`;
 
     transform = calculateViewportTransform(rect.width, rect.height, 40);
   }
 
-  // Continuous Render Loop
+  // Continuous Render Loop (never die on transient draw errors)
   function renderLoop() {
-    drawCanvas();
     renderRafId = requestAnimationFrame(renderLoop);
+    try {
+      drawCanvas();
+    } catch (err) {
+      console.error('[TacticalBoard] Render error:', err);
+    }
   }
 
   function drawCanvas() {
@@ -293,6 +316,41 @@
         }
       }
 
+      // 4. Check existing drawings (point or segment hit)
+      for (let i = currentStep.drawings.length - 1; i >= 0; i--) {
+        const d = currentStep.drawings[i];
+        if (d.points.length === 0) continue;
+        let hit = false;
+        if (d.points.length === 1) {
+          hit = Math.hypot(xM - d.points[0].x, yM - d.points[0].y) < 1.5;
+        } else {
+          for (let j = 0; j < d.points.length; j++) {
+            if (Math.hypot(xM - d.points[j].x, yM - d.points[j].y) < 1.2) {
+              hit = true;
+              break;
+            }
+          }
+          if (!hit && d.points.length >= 2) {
+            const p0 = d.points[0];
+            const p1 = d.points[1];
+            const dx = p1.x - p0.x;
+            const dy = p1.y - p0.y;
+            const lenSq = dx * dx + dy * dy;
+            if (lenSq > 0.001) {
+              const t = Math.max(0, Math.min(1, ((xM - p0.x) * dx + (yM - p0.y) * dy) / lenSq));
+              const projX = p0.x + t * dx;
+              const projY = p0.y + t * dy;
+              if (Math.hypot(xM - projX, yM - projY) < 1.0) hit = true;
+            }
+          }
+        }
+        if (hit) {
+          selectedId = d.id;
+          selectedType = 'drawing';
+          return;
+        }
+      }
+
       // Deselect
       selectedId = null;
       selectedType = null;
@@ -311,11 +369,12 @@
       } else {
         const first = inProgressDrawing.points[0];
         if (inProgressDrawing.points.length >= 3 && Math.hypot(pt.x - first.x, pt.y - first.y) < 1.2) {
-          currentStep.drawings.push(inProgressDrawing);
+          currentStep.drawings = [...currentStep.drawings, inProgressDrawing];
           selectedId = inProgressDrawing.id;
+          selectedType = 'drawing';
           inProgressDrawing = null;
         } else {
-          inProgressDrawing.points.push(pt);
+          inProgressDrawing.points = [...inProgressDrawing.points, pt];
         }
       }
     } else {
@@ -326,26 +385,28 @@
 
   function handleMouseMove(e: MouseEvent) {
     const { xM, yM } = getCanvasCoords(e);
+    const clampedX = Math.max(-1, Math.min(41, xM));
+    const clampedY = Math.max(-1, Math.min(21, yM));
 
     if (isDragging && dragTargetType) {
       if (dragTargetType === 'player' && dragTargetId) {
         const player = currentStep.players.find((p) => p.id === dragTargetId);
         if (player) {
-          player.x = xM;
-          player.y = yM;
+          player.x = clampedX;
+          player.y = clampedY;
         }
       } else if (dragTargetType === 'ball') {
-        currentStep.ball.x = xM;
-        currentStep.ball.y = yM;
+        currentStep.ball.x = clampedX;
+        currentStep.ball.y = clampedY;
       } else if (dragTargetType === 'equipment' && dragTargetId) {
         const eq = currentStep.equipment.find((item) => item.id === dragTargetId);
         if (eq) {
-          eq.x = xM;
-          eq.y = yM;
+          eq.x = clampedX;
+          eq.y = clampedY;
         }
       }
     } else if (inProgressDrawing && inProgressDrawing.type !== 'pressing-zone') {
-      updateDrawing({ x: xM, y: yM });
+      updateDrawing({ x: clampedX, y: clampedY });
     }
   }
 
@@ -361,8 +422,9 @@
 
   function handleCanvasDblClick() {
     if (inProgressDrawing && inProgressDrawing.type === 'pressing-zone' && inProgressDrawing.points.length >= 3) {
-      currentStep.drawings.push(inProgressDrawing);
+      currentStep.drawings = [...currentStep.drawings, inProgressDrawing];
       selectedId = inProgressDrawing.id;
+      selectedType = 'drawing';
       inProgressDrawing = null;
     }
   }
@@ -373,7 +435,7 @@
       type: activeTool,
       points: [pt, pt],
       color: selectedColor,
-      lineWidth: 3,
+      lineWidth: activeTool === 'spotlight-3d' ? 2.2 : 3,
       isFilled: true,
       label: activeTool === 'text-note' ? 'Poin Taktik' : activeTool === 'pressing-zone' ? 'Zona Pressing' : undefined,
     };
@@ -391,10 +453,22 @@
   function finishDrawing() {
     if (!inProgressDrawing) return;
     if (inProgressDrawing.points.length >= 2) {
-      currentStep.drawings.push(inProgressDrawing);
+      currentStep.drawings = [...currentStep.drawings, inProgressDrawing];
       selectedId = inProgressDrawing.id;
+      selectedType = 'drawing';
     }
     inProgressDrawing = null;
+  }
+
+  function deleteSelectedElement() {
+    if (!selectedId) return;
+    if (selectedType === 'drawing') {
+      currentStep.drawings = currentStep.drawings.filter((d) => d.id !== selectedId);
+    } else if (selectedType === 'equipment') {
+      currentStep.equipment = currentStep.equipment.filter((eq) => eq.id !== selectedId);
+    }
+    selectedId = null;
+    selectedType = null;
   }
 
   // --- STEP MANAGEMENT ---
@@ -456,8 +530,9 @@
     link.click();
   }
 
-  function handleExportPDF() {
+  async function handleExportPDF() {
     if (!canvas) return;
+    const { exportDrillToPDF } = await import('$lib/export/pdfExporter');
     exportDrillToPDF(drill, currentStep, canvas);
   }
 
@@ -697,9 +772,15 @@
       </div>
 
       <div class="tool-group mt-auto">
+        {#if selectedId && (selectedType === 'drawing' || selectedType === 'equipment')}
+          <button class="tool-btn btn-danger" onclick={deleteSelectedElement} title="Hapus Elemen Terpilih (Delete)">
+            <Trash2 size={16} />
+            <span>Hapus Item</span>
+          </button>
+        {/if}
         <button class="tool-btn btn-danger" onclick={clearDrawings} title="Hapus Semua Coretan">
           <RotateCcw size={16} />
-          <span>Hapus</span>
+          <span>Bersihkan</span>
         </button>
       </div>
     </aside>

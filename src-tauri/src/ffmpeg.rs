@@ -249,6 +249,7 @@ pub fn resolve_bin(name: &str) -> String {
 }
 
 fn silent_command(program: &str) -> Command {
+    #[cfg_attr(not(target_os = "windows"), allow(unused_mut))]
     let mut cmd = Command::new(program);
     #[cfg(target_os = "windows")]
     {

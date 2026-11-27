@@ -13,6 +13,7 @@ pub struct CloudUploadResult {
 }
 
 fn silent_curl_command() -> Command {
+    #[cfg_attr(not(target_os = "windows"), allow(unused_mut))]
     let mut cmd = Command::new("curl");
     #[cfg(target_os = "windows")]
     {
@@ -99,7 +100,10 @@ pub async fn upload_file_cloud(
     tauri::async_runtime::spawn_blocking(move || {
         let src = Path::new(&file_path);
         if !src.is_file() {
-            return Err(format!("File yang akan diunggah tidak ditemukan: {}", file_path));
+            return Err(format!(
+                "File yang akan diunggah tidak ditemukan: {}",
+                file_path
+            ));
         }
         let bytes_sent = fs::metadata(src)
             .map_err(|e| format!("Gagal membaca ukuran file: {}", e))?
@@ -181,9 +185,10 @@ pub async fn upload_text_cloud(
     password: Option<String>,
     remote_filename: String,
 ) -> Result<CloudUploadResult, String> {
-    let safe_name = remote_filename
-        .trim()
-        .replace(|c: char| !c.is_ascii_alphanumeric() && c != '.' && c != '_' && c != '-', "_");
+    let safe_name = remote_filename.trim().replace(
+        |c: char| !c.is_ascii_alphanumeric() && c != '.' && c != '_' && c != '-',
+        "_",
+    );
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -222,7 +227,10 @@ mod tests {
             "",
         )
         .unwrap();
-        assert_eq!(nc_url, "https://cloud.myclub.id/public.php/webdav/match_final.futsal");
+        assert_eq!(
+            nc_url,
+            "https://cloud.myclub.id/public.php/webdav/match_final.futsal"
+        );
         assert_eq!(nc_user, "AbCdEf123");
         assert_eq!(nc_share, "https://cloud.myclub.id/s/AbCdEf123");
 

@@ -3897,6 +3897,105 @@
             </select>
           </div>
 
+          <!-- BROADCAST EFFECTS: MOTION COMET TRAIL & PUDDLE RIPPLE -->
+          <div class="multipoint-box">
+            <div class="preset-title" style="display:flex;align-items:center;justify-content:space-between;gap:6px;">
+              <span>Efek Visual Siaran (Once Sport)</span>
+              <button
+                type="button"
+                class="btn-chroma-sample"
+                style="padding:2px 6px;font-size:10px;"
+                onclick={() => {
+                  if (!selectedElement) return;
+                  selectedElement.motionTrail = true;
+                  selectedElement.trailDurationSec = selectedElement.trailDurationSec ?? 0.9;
+                  selectedElement.puddleEffect = true;
+                  selectedElement.puddleRippleCount = selectedElement.puddleRippleCount ?? 3;
+                  selectedElement.isChromaFloor = true;
+                  drawings = [...drawings];
+                }}
+                title="Aktifkan Motion Comet Trail + Puddle Ripple sekaligus"
+              >
+                Siaran Pro
+              </button>
+            </div>
+
+            <label class="prop-check-row">
+              <input
+                type="checkbox"
+                checked={Boolean(selectedElement.motionTrail)}
+                onchange={(e) => {
+                  if (!selectedElement) return;
+                  selectedElement.motionTrail = (e.currentTarget as HTMLInputElement).checked;
+                  if (selectedElement.motionTrail && !selectedElement.trailDurationSec) {
+                    selectedElement.trailDurationSec = 0.9;
+                  }
+                  drawings = [...drawings];
+                }}
+              />
+              <span>Jejak Komet Gerak (Comet Trail)</span>
+            </label>
+            {#if selectedElement.motionTrail}
+              <div class="chroma-slider-row">
+                <span>Panjang Ekor: {(selectedElement.trailDurationSec ?? 0.9).toFixed(1)}s</span>
+                <input
+                  type="range"
+                  min="0.4"
+                  max="2.0"
+                  step="0.1"
+                  value={selectedElement.trailDurationSec ?? 0.9}
+                  oninput={(e) => {
+                    if (!selectedElement) return;
+                    selectedElement.trailDurationSec = parseFloat(
+                      (e.currentTarget as HTMLInputElement).value
+                    );
+                    drawings = [...drawings];
+                  }}
+                  class="pause-slider"
+                  style="width: 100%;"
+                />
+              </div>
+            {/if}
+
+            <label class="prop-check-row">
+              <input
+                type="checkbox"
+                checked={Boolean(selectedElement.puddleEffect)}
+                onchange={(e) => {
+                  if (!selectedElement) return;
+                  selectedElement.puddleEffect = (e.currentTarget as HTMLInputElement).checked;
+                  if (selectedElement.puddleEffect && !selectedElement.puddleRippleCount) {
+                    selectedElement.puddleRippleCount = 3;
+                  }
+                  drawings = [...drawings];
+                }}
+              />
+              <span>Riak Lantai 3D (Puddle Ripple)</span>
+            </label>
+            {#if selectedElement.puddleEffect}
+              <div class="chroma-slider-row">
+                <span>Gelombang Riak: {selectedElement.puddleRippleCount ?? 3}</span>
+                <input
+                  type="range"
+                  min="2"
+                  max="5"
+                  step="1"
+                  value={selectedElement.puddleRippleCount ?? 3}
+                  oninput={(e) => {
+                    if (!selectedElement) return;
+                    selectedElement.puddleRippleCount = parseInt(
+                      (e.currentTarget as HTMLInputElement).value,
+                      10
+                    );
+                    drawings = [...drawings];
+                  }}
+                  class="pause-slider"
+                  style="width: 100%;"
+                />
+              </div>
+            {/if}
+          </div>
+
           <div class="prop-row">
             <div class="prop-zoom-hdr">
               <label class="prop-check-row">

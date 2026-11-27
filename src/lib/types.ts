@@ -114,6 +114,10 @@ export interface DrawingElement {
   curveOffset?: number;   // Arc height offset
   isChromaFloor?: boolean; // Floor blending mode
   pulseEffect?: boolean;   // Radar / beacon pulse
+  motionTrail?: boolean;   // Broadcast motion comet trail (Once Sport TrailEffect)
+  trailDurationSec?: number; // Comet tail duration in seconds (0.4..2.0, default 0.9)
+  puddleEffect?: boolean;  // 3D ground concentric puddle ripple (Once Sport PuddleEffect)
+  puddleRippleCount?: number; // Number of ripple rings (2..5, default 3)
   zoomScale?: number;     // For magnifier lens (e.g. 1.8x)
   spotlightRadius?: number; // Multiplier 0.5..2.0 (default 1.0)
   spotlightHeight?: number; // Multiplier 0.4..2.0 (default 1.0)

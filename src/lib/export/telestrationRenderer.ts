@@ -500,7 +500,11 @@ function drawSingleElement(
     options.animElapsedSec ?? Math.max(0, currentTime - (el.timeStart ?? options.clipStartTime ?? 0));
   const rawProgress = Math.max(0.06, Math.min(1, elapsed / 0.65));
   const eased = animStyle === 'none' ? 1 : 1 - Math.pow(1 - rawProgress, 3);
-  const pulsePhase = (Math.max(0, currentTime) * 1.4) % 1;
+  const animClock =
+    options.animElapsedSec !== undefined
+      ? Math.max(0, currentTime) + options.animElapsedSec
+      : Math.max(0, currentTime);
+  const pulsePhase = (animClock * 1.4) % 1;
   const isSelected = Boolean(options.selectedElementId && options.selectedElementId === el.id);
 
   ctx.save();
@@ -526,6 +530,33 @@ function drawSingleElement(
   }
 
   const centerPt = pts[0];
+
+  // Broadcast Effect 1: Motion Comet Trail (drawn underneath active marker)
+  if (el.motionTrail) {
+    drawMotionCometTrail(ctx, el, width, height, currentTime, scaleFactor);
+  }
+
+  // Broadcast Effect 2: 3D Ground Puddle Ripple (under marker or arrow landing point)
+  if (el.puddleEffect) {
+    const isArrowEl =
+      el.type === 'pass-arrow' ||
+      el.type === 'run-arrow' ||
+      el.type === 'dribble-arrow' ||
+      el.type === 'curved-arrow' ||
+      el.type === 'parabolic-arrow';
+    const rippleAnchor = isArrowEl && pts.length >= 2 ? pts[1] : centerPt;
+    const radMult = el.type === 'spotlight-3d' ? (el.spotlightRadius ?? 1.0) : 1.0;
+    drawPuddleRipple(
+      ctx,
+      rippleAnchor.x * width,
+      rippleAnchor.y * height,
+      el.color || '#00f0ff',
+      animClock,
+      scaleFactor,
+      el.puddleRippleCount ?? 3,
+      radMult
+    );
+  }
 
   switch (el.type) {
     case 'spotlight-3d': {
@@ -656,6 +687,9 @@ function drawSingleElement(
       ctx.stroke();
 
       drawArrowHead(ctx, cp.x, cp.y, p2.x, p2.y, 20 * scaleFactor, el.color || '#00f0ff');
+      if (el.motionTrail && drawT < 0.99) {
+        drawCometHeadOrb(ctx, p2.x, p2.y, el.color || '#00f0ff', scaleFactor);
+      }
 
       if (isSelected || options.activeTool === 'select') {
         ctx.beginPath();
@@ -712,6 +746,9 @@ function drawSingleElement(
       ctx.setLineDash([]);
 
       drawArrowHead(ctx, p1.x, p1.y, p2.x, p2.y, 18 * scaleFactor, el.color || '#10b981');
+      if (el.motionTrail && drawT < 0.99) {
+        drawCometHeadOrb(ctx, p2.x, p2.y, el.color || '#10b981', scaleFactor);
+      }
       break;
     }
 
@@ -1855,6 +1892,130 @@ function drawArrowHead(
   ctx.lineWidth = 1.5;
   ctx.fill();
   ctx.stroke();
+}
+
+function drawMotionCometTrail(
+  ctx: CanvasRenderingContext2D,
+  el: DrawingElement,
+  width: number,
+  height: number,
+  currentTime: number,
+  scaleFactor: number
+) {
+  const kfs =
+    el.keyframes && el.keyframes.length >= 2
+      ? el.keyframes
+      : el.pointTracks?.[0] && el.pointTracks[0].length >= 2
+        ? el.pointTracks[0]
+        : null;
+  if (!kfs || kfs.length < 2) return;
+
+  const trailDur = Math.max(0.3, Math.min(2.5, el.trailDurationSec ?? 0.9));
+  const tStart = Math.max(kfs[0].time, currentTime - trailDur);
+  const tEnd = Math.min(kfs[kfs.length - 1].time, currentTime);
+  if (tEnd <= tStart + 0.02) return;
+
+  const sampleCount = 16;
+  const trailPts: { x: number; y: number; frac: number }[] = [];
+  for (let i = 0; i <= sampleCount; i++) {
+    const frac = i / sampleCount; // 0 = oldest tail, 1 = current head
+    const sampleT = tStart + (tEnd - tStart) * frac;
+    const pos = getInterpolatedPosition(kfs, sampleT);
+    if (pos) {
+      trailPts.push({ x: pos.x * width, y: pos.y * height, frac });
+    }
+  }
+  if (trailPts.length < 2) return;
+
+  const baseColor = el.color || '#00f0ff';
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  // Tapered luminous comet segments from tail -> head
+  for (let i = 1; i < trailPts.length; i++) {
+    const prev = trailPts[i - 1];
+    const curr = trailPts[i];
+    const alpha = Math.pow(curr.frac, 1.8) * 0.72;
+    const lw = (2 + Math.pow(curr.frac, 1.3) * 14) * scaleFactor;
+
+    ctx.beginPath();
+    ctx.moveTo(prev.x, prev.y);
+    ctx.lineTo(curr.x, curr.y);
+    ctx.strokeStyle = hexToRgba(baseColor, alpha);
+    ctx.lineWidth = lw;
+    ctx.stroke();
+
+    // Inner bright core along front half of comet tail
+    if (curr.frac > 0.45) {
+      ctx.beginPath();
+      ctx.moveTo(prev.x, prev.y);
+      ctx.lineTo(curr.x, curr.y);
+      ctx.strokeStyle = `rgba(255, 255, 255, ${(alpha * 0.55).toFixed(3)})`;
+      ctx.lineWidth = Math.max(1, lw * 0.32);
+      ctx.stroke();
+    }
+  }
+
+  // Comet head radial glow orb
+  const head = trailPts[trailPts.length - 1];
+  drawCometHeadOrb(ctx, head.x, head.y, baseColor, scaleFactor);
+
+  ctx.restore();
+}
+
+function drawCometHeadOrb(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  color: string,
+  scaleFactor: number
+) {
+  const headGrad = ctx.createRadialGradient(x, y, 0, x, y, 22 * scaleFactor);
+  headGrad.addColorStop(0, 'rgba(255, 255, 255, 0.8)');
+  headGrad.addColorStop(0.35, hexToRgba(color, 0.58));
+  headGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+  ctx.beginPath();
+  ctx.arc(x, y, 22 * scaleFactor, 0, Math.PI * 2);
+  ctx.fillStyle = headGrad;
+  ctx.fill();
+}
+
+function drawPuddleRipple(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  color: string,
+  currentTime: number,
+  scaleFactor: number,
+  rippleCount: number = 3,
+  radiusMult: number = 1.0
+) {
+  const count = Math.max(2, Math.min(5, Math.round(rippleCount)));
+  const baseCycle = (Math.max(0, currentTime) * 0.85) % 1;
+
+  ctx.save();
+  for (let i = 0; i < count; i++) {
+    const phase = (baseCycle + i / count) % 1; // 0..1 expanding wave
+    const rx = (22 + phase * 82) * scaleFactor * radiusMult;
+    const ry = (8.5 + phase * 32) * scaleFactor * radiusMult;
+    const alpha = Math.pow(1 - phase, 1.45) * 0.85;
+    if (alpha <= 0.01) continue;
+
+    // Soft wave fill sheen
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+    ctx.fillStyle = hexToRgba(color, alpha * 0.14);
+    ctx.fill();
+
+    // Crisp concentric ripple ring
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+    ctx.strokeStyle = hexToRgba(color, alpha);
+    ctx.lineWidth = Math.max(1.0, (3.2 - phase * 1.9) * scaleFactor);
+    ctx.stroke();
+  }
+  ctx.restore();
 }
 
 function polygonAreaShoelace(pts: Point2D[]): number {

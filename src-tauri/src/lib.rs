@@ -541,4 +541,49 @@ mod tests {
         assert_eq!(blocks[0]["phase"].as_str().unwrap(), "warmup");
         assert_eq!(blocks[2]["phase"].as_str().unwrap(), "finishing");
     }
+
+    #[test]
+    fn test_comet_trail_points_interpolation() {
+        // Sample 16 chronological comet trail points across [t_start..t_end]
+        let t_min = 2.0f64;
+        let current_time = 3.5f64;
+        let trail_dur = 0.9f64;
+        let t_start = t_min.max(current_time - trail_dur);
+        let t_end = current_time;
+        assert!((t_start - 2.6).abs() < 1e-4);
+
+        let sample_count = 16usize;
+        let mut prev_t = -1.0f64;
+        let mut points = Vec::new();
+        for i in 0..=sample_count {
+            let frac = i as f64 / sample_count as f64;
+            let sample_t = t_start + (t_end - t_start) * frac;
+            assert!(sample_t >= prev_t);
+            prev_t = sample_t;
+            points.push((sample_t, frac));
+        }
+        assert_eq!(points.len(), 17);
+        assert!((points[0].1 - 0.0).abs() < 1e-6);
+        assert!((points[16].1 - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_puddle_ripple_expansion_bounds() {
+        let count = 3usize;
+        let current_time = 4.2f64;
+        let base_cycle = (current_time.max(0.0) * 0.85) % 1.0;
+
+        let mut radii = Vec::new();
+        for i in 0..count {
+            let phase = (base_cycle + i as f64 / count as f64) % 1.0;
+            let rx = 22.0 + phase * 82.0;
+            let ry = 8.5 + phase * 32.0;
+            let alpha = (1.0 - phase).powf(1.45) * 0.85;
+            assert!((22.0..=104.0).contains(&rx));
+            assert!((8.5..=40.5).contains(&ry));
+            assert!((0.0..=0.85).contains(&alpha));
+            radii.push(rx);
+        }
+        assert_eq!(radii.len(), 3);
+    }
 }

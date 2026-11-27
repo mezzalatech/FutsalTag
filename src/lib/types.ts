@@ -13,6 +13,8 @@ export interface PlayerToken {
   facingAngle?: number; // radians (0 = pointing right)
   color?: string;
   textColor?: string;
+  pulsate?: boolean;
+  shape?: 'circle' | 'jersey' | 'triangle' | 'square';
 }
 
 export interface BallToken {
@@ -134,17 +136,54 @@ export interface TacticalStep {
   drawings: DrawingElement[];
 }
 
-export type PitchSurfaceType = 'wood' | 'blue-vinyl' | 'green-turf' | 'dark-slate';
+export type PitchSurfaceType = 'wood' | 'blue-vinyl' | 'green-turf' | 'dark-slate' | 'half-court' | 'custom-image';
 
 export interface TacticalDrill {
   id: string;
   title: string;
   category: 'Build-up (3-1)' | 'Build-up (4-0)' | 'Set Piece (Kick-in)' | 'Set Piece (Corner)' | 'Power Play (5v4)' | 'Defensive Pressing' | 'Counter Attack' | 'Training Drill';
   surfaceType: PitchSurfaceType;
+  customFieldImageUrl?: string;
   createdAt: string;
   updatedAt: string;
   coachNotes: string;
   steps: TacticalStep[];
+}
+
+// Training Session Planner (Once.CoachBoard.dll NewTrainingDialog inspired)
+export type TrainingPhaseKind = 'warmup' | 'main' | 'finishing' | 'cooldown';
+export type TrainingIntensity = 'Rendah' | 'Sedang' | 'Tinggi' | 'Maksimal';
+
+export interface TrainingSessionDrillBlock {
+  id: string;
+  phase: TrainingPhaseKind;
+  title: string;
+  durationMinutes: number;
+  intensity: TrainingIntensity;
+  spaceArea: string;
+  playerCount: string;
+  equipment: string;
+  objective: string;
+  coachingPoints: string;
+  diagramImageDataUrl?: string;
+  linkedDrill?: TacticalDrill;
+}
+
+export interface TrainingSessionPlan {
+  id: string;
+  title: string;
+  date: string;
+  teamName: string;
+  coachName: string;
+  trainingObjective: string;
+  overallIntensity: TrainingIntensity;
+  totalDurationMinutes: number;
+  playerCountSummary: string;
+  spaceSummary: string;
+  generalNotes: string;
+  blocks: TrainingSessionDrillBlock[];
+  createdAt: string;
+  updatedAt: string;
 }
 
 // Video Match Analysis Types

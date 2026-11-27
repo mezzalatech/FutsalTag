@@ -512,4 +512,33 @@ mod tests {
         });
         assert!(!is_duplicate_diff);
     }
+
+    #[test]
+    fn test_training_session_drill_duration_and_json_roundtrip() {
+        let session_json = serde_json::json!({
+            "id": "session_1",
+            "title": "Rotasi 3-1 & Pressing Trap",
+            "date": "2026-11-27",
+            "overallIntensity": "Tinggi",
+            "blocks": [
+                { "phase": "warmup", "title": "Rondo 4v2", "durationMinutes": 15 },
+                { "phase": "main", "title": "Rotasi 3-1 Flank", "durationMinutes": 30 },
+                { "phase": "finishing", "title": "SSG 4v4", "durationMinutes": 20 },
+                { "phase": "cooldown", "title": "Evaluasi", "durationMinutes": 10 }
+            ]
+        });
+
+        let raw = serde_json::to_string(&session_json).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let blocks = parsed["blocks"].as_array().unwrap();
+        assert_eq!(blocks.len(), 4);
+
+        let total_minutes: u64 = blocks
+            .iter()
+            .filter_map(|b| b["durationMinutes"].as_u64())
+            .sum();
+        assert_eq!(total_minutes, 75);
+        assert_eq!(blocks[0]["phase"].as_str().unwrap(), "warmup");
+        assert_eq!(blocks[2]["phase"].as_str().unwrap(), "finishing");
+    }
 }

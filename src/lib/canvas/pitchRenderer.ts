@@ -55,6 +55,24 @@ export const PITCH_THEMES: Record<PitchSurfaceType, PitchStyle> = {
     goalNetColor: 'rgba(0, 230, 204, 0.4)',
     goalPostColor: '#00e6cc',
   },
+  'half-court': {
+    floorBg: '#1d4f82',
+    floorPattern: 'court',
+    lineColor: '#ffffff',
+    lineWidth: 2.2,
+    runOffColor: '#0f2942',
+    goalNetColor: 'rgba(255, 255, 255, 0.5)',
+    goalPostColor: '#fbbf24',
+  },
+  'custom-image': {
+    floorBg: '#0f172a',
+    floorPattern: 'plain',
+    lineColor: 'rgba(255, 255, 255, 0.45)',
+    lineWidth: 1.5,
+    runOffColor: '#020617',
+    goalNetColor: 'rgba(56, 189, 248, 0.35)',
+    goalPostColor: '#38bdf8',
+  },
 };
 
 export function renderFutsalPitch(
@@ -62,9 +80,10 @@ export function renderFutsalPitch(
   width: number,
   height: number,
   transform: ViewportTransform,
-  surfaceType: PitchSurfaceType = 'wood'
+  surfaceType: PitchSurfaceType = 'wood',
+  customFieldImage?: HTMLImageElement | null
 ) {
-  const theme = PITCH_THEMES[surfaceType];
+  const theme = PITCH_THEMES[surfaceType] || PITCH_THEMES.wood;
   const { scale } = transform;
 
   // 1. Clear & draw background runoff area
@@ -76,6 +95,34 @@ export function renderFutsalPitch(
   const cTopLeft = metersToPixels(0, 0, transform);
   ctx.fillStyle = theme.floorBg;
   ctx.fillRect(cTopLeft.x, cTopLeft.y, transform.courtWidthPx, transform.courtHeightPx);
+
+  // Custom imported sport field image
+  if (surfaceType === 'custom-image' && customFieldImage && customFieldImage.complete && customFieldImage.naturalWidth > 0) {
+    ctx.drawImage(
+      customFieldImage,
+      cTopLeft.x,
+      cTopLeft.y,
+      transform.courtWidthPx,
+      transform.courtHeightPx
+    );
+    ctx.strokeStyle = 'rgba(56, 189, 248, 0.45)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(cTopLeft.x, cTopLeft.y, transform.courtWidthPx, transform.courtHeightPx);
+    ctx.restore();
+    return;
+  }
+
+  // Half-court tactical focus shading (dim left side so attacking 20m-40m half pops)
+  if (surfaceType === 'half-court') {
+    const midX = cTopLeft.x + transform.courtWidthPx / 2;
+    ctx.fillStyle = 'rgba(2, 6, 23, 0.42)';
+    ctx.fillRect(cTopLeft.x, cTopLeft.y, transform.courtWidthPx / 2, transform.courtHeightPx);
+    ctx.strokeStyle = 'rgba(251, 191, 36, 0.45)';
+    ctx.setLineDash([6, 4]);
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(midX, cTopLeft.y + 2, transform.courtWidthPx / 2 - 2, transform.courtHeightPx - 4);
+    ctx.setLineDash([]);
+  }
 
   // Decorative floor textures (e.g. wood planks or subtle lines)
   if (theme.floorPattern === 'wood') {

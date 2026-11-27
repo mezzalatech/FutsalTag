@@ -97,6 +97,18 @@ export function drawPlayerToken(
 
   ctx.save();
 
+  // Animated pulsate beacon ring (Once Sport Pulsate Player)
+  if (player.pulsate) {
+    const pulsePhase = (Date.now() % 1200) / 1200; // 0..1
+    const pulseR = radius + 4 + pulsePhase * 12;
+    const pulseAlpha = Math.max(0, 0.85 * (1 - pulsePhase));
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, pulseR, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(251, 191, 36, ${pulseAlpha.toFixed(2)})`;
+    ctx.lineWidth = 3;
+    ctx.stroke();
+  }
+
   // Highlight if selected
   if (isSelected) {
     ctx.beginPath();
@@ -144,9 +156,33 @@ export function drawPlayerToken(
     }
   }
 
-  // Main token circle
+  // Main token shape (circle / jersey / triangle / square)
+  const shape = player.shape || 'circle';
   ctx.beginPath();
-  ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
+  if (shape === 'square') {
+    const s = radius * 1.85;
+    ctx.roundRect(pos.x - s / 2, pos.y - s / 2, s, s, 5);
+  } else if (shape === 'triangle') {
+    const tr = radius * 1.18;
+    ctx.moveTo(pos.x, pos.y - tr);
+    ctx.lineTo(pos.x + tr * 0.92, pos.y + tr * 0.78);
+    ctx.lineTo(pos.x - tr * 0.92, pos.y + tr * 0.78);
+    ctx.closePath();
+  } else if (shape === 'jersey') {
+    const w = radius * 1.15;
+    const h = radius * 1.05;
+    ctx.moveTo(pos.x - w * 0.5, pos.y - h);
+    ctx.lineTo(pos.x + w * 0.5, pos.y - h);
+    ctx.lineTo(pos.x + w * 1.1, pos.y - h * 0.35);
+    ctx.lineTo(pos.x + w * 0.75, pos.y);
+    ctx.lineTo(pos.x + w * 0.68, pos.y + h);
+    ctx.lineTo(pos.x - w * 0.68, pos.y + h);
+    ctx.lineTo(pos.x - w * 0.75, pos.y);
+    ctx.lineTo(pos.x - w * 1.1, pos.y - h * 0.35);
+    ctx.closePath();
+  } else {
+    ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
+  }
   ctx.fillStyle = baseColor;
   ctx.fill();
   ctx.lineWidth = 2.5;

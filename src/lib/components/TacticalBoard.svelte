@@ -46,7 +46,11 @@
     RotateCcw,
     Layers,
     Palette,
+    ClipboardList,
+    ImagePlus,
+    Zap,
   } from 'lucide-svelte';
+  import TrainingPlannerModal from '$lib/components/TrainingPlannerModal.svelte';
 
   // --- STATE ---
   let canvas: HTMLCanvasElement;
@@ -63,6 +67,21 @@
   let drill: TacticalDrill = $state(JSON.parse(JSON.stringify(SAMPLE_FUTSAL_DRILLS[0])));
   let currentStepIndex: number = $state(0);
   let currentStep: TacticalStep = $derived(drill.steps[currentStepIndex] || drill.steps[0]);
+  let showTrainingPlanner = $state(false);
+  let customFieldImg = $state<HTMLImageElement | null>(null);
+
+  $effect(() => {
+    const url = drill.customFieldImageUrl;
+    if (!url) {
+      customFieldImg = null;
+      return;
+    }
+    const img = new Image();
+    img.onload = () => {
+      customFieldImg = img;
+    };
+    img.src = url;
+  });
 
   // Active Tool & Selection
   let activeTool: DrawingToolType = $state('select');
@@ -134,7 +153,8 @@
       canvas.width / dpr,
       canvas.height / dpr,
       transform,
-      drill.surfaceType
+      drill.surfaceType,
+      customFieldImg
     );
 
     // 2. Determine players & ball positions (animated or static)
@@ -440,6 +460,43 @@
     if (!canvas) return;
     exportDrillToPDF(drill, currentStep, canvas);
   }
+
+  function handleUploadCustomField(e: Event) {
+    const input = e.target as HTMLInputElement;
+    if (!input.files || input.files.length === 0) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const dataUrl = ev.target?.result as string;
+      if (dataUrl) {
+        drill.customFieldImageUrl = dataUrl;
+        drill.surfaceType = 'custom-image';
+      }
+    };
+    reader.readAsDataURL(input.files[0]);
+  }
+
+  function handleLoadPresetDrill(id: string) {
+    const found = SAMPLE_FUTSAL_DRILLS.find((d) => d.id === id);
+    if (!found) return;
+    drill = JSON.parse(JSON.stringify(found));
+    currentStepIndex = 0;
+    isPlaying = false;
+  }
+
+  function handleCaptureCurrentBoard(): { imageDataUrl: string | null; drill: TacticalDrill } {
+    drawCanvas();
+    const imageDataUrl = canvas ? canvas.toDataURL('image/png', 0.92) : null;
+    return {
+      imageDataUrl,
+      drill: JSON.parse(JSON.stringify(drill)),
+    };
+  }
+
+  function handleLoadDrillFromPlanner(loadedDrill: TacticalDrill) {
+    drill = JSON.parse(JSON.stringify(loadedDrill));
+    currentStepIndex = 0;
+    isPlaying = false;
+  }
 </script>
 
 <div class="tactical-board-root">
@@ -453,9 +510,22 @@
         class="drill-title-input"
         placeholder="Judul Sesi Taktik Futsal..."
       />
+      <select
+        class="select-clean"
+        title="Pilih Template Drill Futsal"
+        onchange={(e) => {
+          const val = (e.currentTarget as HTMLSelectElement).value;
+          if (val) handleLoadPresetDrill(val);
+        }}
+      >
+        <option value="">-- Preset Drill --</option>
+        {#each SAMPLE_FUTSAL_DRILLS as sd}
+          <option value={sd.id}>{sd.title}</option>
+        {/each}
+      </select>
     </div>
 
-    <!-- Pitch Surface Selector -->
+    <!-- Pitch Surface Selector & Custom Field Upload -->
     <div class="surface-selector">
       <Palette size={14} class="text-sky-400 mr-1.5" />
       <span class="text-xs text-slate-400 mr-2">Lantai:</span>
@@ -464,7 +534,16 @@
         <option value="blue-vinyl">Vinyl Biru (FIFA World Cup)</option>
         <option value="green-turf">Rumput Sintetis</option>
         <option value="dark-slate">Dark Slate (Analisis)</option>
+        <option value="half-court">Setengah Lapangan (Finishing / GK)</option>
+        {#if drill.customFieldImageUrl}
+          <option value="custom-image">Gambar Lapangan Kustom</option>
+        {/if}
       </select>
+      <label class="btn-formation ml-1.5" title="Impor gambar lapangan / arena kustom (PNG/JPG)" style="display:inline-flex;align-items:center;gap:4px;margin-left:6px;">
+        <ImagePlus size={12} />
+        <span>Lapangan Kustom</span>
+        <input type="file" accept="image/*" style="display:none;" onchange={handleUploadCustomField} />
+      </label>
     </div>
 
     <!-- Formasi Presets -->
@@ -480,8 +559,16 @@
       {/each}
     </div>
 
-    <!-- Export Action Buttons -->
+    <!-- Export & Session Planner Action Buttons -->
     <div class="export-actions">
+      <button
+        class="btn-action btn-planner"
+        onclick={() => (showTrainingPlanner = true)}
+        title="Buka Perencana Sesi Latihan Terstruktur (Warm-up, Main Part, Finishing & Ekspor PDF)"
+      >
+        <ClipboardList size={15} />
+        <span>Rencana Sesi Latihan</span>
+      </button>
       <button class="btn-action" onclick={handleExportPNG} title="Ekspor Gambar PNG">
         <Download size={15} />
         <span>PNG</span>
@@ -664,7 +751,26 @@
             <div class="roster-item">
               <span class="roster-number">#{player.number}</span>
               <input type="text" bind:value={player.name} class="roster-name-input" />
-              <span class="roster-role">{player.role || 'Pemain'}</span>
+              <select
+                class="roster-shape-select"
+                value={player.shape || 'circle'}
+                title="Bentuk Ikon Pemain"
+                onchange={(e) => (player.shape = (e.currentTarget as HTMLSelectElement).value as any)}
+              >
+                <option value="circle">●</option>
+                <option value="jersey">👕</option>
+                <option value="triangle">▲</option>
+                <option value="square">■</option>
+              </select>
+              <button
+                type="button"
+                class="roster-pulse-btn"
+                class:active={player.pulsate}
+                title="Efek Pulsate (Sorot Pemain Rotasi)"
+                onclick={() => (player.pulsate = !player.pulsate)}
+              >
+                <Zap size={11} />
+              </button>
             </div>
           {/each}
         </div>
@@ -677,7 +783,26 @@
             <div class="roster-item">
               <span class="roster-number bg-blue-600">#{player.number}</span>
               <input type="text" bind:value={player.name} class="roster-name-input" />
-              <span class="roster-role">{player.role || 'Bek'}</span>
+              <select
+                class="roster-shape-select"
+                value={player.shape || 'circle'}
+                title="Bentuk Ikon Pemain"
+                onchange={(e) => (player.shape = (e.currentTarget as HTMLSelectElement).value as any)}
+              >
+                <option value="circle">●</option>
+                <option value="jersey">👕</option>
+                <option value="triangle">▲</option>
+                <option value="square">■</option>
+              </select>
+              <button
+                type="button"
+                class="roster-pulse-btn"
+                class:active={player.pulsate}
+                title="Efek Pulsate (Sorot Pemain)"
+                onclick={() => (player.pulsate = !player.pulsate)}
+              >
+                <Zap size={11} />
+              </button>
             </div>
           {/each}
         </div>
@@ -732,6 +857,13 @@
       {/if}
     </div>
   </footer>
+
+  <TrainingPlannerModal
+    isOpen={showTrainingPlanner}
+    onClose={() => (showTrainingPlanner = false)}
+    onCaptureCurrentBoard={handleCaptureCurrentBoard}
+    onLoadDrillToBoard={handleLoadDrillFromPlanner}
+  />
 </div>
 
 <style>
@@ -846,6 +978,44 @@
     gap: 6px;
     flex-shrink: 0;
     white-space: nowrap;
+  }
+
+  .btn-planner {
+    background: rgba(16, 185, 129, 0.16) !important;
+    border-color: rgba(16, 185, 129, 0.45) !important;
+    color: #6ee7b7 !important;
+  }
+
+  .btn-planner:hover {
+    background: rgba(16, 185, 129, 0.28) !important;
+    color: #ffffff !important;
+  }
+
+  .roster-shape-select {
+    background: #0f172a;
+    border: 1px solid #334155;
+    color: #cbd5e1;
+    border-radius: 4px;
+    font-size: 11px;
+    padding: 1px 2px;
+    cursor: pointer;
+  }
+
+  .roster-pulse-btn {
+    background: #0f172a;
+    border: 1px solid #334155;
+    color: #64748b;
+    border-radius: 4px;
+    padding: 3px 5px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .roster-pulse-btn.active {
+    background: rgba(251, 191, 36, 0.18);
+    border-color: #fbbf24;
+    color: #fbbf24;
   }
 
   .btn-action {
@@ -1117,11 +1287,6 @@
     font-size: 12px;
     font-weight: 500;
     flex: 1;
-  }
-
-  .roster-role {
-    font-size: 10px;
-    color: #64748b;
   }
 
   /* BOTTOM TIMELINE */

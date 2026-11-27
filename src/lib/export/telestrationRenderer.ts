@@ -847,19 +847,43 @@ function drawSingleElement(
 
     case 'compactness-hull': {
       if (pts.length < 3) break;
+      const hullColor = el.color || '#38bdf8';
+      ctx.save();
       ctx.beginPath();
       ctx.moveTo(pts[0].x * width, pts[0].y * height);
       let sumX = pts[0].x;
       let sumY = pts[0].y;
+      let minPxX = pts[0].x * width;
+      let maxPxX = minPxX;
+      let minPxY = pts[0].y * height;
+      let maxPxY = minPxY;
       for (let i = 1; i < pts.length; i++) {
-        ctx.lineTo(pts[i].x * width, pts[i].y * height);
+        const px = pts[i].x * width;
+        const py = pts[i].y * height;
+        ctx.lineTo(px, py);
         sumX += pts[i].x;
         sumY += pts[i].y;
+        if (px < minPxX) minPxX = px;
+        if (px > maxPxX) maxPxX = px;
+        if (py < minPxY) minPxY = py;
+        if (py > maxPxY) maxPxY = py;
       }
       ctx.closePath();
-      ctx.fillStyle = hexToRgba(el.color || '#38bdf8', animStyle === 'draw-on' ? 0.24 * eased : 0.24);
+      ctx.fillStyle = hexToRgba(hullColor, animStyle === 'draw-on' ? 0.24 * eased : 0.24);
       ctx.fill();
-      ctx.strokeStyle = el.color || '#38bdf8';
+      if (el.hatchPattern && el.hatchPattern !== 'none') {
+        ctx.clip();
+        drawZoneHatchOverlay(ctx, hullColor, el.hatchPattern, minPxX, minPxY, maxPxX, maxPxY, animClock, scaleFactor);
+      }
+      ctx.restore();
+
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x * width, pts[0].y * height);
+      for (let i = 1; i < pts.length; i++) {
+        ctx.lineTo(pts[i].x * width, pts[i].y * height);
+      }
+      ctx.closePath();
+      ctx.strokeStyle = hullColor;
       ctx.lineWidth = (isSelected ? 4 : 3) * scaleFactor;
       ctx.setLineDash([8 * scaleFactor, 6 * scaleFactor]);
       ctx.stroke();
@@ -932,18 +956,11 @@ function drawSingleElement(
       ctx.fill();
       ctx.clip();
 
-      // Animated diagonal hatched texture lines inside clipped polygon
-      const spacing = 16 * scaleFactor;
-      const diagSpan = maxPxY - minPxY + (maxPxX - minPxX) + spacing * 2;
-      const phase = (Math.max(0, currentTime) * 24 * scaleFactor) % spacing;
-      ctx.strokeStyle = hexToRgba(baseColor, 0.42);
-      ctx.lineWidth = 2 * scaleFactor;
-      ctx.beginPath();
-      for (let sx = minPxX - (maxPxY - minPxY) - spacing + phase; sx <= maxPxX + spacing; sx += spacing) {
-        ctx.moveTo(sx, minPxY - spacing);
-        ctx.lineTo(sx + diagSpan, minPxY - spacing + diagSpan);
+      // Hatched texture lines inside clipped polygon (diagonal / crosshatch / stripe / none)
+      const hatchMode = el.hatchPattern ?? 'diagonal';
+      if (hatchMode !== 'none') {
+        drawZoneHatchOverlay(ctx, baseColor, hatchMode, minPxX, minPxY, maxPxX, maxPxY, animClock, scaleFactor);
       }
-      ctx.stroke();
       ctx.restore();
 
       // Solid glowing outer border
@@ -1114,6 +1131,7 @@ function drawSingleElement(
         }
       }
       const fov = Math.PI / 3;
+      ctx.save();
       ctx.beginPath();
       ctx.moveTo(cx, cy);
       ctx.arc(cx, cy, length, angle - fov / 2, angle + fov / 2);
@@ -1124,6 +1142,26 @@ function drawSingleElement(
       grad.addColorStop(1, hexToRgba(el.color || '#f59e0b', 0.06));
       ctx.fillStyle = grad;
       ctx.fill();
+      if (el.hatchPattern && el.hatchPattern !== 'none') {
+        ctx.clip();
+        drawZoneHatchOverlay(
+          ctx,
+          el.color || '#f59e0b',
+          el.hatchPattern,
+          cx - length,
+          cy - length,
+          cx + length,
+          cy + length,
+          animClock,
+          scaleFactor
+        );
+      }
+      ctx.restore();
+
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.arc(cx, cy, length, angle - fov / 2, angle + fov / 2);
+      ctx.closePath();
       ctx.strokeStyle = el.color || '#f59e0b';
       ctx.lineWidth = 2 * scaleFactor;
       ctx.stroke();
@@ -1857,6 +1895,112 @@ function drawSingleElement(
       );
       break;
     }
+
+    case 'wall-barrier': {
+      if (pts.length < 2) break;
+      const p1 = { x: pts[0].x * width, y: pts[0].y * height };
+      const p2Full = { x: pts[1].x * width, y: pts[1].y * height };
+      const drawT = animStyle === 'draw-on' ? eased : 1;
+      const p2 = {
+        x: p1.x + (p2Full.x - p1.x) * drawT,
+        y: p1.y + (p2Full.y - p1.y) * drawT,
+      };
+      const wallColor = el.color || '#ef4444';
+      const wallH = 44 * scaleFactor;
+
+      // Ground contact shadow
+      ctx.beginPath();
+      ctx.moveTo(p1.x, p1.y + 3 * scaleFactor);
+      ctx.lineTo(p2.x, p2.y + 3 * scaleFactor);
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.55)';
+      ctx.lineWidth = 9 * scaleFactor;
+      ctx.lineCap = 'round';
+      ctx.stroke();
+
+      // 3D Vertical translucent shield curtain
+      const midY = (p1.y + p2.y) / 2;
+      const wallGrad = ctx.createLinearGradient(0, midY - wallH, 0, midY);
+      wallGrad.addColorStop(0, hexToRgba(wallColor, 0.08));
+      wallGrad.addColorStop(0.65, hexToRgba(wallColor, 0.35));
+      wallGrad.addColorStop(1, hexToRgba(wallColor, 0.58));
+
+      ctx.beginPath();
+      ctx.moveTo(p1.x, p1.y);
+      ctx.lineTo(p1.x, p1.y - wallH);
+      ctx.lineTo(p2.x, p2.y - wallH);
+      ctx.lineTo(p2.x, p2.y);
+      ctx.closePath();
+      ctx.fillStyle = wallGrad;
+      ctx.fill();
+
+      // Vertical tactical barrier ribs along the wall
+      const segLen = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+      const ribCount = Math.max(3, Math.min(12, Math.floor(segLen / (26 * scaleFactor))));
+      ctx.strokeStyle = hexToRgba(wallColor, 0.45);
+      ctx.lineWidth = 1.5 * scaleFactor;
+      ctx.beginPath();
+      for (let i = 1; i < ribCount; i++) {
+        const f = i / ribCount;
+        const rx = p1.x + (p2.x - p1.x) * f;
+        const ry = p1.y + (p2.y - p1.y) * f;
+        ctx.moveTo(rx, ry);
+        ctx.lineTo(rx, ry - wallH * 0.92);
+      }
+      ctx.stroke();
+
+      // Solid ground base rail + glowing top rail
+      ctx.beginPath();
+      ctx.moveTo(p1.x, p1.y);
+      ctx.lineTo(p2.x, p2.y);
+      ctx.strokeStyle = wallColor;
+      ctx.lineWidth = (isSelected ? 5 : 3.8) * scaleFactor;
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(p1.x, p1.y - wallH);
+      ctx.lineTo(p2.x, p2.y - wallH);
+      ctx.strokeStyle = hexToRgba(wallColor, 0.75);
+      ctx.lineWidth = 2 * scaleFactor;
+      ctx.stroke();
+
+      // Vertical corner posts & floor anchor discs
+      for (const anchor of [p1, p2]) {
+        ctx.beginPath();
+        ctx.moveTo(anchor.x, anchor.y);
+        ctx.lineTo(anchor.x, anchor.y - wallH);
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2.2 * scaleFactor;
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.ellipse(anchor.x, anchor.y, 7 * scaleFactor, 3.2 * scaleFactor, 0, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffffff';
+        ctx.fill();
+        ctx.strokeStyle = wallColor;
+        ctx.lineWidth = 2 * scaleFactor;
+        ctx.stroke();
+      }
+
+      // Label badge above center of wall
+      const labelText = el.label?.trim() || 'GARIS BLOK';
+      const lx = (p1.x + p2.x) / 2;
+      const ly = (p1.y + p2.y) / 2 - wallH - 12 * scaleFactor;
+      ctx.font = `bold ${Math.round(11 * scaleFactor)}px system-ui`;
+      const lw = ctx.measureText(labelText).width + 16 * scaleFactor;
+      const lh = 20 * scaleFactor;
+      ctx.fillStyle = 'rgba(11, 23, 42, 0.92)';
+      ctx.beginPath();
+      ctx.roundRect(lx - lw / 2, ly - lh / 2, lw, lh, 5 * scaleFactor);
+      ctx.fill();
+      ctx.strokeStyle = wallColor;
+      ctx.lineWidth = 1.5 * scaleFactor;
+      ctx.stroke();
+      ctx.fillStyle = '#ffffff';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(labelText, lx, ly);
+      break;
+    }
   }
 
   ctx.restore();
@@ -2014,6 +2158,52 @@ function drawPuddleRipple(
     ctx.strokeStyle = hexToRgba(color, alpha);
     ctx.lineWidth = Math.max(1.0, (3.2 - phase * 1.9) * scaleFactor);
     ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawZoneHatchOverlay(
+  ctx: CanvasRenderingContext2D,
+  baseColor: string,
+  style: 'diagonal' | 'crosshatch' | 'stripe',
+  minPxX: number,
+  minPxY: number,
+  maxPxX: number,
+  maxPxY: number,
+  animClock: number,
+  scaleFactor: number
+) {
+  const spacing = 16 * scaleFactor;
+  const phase = (Math.max(0, animClock) * 24 * scaleFactor) % spacing;
+  ctx.save();
+  ctx.strokeStyle = hexToRgba(baseColor, 0.44);
+  ctx.lineWidth = 2 * scaleFactor;
+
+  if (style === 'stripe') {
+    ctx.beginPath();
+    for (let sx = minPxX - spacing + phase; sx <= maxPxX + spacing; sx += spacing) {
+      ctx.moveTo(sx, minPxY - spacing);
+      ctx.lineTo(sx, maxPxY + spacing);
+    }
+    ctx.stroke();
+  } else {
+    const diagSpan = maxPxY - minPxY + (maxPxX - minPxX) + spacing * 2;
+    ctx.beginPath();
+    for (let sx = minPxX - (maxPxY - minPxY) - spacing + phase; sx <= maxPxX + spacing; sx += spacing) {
+      ctx.moveTo(sx, minPxY - spacing);
+      ctx.lineTo(sx + diagSpan, minPxY - spacing + diagSpan);
+    }
+    ctx.stroke();
+
+    if (style === 'crosshatch') {
+      ctx.strokeStyle = hexToRgba(baseColor, 0.32);
+      ctx.beginPath();
+      for (let sx = minPxX - spacing + phase; sx <= maxPxX + (maxPxY - minPxY) + spacing; sx += spacing) {
+        ctx.moveTo(sx, minPxY - spacing);
+        ctx.lineTo(sx - diagSpan, minPxY - spacing + diagSpan);
+      }
+      ctx.stroke();
+    }
   }
   ctx.restore();
 }

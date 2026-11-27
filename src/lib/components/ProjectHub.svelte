@@ -70,6 +70,7 @@
   let selectedAwayClubId = $state<string>("");
   let isDragging = $state(false);
   let fullVideoInputEl: HTMLInputElement | undefined = $state();
+  let onlyDrawInputEl: HTMLInputElement | undefined = $state();
   let projectFileInputEl: HTMLInputElement | undefined = $state();
   let quickVideoInputEl: HTMLInputElement | undefined = $state();
   let isMergingVideos = $state(false);
@@ -248,6 +249,33 @@
         selectedAwayClubId || null,
       );
     }
+  }
+
+  async function handleStartQuickOnlyDraw() {
+    if (
+      !projectStore.confirmDiscardIfDirty(
+        "membuka Telestrasi Cepat (OnlyDraw)",
+      )
+    )
+      return;
+    if (isTauriDesktop()) {
+      await projectStore.startQuickOnlyDrawSession();
+    } else {
+      onlyDrawInputEl?.click();
+    }
+  }
+
+  function handleOnlyDrawFileUpload(event: Event) {
+    const input = event.target as HTMLInputElement;
+    if (!input.files || input.files.length === 0) return;
+    const file = input.files[0];
+    const url = URL.createObjectURL(file);
+    const title = file.name.replace(/\.[^.]+$/, "");
+    projectStore.startQuickOnlyDrawSession({
+      filePath: null,
+      videoSrc: url,
+      title,
+    });
   }
 
   async function handleStartLiveCapture() {
@@ -805,6 +833,22 @@
           <Link2 size={14} />
           <span>Impor Link Online (YouTube / .m3u8 / MP4)</span>
         </button>
+        <button
+          type="button"
+          class="btn-load-project"
+          onclick={handleStartQuickOnlyDraw}
+          title="Buka 1 klip video langsung ke Studio Telestrasi tanpa perlu setup board atau roster (Once Sport OnlyDraw)"
+        >
+          <Sparkles size={14} />
+          <span>Telestrasi Cepat (1 Klip — OnlyDraw)</span>
+        </button>
+        <input
+          bind:this={onlyDrawInputEl}
+          type="file"
+          accept="video/*"
+          onchange={handleOnlyDrawFileUpload}
+          style="display: none;"
+        />
         <button
           type="button"
           class="btn-load-project"

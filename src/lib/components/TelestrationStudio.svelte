@@ -90,6 +90,7 @@
     Compass,
     TrendingUp,
     Map as MapIcon,
+    Shield,
   } from "lucide-svelte";
 
   // --- REFS & STATE ---
@@ -366,6 +367,12 @@
       label: "Zona Taktik (Arsir Dinamis)",
       icon: Layers,
       desc: "Klik 3+ sudut area lalu klik titik awal / Enter untuk zona arsir bergerak",
+    },
+    {
+      id: "wall-barrier",
+      label: "Dinding Blok (Wall)",
+      icon: Shield,
+      desc: "Seret 2 titik untuk pagar/dinding pertahanan 3D (Once Sport WallEffect)",
     },
     {
       id: "vision-cone",
@@ -3065,6 +3072,20 @@
         <Check size={14} />
         <span>Simpan</span>
       </button>
+      {#if projectStore.onlyDrawMode}
+        <button
+          type="button"
+          class="btn-export-direct"
+          style="background:rgba(16,185,129,0.2);border-color:#10b981;color:#6ee7b7;"
+          onclick={() => {
+            handleSave(true);
+            projectStore.promoteOnlyDrawToFullProject();
+          }}
+          title="Keluar dari Mode OnlyDraw dan lanjutkan ke Timeline Tagging Penuh"
+        >
+          <span>Mode OnlyDraw · Buka Tagging</span>
+        </button>
+      {/if}
       <button
         class="btn-export-direct"
         onclick={handleDirectExportClip}
@@ -3556,8 +3577,16 @@
             class="studio-video"
             onloadedmetadata={() => {
               if (videoEl && activeClip) {
+                const realDur = Number.isFinite(videoEl.duration) && videoEl.duration > 0 ? videoEl.duration : 120;
+                duration = realDur;
+                if (projectStore.onlyDrawMode && activeClip.id === "onlydraw-clip-1") {
+                  const expanded = Number(realDur.toFixed(2));
+                  if (Math.abs(activeClip.endTime - expanded) > 0.2) {
+                    activeClip.endTime = expanded;
+                    projectStore.updateTag({ ...activeClip, endTime: expanded });
+                  }
+                }
                 videoEl.currentTime = activeClip.startTime;
-                duration = videoEl.duration || 120;
               }
               syncCanvasSize();
             }}
@@ -3873,6 +3902,31 @@
             />
             <span>Tempel Lantai (Chroma Floor)</span>
           </label>
+
+          {#if selectedElement.type === "pressing-zone" || selectedElement.type === "compactness-hull" || selectedElement.type === "vision-cone"}
+            <div class="prop-row">
+              <label class="prop-label" for="prop-hatch-select"
+                >Pola Arsir Zona (Hatched Fill):</label
+              >
+              <select
+                id="prop-hatch-select"
+                class="preset-select"
+                value={selectedElement.hatchPattern || (selectedElement.type === "pressing-zone" ? "diagonal" : "none")}
+                onchange={(e) => {
+                  if (!selectedElement) return;
+                  selectedElement.hatchPattern = (
+                    e.currentTarget as HTMLSelectElement
+                  ).value as any;
+                  drawings = [...drawings];
+                }}
+              >
+                <option value="diagonal">Arsir Diagonal (45°)</option>
+                <option value="crosshatch">Arsir Silang (Crosshatch)</option>
+                <option value="stripe">Garis Vertikal (Stripe)</option>
+                <option value="none">Solid Transparan</option>
+              </select>
+            </div>
+          {/if}
 
           <div class="prop-row">
             <label class="prop-label" for="prop-anim-select"

@@ -56,6 +56,7 @@ export type DrawingToolType =
   | 'speed-tag'        // Dynamic player sprint velocity km/h readout from tracking + homography
   | 'timer-overlay'    // Broadcast elapsed stopwatch overlay (Once Sport TimerTextSymbol)
   | 'mini-radar'       // 2D miniature futsal court minimap projecting calibrated player dots (Once Sport RadarSymbol)
+  | 'wall-barrier'     // 3D defensive wall / block shield curtain (Once Sport WallEffect)
   | 'freehand';        // Freehand tactical marker
 
 export interface Point2D {
@@ -118,6 +119,7 @@ export interface DrawingElement {
   trailDurationSec?: number; // Comet tail duration in seconds (0.4..2.0, default 0.9)
   puddleEffect?: boolean;  // 3D ground concentric puddle ripple (Once Sport PuddleEffect)
   puddleRippleCount?: number; // Number of ripple rings (2..5, default 3)
+  hatchPattern?: 'none' | 'diagonal' | 'crosshatch' | 'stripe'; // Zone hatching style (Once Sport StripeAreaFill)
   zoomScale?: number;     // For magnifier lens (e.g. 1.8x)
   spotlightRadius?: number; // Multiplier 0.5..2.0 (default 1.0)
   spotlightHeight?: number; // Multiplier 0.4..2.0 (default 1.0)

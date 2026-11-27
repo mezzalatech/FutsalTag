@@ -48,7 +48,10 @@
     ClipboardList,
     ImagePlus,
     Zap,
+    Film,
   } from 'lucide-svelte';
+  import { invoke } from '@tauri-apps/api/core';
+  import { isTauriDesktop } from '$lib/stores/projectStore.svelte';
   import TrainingPlannerModal from '$lib/components/TrainingPlannerModal.svelte';
 
   // --- STATE ---
@@ -68,6 +71,8 @@
   let currentStep: TacticalStep = $derived(drill.steps[currentStepIndex] || drill.steps[0]);
   let showTrainingPlanner = $state(false);
   let customFieldImg = $state<HTMLImageElement | null>(null);
+  let isExportingMp4 = $state(false);
+  let mp4ExportStatus = $state<string | null>(null);
 
   $effect(() => {
     const url = drill.customFieldImageUrl;
@@ -536,6 +541,203 @@
     exportDrillToPDF(drill, currentStep, canvas);
   }
 
+  function renderExportFrameToCanvas(
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+    step: TacticalStep,
+    players: PlayerToken[],
+    ball: BallToken
+  ) {
+    const topH = 52;
+    const botH = 56;
+    const pitchH = h - topH - botH;
+
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(0, 0, w, h);
+
+    // Top banner
+    ctx.fillStyle = '#131d35';
+    ctx.fillRect(0, 0, w, topH);
+    ctx.fillStyle = '#0284c7';
+    ctx.beginPath();
+    ctx.roundRect(18, 12, 136, 28, 6);
+    ctx.fill();
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 12px Inter, system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('ARF FUTSALTAG 2D', 86, 26);
+
+    ctx.textAlign = 'left';
+    ctx.font = 'bold 18px Inter, system-ui, sans-serif';
+    ctx.fillStyle = '#f8fafc';
+    ctx.fillText(drill.title || 'Taktik Futsal 2D', 170, 26);
+
+    ctx.textAlign = 'right';
+    ctx.font = 'bold 13px Inter, system-ui, sans-serif';
+    ctx.fillStyle = '#38bdf8';
+    ctx.fillText(drill.category, w - 20, 26);
+
+    // Pitch viewport in middle band
+    const baseTf = calculateViewportTransform(w, pitchH, 28);
+    const frameTf: ViewportTransform = {
+      ...baseTf,
+      offsetY: baseTf.offsetY + topH,
+    };
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, topH, w, pitchH);
+    ctx.clip();
+    renderFutsalPitch(ctx, w, h, frameTf, drill.surfaceType, customFieldImg);
+    renderTacticalScene(ctx, frameTf, players, ball, step.equipment, step.drawings);
+    ctx.restore();
+
+    // Bottom step banner
+    ctx.fillStyle = '#131d35';
+    ctx.fillRect(0, h - botH, w, botH);
+    ctx.fillStyle = '#38bdf8';
+    ctx.beginPath();
+    ctx.roundRect(18, h - botH + 14, 78, 28, 6);
+    ctx.fill();
+    ctx.fillStyle = '#0f172a';
+    ctx.font = 'bold 13px Inter, system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(`STEP ${step.stepNumber}/${drill.steps.length}`, 57, h - botH + 28);
+
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#f8fafc';
+    ctx.font = 'bold 15px Inter, system-ui, sans-serif';
+    ctx.fillText(step.title || `Langkah ${step.stepNumber}`, 110, h - botH + 20);
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '12px Inter, system-ui, sans-serif';
+    const descShort = (step.description || '').slice(0, 118);
+    ctx.fillText(descShort, 110, h - botH + 40);
+  }
+
+  async function handleExportMP4() {
+    if (isExportingMp4 || drill.steps.length === 0) return;
+
+    const safeName = (drill.title || 'taktik_futsal')
+      .replace(/[^a-zA-Z0-9_-]/g, '_')
+      .toLowerCase();
+
+    let outputPath: string | null = null;
+    if (isTauriDesktop()) {
+      const { save } = await import('@tauri-apps/plugin-dialog');
+      outputPath = await save({
+        title: 'Ekspor Video Animasi Taktik 2D (MP4)',
+        defaultPath: `${safeName}_taktik.mp4`,
+        filters: [{ name: 'MP4 Video', extensions: ['mp4'] }],
+      });
+      if (!outputPath) return;
+    }
+
+    isExportingMp4 = true;
+    mp4ExportStatus = 'Menyiapkan frame animasi 720p...';
+    isPlaying = false;
+
+    try {
+      const W = 1280;
+      const H = 720;
+      const fps = 24;
+      const expCanvas = document.createElement('canvas');
+      expCanvas.width = W;
+      expCanvas.height = H;
+      const ctx = expCanvas.getContext('2d');
+      if (!ctx) throw new Error('Kanvas offscreen gagal dibuat.');
+
+      const framesBase64: string[] = [];
+      const steps = drill.steps;
+
+      if (steps.length === 1) {
+        const s = steps[0];
+        const total = 72; // 3s @ 24fps
+        for (let f = 0; f < total; f++) {
+          renderExportFrameToCanvas(ctx, W, H, s, s.players, s.ball);
+          framesBase64.push(expCanvas.toDataURL('image/jpeg', 0.92));
+          if (f % 12 === 0) {
+            mp4ExportStatus = `Merender frame ${f + 1}/${total}...`;
+            await new Promise((r) => setTimeout(r, 0));
+          }
+        }
+      } else {
+        for (let i = 0; i < steps.length; i++) {
+          const cur = steps[i];
+          const holdFrames = i === steps.length - 1 ? 24 : 16;
+          for (let hIdx = 0; hIdx < holdFrames; hIdx++) {
+            renderExportFrameToCanvas(ctx, W, H, cur, cur.players, cur.ball);
+            framesBase64.push(expCanvas.toDataURL('image/jpeg', 0.92));
+          }
+          if (i < steps.length - 1) {
+            const nxt = steps[i + 1];
+            const transFrames = 42; // 1.75s smooth ease-in-out
+            for (let tIdx = 1; tIdx <= transFrames; tIdx++) {
+              const progress = tIdx / transFrames;
+              const pInterp = interpolatePlayers(cur.players, nxt.players, progress);
+              const bInterp = interpolateBall(cur.ball, nxt.ball, progress);
+              renderExportFrameToCanvas(ctx, W, H, cur, pInterp, bInterp);
+              framesBase64.push(expCanvas.toDataURL('image/jpeg', 0.92));
+              if (tIdx % 12 === 0) {
+                mp4ExportStatus = `Merender transisi Step ${i + 1} → ${i + 2}...`;
+                await new Promise((r) => setTimeout(r, 0));
+              }
+            }
+          }
+        }
+      }
+
+      if (isTauriDesktop() && outputPath) {
+        mp4ExportStatus = `Mengencode ${framesBase64.length} frame ke MP4 (FFmpeg)...`;
+        await invoke<string>('render_frames_mp4_ffmpeg', {
+          framesBase64,
+          fps,
+          outputPath,
+        });
+        mp4ExportStatus = `Selesai! Video MP4 tersimpan di: ${outputPath}`;
+        setTimeout(() => (mp4ExportStatus = null), 4500);
+      } else {
+        // Browser fallback: download as animated sequence WebM
+        const stream = expCanvas.captureStream(fps);
+        const rec = new MediaRecorder(stream, { mimeType: 'video/webm' });
+        const chunks: Blob[] = [];
+        rec.ondataavailable = (e) => {
+          if (e.data.size > 0) chunks.push(e.data);
+        };
+        const done = new Promise<void>((resolve) => {
+          rec.onstop = () => resolve();
+        });
+        rec.start();
+        for (const frameUrl of framesBase64) {
+          const img = new Image();
+          await new Promise<void>((res) => {
+            img.onload = () => res();
+            img.src = frameUrl;
+          });
+          ctx.drawImage(img, 0, 0);
+          await new Promise((r) => setTimeout(r, 1000 / fps));
+        }
+        rec.stop();
+        await done;
+        const blob = new Blob(chunks, { type: 'video/webm' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${safeName}_taktik.webm`;
+        a.click();
+        URL.revokeObjectURL(url);
+        mp4ExportStatus = 'Video WebM berhasil diunduh!';
+        setTimeout(() => (mp4ExportStatus = null), 3500);
+      }
+    } catch (err: any) {
+      alert(`Gagal ekspor video animasi taktik: ${err?.message || err}`);
+      mp4ExportStatus = null;
+    } finally {
+      isExportingMp4 = false;
+    }
+  }
+
   function handleUploadCustomField(e: Event) {
     const input = e.target as HTMLInputElement;
     if (!input.files || input.files.length === 0) return;
@@ -644,6 +846,15 @@
         <ClipboardList size={15} />
         <span>Rencana Sesi Latihan</span>
       </button>
+      <button
+        class="btn-action"
+        onclick={handleExportMP4}
+        disabled={isExportingMp4}
+        title="Ekspor Video Animasi Rotasi Step-by-Step ke MP4 (siap kirim ke WhatsApp)"
+      >
+        <Film size={15} />
+        <span>{isExportingMp4 ? 'Merender...' : 'Video MP4'}</span>
+      </button>
       <button class="btn-action" onclick={handleExportPNG} title="Ekspor Gambar PNG">
         <Download size={15} />
         <span>PNG</span>
@@ -654,6 +865,13 @@
       </button>
     </div>
   </header>
+
+  {#if mp4ExportStatus}
+    <div class="mp4-status-bar">
+      <Film size={13} />
+      <span>{mp4ExportStatus}</span>
+    </div>
+  {/if}
 
   <!-- MAIN WORKSPACE -->
   <div class="workspace-body">
@@ -1059,6 +1277,19 @@
     gap: 6px;
     flex-shrink: 0;
     white-space: nowrap;
+  }
+
+  .mp4-status-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 16px;
+    background: rgba(14, 165, 233, 0.16);
+    border-bottom: 1px solid rgba(56, 189, 248, 0.35);
+    color: #7dd3fc;
+    font-size: 12px;
+    font-weight: 600;
+    flex-shrink: 0;
   }
 
   .btn-planner {

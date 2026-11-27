@@ -879,6 +879,98 @@ pub fn render_still_slide_ffmpeg(
     Ok(output_path)
 }
 
+pub fn render_frames_mp4_ffmpeg_sync(
+    frames_base64: Vec<String>,
+    fps: u32,
+    output_path: String,
+) -> Result<String, String> {
+    if frames_base64.is_empty() {
+        return Err("Daftar frame animasi kosong.".to_string());
+    }
+    ensure_parent_dir(&output_path)?;
+
+    let safe_fps = fps.clamp(10, 60);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let temp_dir = std::env::temp_dir().join(format!("futsaltag_frames_{}", now));
+    fs::create_dir_all(&temp_dir)
+        .map_err(|e| format!("Gagal membuat folder frame sementara: {}", e))?;
+
+    let mut ext = "jpg";
+    for (idx, raw) in frames_base64.iter().enumerate() {
+        let trimmed = raw.trim();
+        if idx == 0 && trimmed.starts_with("data:image/png") {
+            ext = "png";
+        }
+        let b64 = trimmed
+            .find("base64,")
+            .map(|pos| &trimmed[pos + 7..])
+            .unwrap_or(trimmed);
+        let bytes = BASE64_STANDARD
+            .decode(b64)
+            .map_err(|e| format!("Gagal decode frame #{}: {}", idx + 1, e))?;
+        let frame_path = temp_dir.join(format!("frame_{:05}.{}", idx + 1, ext));
+        fs::write(&frame_path, bytes)
+            .map_err(|e| format!("Gagal menulis frame #{}: {}", idx + 1, e))?;
+    }
+
+    let input_pattern = temp_dir
+        .join(format!("frame_%05d.{}", ext))
+        .to_string_lossy()
+        .to_string();
+    let (vcodec, vflags) = detect_video_encoder();
+    let mut args = vec![
+        "-y".into(),
+        "-framerate".into(),
+        safe_fps.to_string(),
+        "-i".into(),
+        input_pattern,
+        "-f".into(),
+        "lavfi".into(),
+        "-i".into(),
+        "anullsrc=channel_layout=stereo:sample_rate=44100".into(),
+        "-vf".into(),
+        "scale=max(16\\,trunc(iw/2)*2):max(16\\,trunc(ih/2)*2),format=yuv420p".into(),
+        "-c:v".into(),
+        vcodec.into(),
+    ];
+    for f in vflags {
+        args.push(f.into());
+    }
+    args.extend([
+        "-c:a".into(),
+        "aac".into(),
+        "-ar".into(),
+        "44100".into(),
+        "-ac".into(),
+        "2".into(),
+        "-shortest".into(),
+        "-movflags".into(),
+        "+faststart".into(),
+        output_path.clone(),
+    ]);
+
+    let res = run_ffmpeg(&args);
+    let _ = fs::remove_dir_all(&temp_dir);
+    res?;
+    Ok(output_path)
+}
+
+#[tauri::command]
+pub async fn render_frames_mp4_ffmpeg(
+    frames_base64: Vec<String>,
+    fps: u32,
+    output_path: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        render_frames_mp4_ffmpeg_sync(frames_base64, fps, output_path)
+    })
+    .await
+    .map_err(|e| format!("Render animasi MP4 gagal: {}", e))?
+}
+
 #[tauri::command]
 pub fn concat_playlist_ffmpeg(
     clip_paths: Vec<String>,
@@ -3207,6 +3299,19 @@ DirectShow audio devices
 
         let merged_info = probe_video_info(&merged_mp4.to_string_lossy()).expect("probe merged mp4 failed");
         assert!(merged_info.duration >= 3.1, "expected merged >= 3.1s, got {:.3}s", merged_info.duration);
+
+        // Also test image sequence -> MP4 (Coach Board animation export)
+        let anim_mp4 = dir.join("coachboard_anim.mp4");
+        let frames = vec![tiny_png_b64.to_string(); 12];
+        render_frames_mp4_ffmpeg_sync(
+            frames,
+            24,
+            anim_mp4.to_string_lossy().to_string(),
+        )
+        .expect("render_frames_mp4_ffmpeg_sync failed");
+        let anim_info = probe_video_info(&anim_mp4.to_string_lossy()).expect("probe anim mp4 failed");
+        assert!(anim_info.duration >= 0.4, "expected anim >= 0.4s, got {:.3}s", anim_info.duration);
+
         let _ = fs::remove_dir_all(&dir);
     }
 }

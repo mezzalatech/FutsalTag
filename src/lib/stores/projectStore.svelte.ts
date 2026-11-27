@@ -259,6 +259,7 @@ class ProjectStore {
   matchDate = $state<string>(new Date().toISOString().slice(0, 10));
   hasUnsavedChanges = $state<boolean>(false);
   videoMissing = $state<boolean>(false);
+  onlyDrawMode = $state<boolean>(false);
   recentProjects = $state<RecentProjectEntry[]>(loadInitialRecentProjects());
   secondaryAngles = $state<SecondaryVideoAngle[]>([]);
   activeAngleId = $state<string>('main');
@@ -988,7 +989,58 @@ class ProjectStore {
     this.activeDeckId = 'deck-1';
     this.clubLogoDataUrl = null;
     this.watermarkConfig = { enabled: true, position: 'top-right', opacity: 0.78, scaleRatio: 0.09 };
+    this.onlyDrawMode = false;
     this.clearTagHistory();
+    this.stage = 'tagging';
+  }
+
+  async startQuickOnlyDrawSession(opts?: {
+    filePath?: string | null;
+    videoSrc?: string | null;
+    title?: string;
+    duration?: number;
+  }): Promise<boolean> {
+    let targetPath = opts?.filePath ?? null;
+    let targetSrc = opts?.videoSrc ?? null;
+    let targetTitle = opts?.title;
+
+    if (!targetSrc && !targetPath && isTauriDesktop()) {
+      const { open } = await import('@tauri-apps/plugin-dialog');
+      const selected = await open({
+        title: 'Pilih 1 Klip / Video untuk Telestrasi Cepat (OnlyDraw)',
+        multiple: false,
+        filters: [{ name: 'Video Files', extensions: ['mp4', 'mov', 'mkv', 'webm', 'avi', 'm4v'] }],
+      });
+      if (!selected || typeof selected !== 'string') return false;
+      targetPath = selected;
+      targetSrc = convertFileSrc(selected);
+      targetTitle = selected.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, '') || 'Telestrasi Cepat';
+    }
+
+    if (!targetSrc) return false;
+
+    const clipDur = Math.max(5, opts?.duration || 30);
+    this.loadVideo(targetSrc, targetPath, targetTitle || 'Telestrasi Cepat (OnlyDraw)', clipDur);
+    this.onlyDrawMode = true;
+    const quickClip: VideoTagEvent = {
+      id: 'onlydraw-clip-1',
+      title: targetTitle || 'Telestrasi Cepat',
+      category: 'Build-up 3-1',
+      startTime: 0,
+      endTime: clipDur,
+      color: '#00f0ff',
+      drawings: [],
+      pauseDuration: 3.0,
+    };
+    this.tags = [quickClip];
+    this.activeClipForDrawing = quickClip;
+    this.syncPlaylistsAfterTagsRestore();
+    this.stage = 'telestrator';
+    return true;
+  }
+
+  promoteOnlyDrawToFullProject() {
+    this.onlyDrawMode = false;
     this.stage = 'tagging';
   }
 

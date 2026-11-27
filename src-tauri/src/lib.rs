@@ -346,6 +346,7 @@ pub fn run() {
             scan_folder_for_relink,
             ffmpeg::render_video_clip_ffmpeg,
             ffmpeg::render_still_slide_ffmpeg,
+            ffmpeg::render_frames_mp4_ffmpeg,
             ffmpeg::concat_playlist_ffmpeg,
             ffmpeg::merge_source_videos_ffmpeg,
             ffmpeg::check_online_tools_status,

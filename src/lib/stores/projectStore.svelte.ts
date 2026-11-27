@@ -25,6 +25,8 @@ import type {
   MatchKind,
   RecentProjectEntry,
   SecondaryVideoAngle,
+  MergeProjectOptions,
+  MergeProjectPreview,
 } from '$lib/types';
 
 function loadInitialRecentProjects(): RecentProjectEntry[] {
@@ -1952,6 +1954,270 @@ class ProjectStore {
       console.error('Gagal memuat berkas proyek:', err);
       return false;
     }
+  }
+
+  parseProjectForMerge(jsonStr: string): any | null {
+    try {
+      const data = JSON.parse(jsonStr);
+      if (!data || typeof data !== 'object') return null;
+      if (!Array.isArray(data.tags) && !Array.isArray(data.roster)) return null;
+      return data;
+    } catch {
+      return null;
+    }
+  }
+
+  calculateMergeOffset(sourceProject: any, options: MergeProjectOptions): number {
+    if (!sourceProject) return 0;
+    if (options.syncMethod === 'none') {
+      return 0;
+    }
+    if (options.syncMethod === 'manual_offset') {
+      return Number(options.manualOffsetSec || 0);
+    }
+    if (options.syncMethod === 'kickoff') {
+      const p = options.referencePeriod || 1;
+      const targetKickoff = this.periodKickoffs.find((k) => k.period === p);
+      const sourceKickoffList = Array.isArray(sourceProject.periodKickoffs)
+        ? sourceProject.periodKickoffs
+        : [];
+      const sourceKickoff = sourceKickoffList.find((k: any) => k.period === p);
+      if (targetKickoff && sourceKickoff) {
+        return Number((targetKickoff.videoTime - sourceKickoff.videoTime).toFixed(2));
+      }
+      return Number(options.manualOffsetSec || 0);
+    }
+    if (options.syncMethod === 'anchor_tag') {
+      const targetTag = this.tags.find((t) => t.id === options.targetAnchorTagId);
+      const sourceTags = Array.isArray(sourceProject.tags) ? sourceProject.tags : [];
+      const sourceTag = sourceTags.find((t: any) => t.id === options.sourceAnchorTagId);
+      if (targetTag && sourceTag) {
+        return Number((targetTag.startTime - sourceTag.startTime).toFixed(2));
+      }
+      return 0;
+    }
+    return 0;
+  }
+
+  calculateMergePreview(sourceProject: any, options: MergeProjectOptions): MergeProjectPreview {
+    const emptyPreview: MergeProjectPreview = {
+      sourceTitle: 'Tidak Diketahui',
+      sourceAnalyst: undefined,
+      totalSourceTags: 0,
+      tagsToMergeCount: 0,
+      calculatedOffsetSec: 0,
+      duplicateCount: 0,
+      newCategoriesCount: 0,
+      rosterAdditionsCount: 0,
+      availableCategories: [],
+    };
+    if (!sourceProject) return emptyPreview;
+
+    const sourceTags: VideoTagEvent[] = Array.isArray(sourceProject.tags) ? sourceProject.tags : [];
+    const sourceTitle = sourceProject.matchInfo?.title || 'Proyek Eksternal';
+    const sourceAnalyst = options.analystName || sourceProject.analystName || 'Analis Laptop Lain';
+    const offset = this.calculateMergeOffset(sourceProject, options);
+    const tol = options.duplicateToleranceSec ?? 1.5;
+
+    const catSet = new Set<string>();
+    sourceTags.forEach((t) => {
+      if (t.category) catSet.add(t.category);
+    });
+    const availableCategories = Array.from(catSet);
+
+    const activeCategories = this.activeBoard?.buttons.map((b) => b.name) || [];
+    const currentTagCategories = new Set(this.tags.map((t) => t.category));
+    let newCategoriesCount = 0;
+    for (const c of availableCategories) {
+      if (!currentTagCategories.has(c as any) && !activeCategories.includes(c)) {
+        newCategoriesCount++;
+      }
+    }
+
+    const filtered = sourceTags.filter((t) => {
+      if (options.categoryFilter && options.categoryFilter.length > 0) {
+        return options.categoryFilter.includes(t.category);
+      }
+      return true;
+    });
+
+    let duplicateCount = 0;
+    for (const st of filtered) {
+      const shiftedStart = Math.max(0, st.startTime + offset);
+      const isDup = this.tags.some(
+        (tt) =>
+          tt.category === st.category &&
+          Math.abs(tt.startTime - shiftedStart) <= tol
+      );
+      if (isDup) duplicateCount++;
+    }
+
+    let rosterAdditionsCount = 0;
+    if (options.mergeRoster && Array.isArray(sourceProject.roster)) {
+      const myRosterKeys = new Set(this.roster.map((p) => `${p.num}_${p.name.toLowerCase()}`));
+      for (const sp of sourceProject.roster) {
+        const key = `${sp.num}_${(sp.name || '').toLowerCase()}`;
+        if (!myRosterKeys.has(key)) rosterAdditionsCount++;
+      }
+    }
+
+    const tagsToMergeCount =
+      options.duplicateStrategy === 'skip_duplicate'
+        ? filtered.length - duplicateCount
+        : filtered.length;
+
+    return {
+      sourceTitle,
+      sourceAnalyst,
+      totalSourceTags: sourceTags.length,
+      tagsToMergeCount: Math.max(0, tagsToMergeCount),
+      calculatedOffsetSec: offset,
+      duplicateCount,
+      newCategoriesCount,
+      rosterAdditionsCount,
+      availableCategories,
+    };
+  }
+
+  mergeProjectData(sourceProject: any, options: MergeProjectOptions): {
+    mergedCount: number;
+    skippedCount: number;
+    newRosterCount: number;
+  } {
+    if (!sourceProject || !Array.isArray(sourceProject.tags)) {
+      return { mergedCount: 0, skippedCount: 0, newRosterCount: 0 };
+    }
+
+    const sourceTags: VideoTagEvent[] = sourceProject.tags;
+    const offset = this.calculateMergeOffset(sourceProject, options);
+    const tol = options.duplicateToleranceSec ?? 1.5;
+    const analyst = options.analystName?.trim() || sourceProject.analystName || 'Analis Laptop Lain';
+    const prefix = options.tagTitlePrefix?.trim() || '';
+
+    let mergedCount = 0;
+    let skippedCount = 0;
+    let newRosterCount = 0;
+
+    const label = `Gabung ${sourceTags.length} Tag dari ${analyst} (${offset >= 0 ? '+' : ''}${offset.toFixed(1)}s)`;
+
+    this.runBatchTagMutation(label, () => {
+      let currentTags = [...this.tags];
+
+      for (const st of sourceTags) {
+        if (options.categoryFilter && options.categoryFilter.length > 0) {
+          if (!options.categoryFilter.includes(st.category)) {
+            skippedCount++;
+            continue;
+          }
+        }
+
+        const shiftedStart = Number(Math.max(0, st.startTime + offset).toFixed(2));
+        const originalDur = Math.max(0.2, (st.endTime ?? st.startTime + 2) - st.startTime);
+        const shiftedEnd = Number(Math.max(shiftedStart + 0.2, (st.endTime ?? st.startTime + 2) + offset).toFixed(2));
+        const actualDur = shiftedEnd - shiftedStart;
+        const finalEnd = actualDur < 0.2 ? Number((shiftedStart + originalDur).toFixed(2)) : shiftedEnd;
+
+        // Check duplicate
+        const dupIdx = currentTags.findIndex(
+          (t) => t.category === st.category && Math.abs(t.startTime - shiftedStart) <= tol
+        );
+
+        if (dupIdx !== -1) {
+          if (options.duplicateStrategy === 'skip_duplicate') {
+            skippedCount++;
+            continue;
+          }
+          if (options.duplicateStrategy === 'overwrite_existing') {
+            currentTags.splice(dupIdx, 1);
+          }
+        }
+
+        // Clone tag with shifted times and analyst attribution
+        const newId = `tag_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        const newTitle = prefix ? `[${prefix}] ${st.title || st.category}` : (st.title || st.category);
+
+        const shiftedLabels = st.labels?.map((l) => ({
+          ...l,
+          atTime: Number(Math.max(0, l.atTime + offset).toFixed(2)),
+        }));
+        const shiftedStops = st.freezeStops?.map((s) => ({
+          ...s,
+          time: Number(Math.max(0, s.time + offset).toFixed(2)),
+        }));
+        const shiftedDrawings = st.drawings?.map((d) => ({
+          ...d,
+          timeStart: typeof d.timeStart === 'number' ? Number(Math.max(0, d.timeStart + offset).toFixed(2)) : d.timeStart,
+          timeEnd: typeof d.timeEnd === 'number' ? Number(Math.max(0, d.timeEnd + offset).toFixed(2)) : d.timeEnd,
+          keyframes: d.keyframes?.map((k) => ({
+            ...k,
+            time: Number(Math.max(0, k.time + offset).toFixed(2)),
+          })),
+          manualPins: d.manualPins?.map((k) => ({
+            ...k,
+            time: Number(Math.max(0, k.time + offset).toFixed(2)),
+          })),
+        }));
+
+        const newTag: VideoTagEvent = {
+          ...st,
+          id: newId,
+          title: newTitle,
+          startTime: shiftedStart,
+          endTime: finalEnd,
+          freezeTimestamp: typeof st.freezeTimestamp === 'number' ? Number(Math.max(0, st.freezeTimestamp + offset).toFixed(2)) : st.freezeTimestamp,
+          labels: shiftedLabels,
+          freezeStops: shiftedStops,
+          drawings: shiftedDrawings,
+          analystName: analyst,
+          sourceProjectId: sourceProject.matchInfo?.title || 'ExternalProject',
+        };
+
+        currentTags.push(newTag);
+        mergedCount++;
+      }
+
+      // Sort tags chronologically by startTime
+      currentTags.sort((a, b) => a.startTime - b.startTime);
+      this.tags = currentTags;
+      this.syncPlaylistsAfterTagsRestore();
+
+      // Merge Roster if opted
+      if (options.mergeRoster && Array.isArray(sourceProject.roster)) {
+        const myRosterKeys = new Set(this.roster.map((p) => `${p.num}_${p.name.toLowerCase()}`));
+        const rosterToAdd: RosterPlayer[] = [];
+        for (const sp of sourceProject.roster) {
+          const key = `${sp.num}_${(sp.name || '').toLowerCase()}`;
+          if (!myRosterKeys.has(key)) {
+            rosterToAdd.push({
+              ...sp,
+              id: `r_merged_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+            });
+            myRosterKeys.add(key);
+            newRosterCount++;
+          }
+        }
+        if (rosterToAdd.length > 0) {
+          this.roster = [...this.roster, ...rosterToAdd];
+        }
+      }
+
+      // Merge Playlists if opted
+      if (options.mergePlaylists && Array.isArray(sourceProject.playlists)) {
+        const existingPlNames = new Set(this.playlists.map((pl) => pl.title.toLowerCase()));
+        for (const pl of sourceProject.playlists) {
+          if (!existingPlNames.has((pl.title || '').toLowerCase()) && Array.isArray(pl.tagIds) && pl.tagIds.length > 0) {
+            this.playlists.push({
+              ...pl,
+              id: `pl_merged_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+              title: `${pl.title} (${analyst})`,
+            });
+          }
+        }
+      }
+    });
+
+    this.markDirty();
+    return { mergedCount, skippedCount, newRosterCount };
   }
 
   async runAutoSave(): Promise<boolean> {

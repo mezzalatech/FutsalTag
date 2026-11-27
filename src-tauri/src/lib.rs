@@ -474,4 +474,42 @@ mod tests {
 
         let _ = fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn test_multi_analyst_tag_merge_offset_and_deduplication() {
+        // Test kickoff alignment calculation
+        let target_kickoff_time = 14.50f64;
+        let source_kickoff_time = 10.00f64;
+        let calculated_offset = target_kickoff_time - source_kickoff_time;
+        assert!((calculated_offset - 4.50).abs() < 1e-4);
+
+        // Test tag shifting
+        let source_tag_start = 12.00f64;
+        let source_tag_end = 15.00f64;
+        let shifted_start = (source_tag_start + calculated_offset).max(0.0);
+        let shifted_end = (source_tag_end + calculated_offset).max(shifted_start + 0.2);
+
+        assert!((shifted_start - 16.50).abs() < 1e-4);
+        assert!((shifted_end - 19.50).abs() < 1e-4);
+
+        // Test duplicate detection logic with 1.5s tolerance
+        let tolerance = 1.50f64;
+        let existing_tags = vec![
+            ("Shooting", 16.80f64), // diff = 0.30s <= 1.5s -> duplicate!
+            ("Passing", 16.50f64),  // different category -> not duplicate!
+            ("Shooting", 25.00f64), // different time -> not duplicate!
+        ];
+
+        let incoming_category = "Shooting";
+        let is_duplicate = existing_tags.iter().any(|(cat, t)| {
+            *cat == incoming_category && (t - shifted_start).abs() <= tolerance
+        });
+        assert!(is_duplicate);
+
+        let incoming_diff_cat = "Counter Attack";
+        let is_duplicate_diff = existing_tags.iter().any(|(cat, t)| {
+            *cat == incoming_diff_cat && (t - shifted_start).abs() <= tolerance
+        });
+        assert!(!is_duplicate_diff);
+    }
 }

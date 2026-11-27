@@ -603,7 +603,7 @@
     if (!tag) return null;
     const cat = board?.buttons.find((b) => b.name === tag.category);
     return {
-      label: `${tag.category}${tag.playerLabel ? ` - ${tag.playerLabel}` : ''}`,
+      label: `${tag.category}${tag.playerLabel ? ` - ${tag.playerLabel}` : ''}${tag.analystName ? ` [${tag.analystName}]` : ''}`,
       color: cat?.color || '#38bdf8',
     };
   });
@@ -1124,7 +1124,7 @@
                     }}
                     role="button"
                     tabindex="0"
-                    title="{tag.title} ({formatPreciseTime(effStart)} - {formatPreciseTime(effEnd)})&#10;Pemain: {playerText}{labelNames ? ` | Label: ${labelNames}` : ''}&#10;Klik kanan: Menu Edit · 2x Klik: Edit Lengkap · Ctrl+Klik: Pilih Banyak"
+                    title="{tag.title} ({formatPreciseTime(effStart)} - {formatPreciseTime(effEnd)})&#10;Pemain: {playerText}{tag.analystName ? ` | Analis: ${tag.analystName}` : ''}{labelNames ? ` | Label: ${labelNames}` : ''}&#10;Klik kanan: Menu Edit · 2x Klik: Edit Lengkap · Ctrl+Klik: Pilih Banyak"
                   >
                     <div
                       class="trim-handle trim-handle-l"
@@ -1142,6 +1142,7 @@
                       {:else}
                         {#if tag.favorite}<span class="clip-fav-star">★</span>{/if}
                         {#if tag.teamSide === 'away'}<span class="clip-opp-tag">OPP</span>{/if}
+                        {#if tag.analystName}<span class="clip-analyst-tag" title="Analis: {tag.analystName}">[{tag.analystName.slice(0, 4)}]</span>{/if}
                         <span class="clip-main-txt">{tag.playerLabel || tag.category}{extraPlayers > 0 ? ` +${extraPlayers}` : ''}</span>
                         {#if tag.labels && tag.labels.length > 0}
                           <span class="clip-lbl-dots">
@@ -1884,6 +1885,17 @@
     padding: 0 3px;
     border-radius: 2px;
     flex-shrink: 0;
+  }
+
+  .clip-analyst-tag {
+    font-size: 7px;
+    font-weight: 800;
+    background: rgba(14, 165, 233, 0.45);
+    color: #38bdf8;
+    padding: 0 3px;
+    border-radius: 2px;
+    flex-shrink: 0;
+    letter-spacing: 0.3px;
   }
 
   .clip-lbl-dots {

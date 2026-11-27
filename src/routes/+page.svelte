@@ -28,6 +28,7 @@
     Clock,
     RefreshCw,
     FolderSymlink,
+    GitMerge,
   } from "lucide-svelte";
   import {
     checkForAppUpdate,
@@ -41,6 +42,8 @@
   let isPresentationOpen = $state(false);
   let isTeamDbOpen = $state(false);
   let isSeasonAnalyticsOpen = $state(false);
+  let isMergeProjectOpen = $state(false);
+  let isShiftTimesOpen = $state(false);
   let isProjectMenuOpen = $state(false);
   let isProMenuOpen = $state(false);
   let isEditMetaOpen = $state(false);
@@ -210,6 +213,16 @@
     metaComp = projectStore.competitionName;
     metaDate = projectStore.matchDate;
     isEditMetaOpen = true;
+  }
+
+  function openMergeProjectModal() {
+    isProjectMenuOpen = false;
+    isMergeProjectOpen = true;
+  }
+
+  function openShiftTimesModal() {
+    isProjectMenuOpen = false;
+    isShiftTimesOpen = true;
   }
 
   function saveEditMeta() {
@@ -566,6 +579,16 @@
         <FolderSymlink size={13} />
         <span>Relink Folder Massal</span>
       </button>
+      <div class="pd-divider"></div>
+      <button type="button" class="pd-item" onclick={openMergeProjectModal} title="Gabungkan data tag dari laptop atau analis lain dengan sinkronisasi kickoff">
+        <GitMerge size={13} />
+        <span>Gabung Tag dari Laptop Lain...</span>
+      </button>
+      <button type="button" class="pd-item" onclick={openShiftTimesModal} title="Geser timestamp seluruh tag beberapa detik (misal untuk menyelaraskan rekaman)">
+        <Clock size={13} />
+        <span>Geser Waktu Semua Tag...</span>
+      </button>
+      <div class="pd-divider"></div>
       <button type="button" class="pd-item pd-danger" onclick={handleCloseProject}>
         <XCircle size={13} />
         <span>Tutup Proyek Aktif</span>
@@ -693,6 +716,31 @@
       <SeasonAnalyticsModal
         isOpen={isSeasonAnalyticsOpen}
         onClose={() => (isSeasonAnalyticsOpen = false)}
+      />
+    {/await}
+  {/if}
+
+  {#if isMergeProjectOpen}
+    {#await import("$lib/components/MergeProjectModal.svelte") then { default: MergeProjectModal }}
+      <MergeProjectModal
+        isOpen={isMergeProjectOpen}
+        onClose={() => (isMergeProjectOpen = false)}
+        onMerged={(res) => {
+          showSaveToast(`Berhasil menggabungkan ${res.mergedCount} tag baru dari analis lain!`);
+        }}
+      />
+    {/await}
+  {/if}
+
+  {#if isShiftTimesOpen}
+    {#await import("$lib/components/ShiftActionTimesModal.svelte") then { default: ShiftActionTimesModal }}
+      <ShiftActionTimesModal
+        isOpen={isShiftTimesOpen}
+        playheadTime={projectStore.currentTime}
+        onClose={() => (isShiftTimesOpen = false)}
+        onApplied={(count, delta) => {
+          showSaveToast(`Berhasil menggeser ${count} tag sebesar ${delta >= 0 ? '+' : ''}${delta.toFixed(1)}s`);
+        }}
       />
     {/await}
   {/if}

@@ -283,6 +283,8 @@ export interface VideoTagEvent {
   subtitleCues?: SubtitleCue[];
   burnSubtitle?: boolean;
   courtCoord?: Point2D;       // Tactical pitch location (0..40m, 0..20m) for heatmap
+  analystName?: string;       // Nama analis / laptop sumber (e.g. 'Laptop B', 'Coach Dimas')
+  sourceProjectId?: string;   // ID atau nama berkas proyek sumber saat digabungkan
 }
 
 export interface RosterPlayer {
@@ -507,4 +509,37 @@ export interface VideoProject {
   tags: VideoTagEvent[];
   calibrationPoints?: Point2D[]; // 4 corners for homography
   surfaceType: PitchSurfaceType;
+}
+
+// Multi-Analyst Tag Merging (Momen / Once Sport inspired)
+export type MergeSyncMethod = 'none' | 'kickoff' | 'anchor_tag' | 'manual_offset';
+export type MergeDuplicateStrategy = 'keep_both' | 'skip_duplicate' | 'overwrite_existing';
+
+export interface MergeProjectOptions {
+  syncMethod: MergeSyncMethod;
+  referencePeriod?: 1 | 2 | 3;
+  targetKickoffTime?: number;
+  sourceKickoffTime?: number;
+  targetAnchorTagId?: string;
+  sourceAnchorTagId?: string;
+  manualOffsetSec?: number;
+  analystName?: string;
+  tagTitlePrefix?: string;
+  duplicateStrategy: MergeDuplicateStrategy;
+  duplicateToleranceSec?: number; // default 1.5s
+  categoryFilter?: string[]; // categories to include (empty = all)
+  mergeRoster?: boolean;
+  mergePlaylists?: boolean;
+}
+
+export interface MergeProjectPreview {
+  sourceTitle: string;
+  sourceAnalyst?: string;
+  totalSourceTags: number;
+  tagsToMergeCount: number;
+  calculatedOffsetSec: number;
+  duplicateCount: number;
+  newCategoriesCount: number;
+  rosterAdditionsCount: number;
+  availableCategories: string[];
 }

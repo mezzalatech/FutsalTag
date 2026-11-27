@@ -213,7 +213,7 @@
     if (!tag) return null;
     const cat = activeBoard?.buttons.find((b) => b.name === tag.category);
     return {
-      label: `${tag.category}${tag.playerLabel ? ` - ${tag.playerLabel}` : ""}`,
+      label: `${tag.category}${tag.playerLabel ? ` - ${tag.playerLabel}` : ""}${tag.analystName ? ` [${tag.analystName}]` : ""}`,
       color: cat?.color || "#38bdf8",
     };
   });

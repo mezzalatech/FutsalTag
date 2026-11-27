@@ -4725,6 +4725,8 @@
     font-size: 13px;
     font-weight: 700;
     color: #f1f5f9;
+    min-width: 0;
+    flex: 1 1 auto;
     max-width: 240px;
     white-space: nowrap;
     overflow: hidden;

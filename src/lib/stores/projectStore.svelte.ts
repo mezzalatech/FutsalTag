@@ -677,6 +677,7 @@ class ProjectStore {
         name: p.name,
         role: p.role === 'GK' ? 'Goalkeeper' : p.role,
         color: p.role === 'GK' ? homeClub.gkColor : p.color || homeClub.jerseyColor,
+        whatsapp: p.whatsapp?.trim() || undefined,
       }));
       nextRoster.push({
         id: 'r-opp',
@@ -1778,17 +1779,28 @@ class ProjectStore {
       .toLowerCase();
 
     if (isTauriDesktop()) {
+      const joinDir = (dir: string, file: string) => {
+        const sep =
+          dir.endsWith('/') || dir.endsWith('\\')
+            ? ''
+            : dir.includes('\\') && !dir.includes('/')
+              ? '\\'
+              : '/';
+        return `${dir}${sep}${file}`;
+      };
       let targetPath = !forceSaveAs ? this.currentProjectFilePath : null;
+      if (!forceSaveAs && !targetPath) {
+        if (!this.matchLibraryFolder) {
+          await this.scanMatchLibrary().catch(() => 0);
+        }
+        if (this.matchLibraryFolder) {
+          targetPath = joinDir(this.matchLibraryFolder, `${safeName}.futsal`);
+        }
+      }
       if (!targetPath) {
         const { save } = await import('@tauri-apps/plugin-dialog');
-        const defaultDirSep =
-          this.matchLibraryFolder &&
-          !this.matchLibraryFolder.endsWith('/') &&
-          !this.matchLibraryFolder.endsWith('\\')
-            ? '\\'
-            : '';
         const defaultPath = this.matchLibraryFolder
-          ? `${this.matchLibraryFolder}${defaultDirSep}${safeName}.futsal`
+          ? joinDir(this.matchLibraryFolder, `${safeName}.futsal`)
           : `${safeName}.futsal`;
         targetPath = await save({
           title: forceSaveAs ? 'Simpan Proyek Sebagai...' : 'Simpan Proyek ARF FutsalTag',
@@ -1800,6 +1812,7 @@ class ProjectStore {
       await invoke<string>('save_project_file', { filePath: targetPath, content: json });
       this.currentProjectFilePath = targetPath;
       this.hasUnsavedChanges = false;
+      await this.clearAutoSave();
       this.recordRecentProject(targetPath);
       if (this.matchLibraryFolder) {
         this.scanMatchLibrary().catch(() => {});
@@ -1809,6 +1822,7 @@ class ProjectStore {
 
     this.downloadProjectFile(safeName);
     this.hasUnsavedChanges = false;
+    await this.clearAutoSave();
     return `${safeName}.futsal`;
   }
 
@@ -2320,13 +2334,28 @@ class ProjectStore {
   }
 
   async runAutoSave(): Promise<boolean> {
-    if (this.tags.length === 0 && !this.videoSrc) return false;
+    if (!this.hasUnsavedChanges || (this.tags.length === 0 && !this.videoSrc)) return false;
     try {
       const json = this.exportProjectJson();
+      if (isTauriDesktop() && this.currentProjectFilePath) {
+        await invoke<string>('save_project_file', {
+          filePath: this.currentProjectFilePath,
+          content: json,
+        });
+        this.hasUnsavedChanges = false;
+        await this.clearAutoSave();
+        const d = new Date();
+        this.lastAutoSaveAt = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+        return true;
+      }
+      const autoSavePayload = JSON.stringify({
+        ...JSON.parse(json),
+        sourceProjectFilePath: this.currentProjectFilePath,
+      });
       if (isTauriDesktop()) {
-        await invoke<string>('save_autosave_project', { content: json });
+        await invoke<string>('save_autosave_project', { content: autoSavePayload });
       } else if (typeof localStorage !== 'undefined') {
-        localStorage.setItem('futsaltag_autosave_v1', json);
+        localStorage.setItem('futsaltag_autosave_v1', autoSavePayload);
       }
       const d = new Date();
       this.lastAutoSaveAt = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
@@ -2369,6 +2398,10 @@ class ProjectStore {
       if (!raw) return false;
       const ok = this.importProjectJson(raw);
       if (ok) {
+        const parsed = JSON.parse(raw);
+        if (typeof parsed?.sourceProjectFilePath === 'string' && parsed.sourceProjectFilePath.trim()) {
+          this.currentProjectFilePath = parsed.sourceProjectFilePath.trim();
+        }
         this.autoSaveMeta = null;
       }
       return ok;

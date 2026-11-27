@@ -195,10 +195,12 @@
       const safeName = `${homeTeam}_vs_${awayTeam}_merged`
         .replace(/[^a-zA-Z0-9_-]/g, "_")
         .toLowerCase();
+      const sep =
+        firstDir.includes("\\") && !firstDir.includes("/") ? "\\" : "/";
       const targetOut = await save({
         title: `Simpan Hasil Gabung ${paths.length} Bagian Video`,
         defaultPath: firstDir
-          ? `${firstDir}\\${safeName}.mp4`
+          ? `${firstDir}${sep}${safeName}.mp4`
           : `${safeName}.mp4`,
         filters: [{ name: "MP4 Video", extensions: ["mp4"] }],
       });
@@ -673,6 +675,29 @@
     </div>
   {/if}
 
+  <!-- QUICK RECENT PROJECTS STRIP (1-CLICK OPEN) -->
+  {#if projectStore.recentProjects.length > 0}
+    <div class="quick-recent-strip">
+      <span class="qrs-lbl">
+        <Clock size={12} />
+        <span>Proyek Terakhir:</span>
+      </span>
+      <div class="qrs-list">
+        {#each projectStore.recentProjects.slice(0, 4) as rp (rp.filePath)}
+          <button
+            type="button"
+            class="qrs-pill"
+            onclick={() => handleOpenLibraryMatch(rp.filePath)}
+            title={rp.filePath}
+          >
+            <span class="qrs-title">{rp.title}</span>
+            <span class="qrs-cnt">{rp.tagCount} klip</span>
+          </button>
+        {/each}
+      </div>
+    </div>
+  {/if}
+
   <!-- WORKFLOW ENTRY CARDS -->
   <div class="cards-grid">
     <!-- CARD 1: FULL MATCH ANALYSIS (MOMEN SPORTS WORKSPACE) -->
@@ -815,49 +840,44 @@
         {#if mergeStatusMsg}
           <div class="merge-status-note">{mergeStatusMsg}</div>
         {/if}
-        <button
-          type="button"
-          class="btn-load-project"
-          onclick={handleStartLiveStopwatch}
-          title="Catat tag, pemain & menit bermain langsung di lapangan pakai Stopwatch (video bisa ditautkan nanti via Relink)"
-        >
-          <Timer size={14} />
-          <span>Mulai Tagging Live (Stopwatch Tanpa Video)</span>
-        </button>
-        <button
-          type="button"
-          class="btn-load-project"
-          onclick={openOnlineUrlModal}
-          title="Putar langsung atau unduh dari link YouTube, HLS (.m3u8), RTSP, atau MP4"
-        >
-          <Link2 size={14} />
-          <span>Impor Link Online (YouTube / .m3u8 / MP4)</span>
-        </button>
-        <button
-          type="button"
-          class="btn-load-project"
-          onclick={handleStartQuickOnlyDraw}
-          title="Buka 1 klip video langsung ke Studio Telestrasi tanpa perlu setup board atau roster (Once Sport OnlyDraw)"
-        >
-          <Sparkles size={14} />
-          <span>Telestrasi Cepat (1 Klip — OnlyDraw)</span>
-        </button>
-        <input
-          bind:this={onlyDrawInputEl}
-          type="file"
-          accept="video/*"
-          onchange={handleOnlyDrawFileUpload}
-          style="display: none;"
-        />
-        <button
-          type="button"
-          class="btn-load-project"
-          onclick={handleStartLiveCapture}
-          title="Rekam langsung dari Webcam, GoPro mode Webcam, atau HDMI Capture Card (DirectShow) sambil Live Tagging"
-        >
-          <Camera size={14} />
-          <span>Rekam Kamera / Capture Card (Live)</span>
-        </button>
+        <div class="hub-sec-grid">
+          <button
+            type="button"
+            class="btn-load-project"
+            onclick={handleStartLiveStopwatch}
+            title="Catat tag, pemain & menit bermain langsung di lapangan pakai Stopwatch (video bisa ditautkan nanti via Relink)"
+          >
+            <Timer size={13} />
+            <span>Stopwatch Live</span>
+          </button>
+          <button
+            type="button"
+            class="btn-load-project"
+            onclick={openOnlineUrlModal}
+            title="Putar langsung atau unduh dari link YouTube, HLS (.m3u8), RTSP, atau MP4"
+          >
+            <Link2 size={13} />
+            <span>Link Online</span>
+          </button>
+          <button
+            type="button"
+            class="btn-load-project"
+            onclick={handleStartLiveCapture}
+            title="Rekam langsung dari Webcam, GoPro mode Webcam, atau HDMI Capture Card sambil Live Tagging"
+          >
+            <Camera size={13} />
+            <span>Kamera Live</span>
+          </button>
+          <button
+            type="button"
+            class="btn-load-project"
+            title="Buka Proyek yang Sudah Ada (.futsal / .json)"
+            onclick={handleTauriProjectOpenClick}
+          >
+            <FolderOpen size={13} />
+            <span>Buka .futsal</span>
+          </button>
+        </div>
         <input
           bind:this={fullVideoInputEl}
           type="file"
@@ -865,23 +885,6 @@
           onchange={handleFileUpload}
           style="display: none;"
         />
-        <button
-          type="button"
-          class="btn-sample-action"
-          onclick={loadSampleMatch}
-        >
-          <PlayCircle size={14} />
-          <span>Muat Sampel Demo (Pendekar United vs Blacksteel)</span>
-        </button>
-        <button
-          type="button"
-          class="btn-load-project"
-          title="Buka Proyek yang Sudah Ada (.futsal)"
-          onclick={handleTauriProjectOpenClick}
-        >
-          <FolderOpen size={14} />
-          <span>Buka Berkas Proyek (.futsal / .json)</span>
-        </button>
         <input
           bind:this={projectFileInputEl}
           type="file"
@@ -929,11 +932,27 @@
           <FolderOpen size={15} />
           <span>Impor Klip & Langsung Gambar</span>
         </button>
+        <button
+          type="button"
+          class="btn-load-project"
+          onclick={handleStartQuickOnlyDraw}
+          title="Buka 1 klip video langsung ke Studio Telestrasi tanpa perlu setup board atau roster (Once Sport OnlyDraw)"
+        >
+          <Sparkles size={14} />
+          <span>Telestrasi Cepat (1 Klip — OnlyDraw)</span>
+        </button>
         <input
           bind:this={quickVideoInputEl}
           type="file"
           accept="video/*"
           onchange={handleQuickClipUpload}
+          style="display: none;"
+        />
+        <input
+          bind:this={onlyDrawInputEl}
+          type="file"
+          accept="video/*"
+          onchange={handleOnlyDrawFileUpload}
           style="display: none;"
         />
       </div>
@@ -1145,7 +1164,7 @@
           <span class="crumb-arrow">→</span>
           <span class="crumb">3. Telestrasi</span>
           <span class="crumb-arrow">→</span>
-          <span class="crumb">4. Playlist & Ekspor</span>
+          <span class="crumb">4. Presentasi & Ekspor</span>
         </div>
       </div>
     </div>
@@ -1287,12 +1306,12 @@
     overflow-y: auto;
     background: radial-gradient(ellipse at 50% 15%, #0e2347 0%, #060b14 80%);
     color: #f0f6fc;
-    padding: 20px 28px;
+    padding: 14px 24px 20px;
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
-    justify-content: space-between;
-    gap: 18px;
+    justify-content: flex-start;
+    gap: 12px;
     font-family:
       "Inter",
       system-ui,
@@ -1314,20 +1333,20 @@
     background: rgba(14, 165, 233, 0.15);
     color: #38bdf8;
     border: 1px solid rgba(56, 189, 248, 0.4);
-    padding: 4px 14px;
+    padding: 3px 12px;
     border-radius: 999px;
-    font-size: 10px;
+    font-size: 9.5px;
     font-weight: 800;
     letter-spacing: 0.08em;
-    margin-bottom: 10px;
+    margin-bottom: 6px;
     box-shadow: 0 0 15px rgba(56, 189, 248, 0.2);
   }
 
   .hero-title {
-    font-size: clamp(22px, 3vw, 34px);
+    font-size: clamp(20px, 2.4vw, 28px);
     font-weight: 900;
     letter-spacing: -0.02em;
-    margin: 0 0 8px 0;
+    margin: 0 0 4px 0;
     color: #ffffff;
   }
 
@@ -1395,17 +1414,98 @@
   }
 
   .hero-desc {
-    font-size: 13px;
-    line-height: 1.6;
+    font-size: 12px;
+    line-height: 1.45;
     color: #94a3b8;
     margin: 0;
+  }
+
+  .quick-recent-strip {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    max-width: 1200px;
+    width: 100%;
+    margin: 0 auto;
+    padding: 6px 12px;
+    background: rgba(9, 19, 34, 0.85);
+    border: 1px solid #1a355d;
+    border-radius: 9px;
+  }
+
+  .qrs-lbl {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 10.5px;
+    font-weight: 800;
+    color: #7dd3fc;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .qrs-list {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    overflow-x: auto;
+    scrollbar-width: none;
+    min-width: 0;
+  }
+
+  .qrs-list::-webkit-scrollbar {
+    display: none;
+  }
+
+  .qrs-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: #0d1e38;
+    border: 1px solid #1e3b68;
+    color: #e2e8f0;
+    font-size: 10.5px;
+    font-weight: 600;
+    padding: 4px 9px;
+    border-radius: 6px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .qrs-pill:hover {
+    border-color: #38bdf8;
+    color: #ffffff;
+  }
+
+  .qrs-title {
+    max-width: 170px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .qrs-cnt {
+    font-size: 9.5px;
+    color: #38bdf8;
+    font-weight: 700;
+  }
+
+  .hub-sec-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+
+  .hub-sec-grid .btn-load-project {
+    padding: 7px 8px;
+    font-size: 10.5px;
+    justify-content: center;
   }
 
   /* CARDS GRID */
   .cards-grid {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 16px;
+    gap: 14px;
     max-width: 1200px;
     width: 100%;
     margin: 0 auto;
@@ -1415,7 +1515,7 @@
     background: linear-gradient(180deg, #0d1e38 0%, #071222 100%);
     border: 1px solid #1a355d;
     border-radius: 14px;
-    padding: 20px;
+    padding: 16px;
     min-width: 0;
     display: flex;
     flex-direction: column;
@@ -1442,7 +1542,6 @@
     }
 
     .btn-primary-action,
-    .btn-sample-action,
     .btn-load-project {
       min-height: 40px;
     }
@@ -1669,9 +1768,10 @@
   }
 
   .card-actions {
+    margin-top: auto;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 6px;
   }
 
   .btn-primary-action {
@@ -1694,28 +1794,6 @@
   .btn-primary-action:hover {
     background: linear-gradient(135deg, #0369a1 0%, #1d4ed8 100%);
     box-shadow: 0 6px 20px rgba(2, 132, 199, 0.5);
-  }
-
-  .btn-sample-action {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    background: #091322;
-    border: 1px solid #1e3b68;
-    color: #93c5fd;
-    padding: 7px;
-    border-radius: 6px;
-    font-size: 10px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.15s ease;
-  }
-
-  .btn-sample-action:hover {
-    color: #ffffff;
-    border-color: #38bdf8;
-    background: #112646;
   }
 
   .btn-load-project {

@@ -786,7 +786,18 @@ pub fn track_court_homography_sequence(
 }
 
 #[tauri::command]
-pub fn auto_calibrate_court_frame(
+pub async fn auto_calibrate_court_frame(
+    input_path: String,
+    time_sec: f64,
+) -> Result<AutoCourtCalibrationResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        auto_calibrate_court_frame_blocking(input_path, time_sec)
+    })
+    .await
+    .map_err(|e| format!("AI worker terhenti: {}", e))?
+}
+
+fn auto_calibrate_court_frame_blocking(
     input_path: String,
     time_sec: f64,
 ) -> Result<AutoCourtCalibrationResult, String> {
@@ -807,7 +818,27 @@ pub fn auto_calibrate_court_frame(
 }
 
 #[tauri::command]
-pub fn track_court_calibration_range(
+pub async fn track_court_calibration_range(
+    input_path: String,
+    start_sec: f64,
+    end_sec: f64,
+    anchor_sec: f64,
+    tl: NormPointDto,
+    tr: NormPointDto,
+    br: NormPointDto,
+    bl: NormPointDto,
+    fps: Option<f64>,
+) -> Result<Vec<TemporalCalibrationFrameDto>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        track_court_calibration_range_blocking(
+            input_path, start_sec, end_sec, anchor_sec, tl, tr, br, bl, fps,
+        )
+    })
+    .await
+    .map_err(|e| format!("AI worker terhenti: {}", e))?
+}
+
+fn track_court_calibration_range_blocking(
     input_path: String,
     start_sec: f64,
     end_sec: f64,

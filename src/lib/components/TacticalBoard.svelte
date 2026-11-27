@@ -49,6 +49,7 @@
     ImagePlus,
     Zap,
     Film,
+    ChevronDown,
   } from 'lucide-svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { isTauriDesktop } from '$lib/stores/projectStore.svelte';
@@ -73,6 +74,7 @@
   let customFieldImg = $state<HTMLImageElement | null>(null);
   let isExportingMp4 = $state(false);
   let mp4ExportStatus = $state<string | null>(null);
+  let showExportMenu = $state(false);
 
   $effect(() => {
     const url = drill.customFieldImageUrl;
@@ -776,6 +778,8 @@
   }
 </script>
 
+<svelte:window onclick={() => (showExportMenu = false)} />
+
 <div class="tactical-board-root">
   <!-- TOP TOOLBAR -->
   <header class="top-bar">
@@ -823,20 +827,24 @@
       </label>
     </div>
 
-    <!-- Formasi Presets -->
-    <div class="formation-presets">
-      <span class="text-xs text-slate-400 mr-2">Formasi:</span>
+    <!-- Formasi Selector & Session Planner + Export Dropdown -->
+    <select
+      class="select-clean"
+      title="Terapkan Formasi Futsal"
+      onchange={(e) => {
+        const val = (e.currentTarget as HTMLSelectElement).value;
+        if (val) {
+          loadFormation(val);
+          (e.currentTarget as HTMLSelectElement).value = '';
+        }
+      }}
+    >
+      <option value="">-- Formasi --</option>
       {#each Object.keys(FORMATION_PRESETS) as preset}
-        <button
-          class="btn-formation"
-          onclick={() => loadFormation(preset)}
-        >
-          {preset}
-        </button>
+        <option value={preset}>{preset}</option>
       {/each}
-    </div>
+    </select>
 
-    <!-- Export & Session Planner Action Buttons -->
     <div class="export-actions">
       <button
         class="btn-action btn-planner"
@@ -844,25 +852,41 @@
         title="Buka Perencana Sesi Latihan Terstruktur (Warm-up, Main Part, Finishing & Ekspor PDF)"
       >
         <ClipboardList size={15} />
-        <span>Rencana Sesi Latihan</span>
+        <span>Rencana Sesi</span>
       </button>
-      <button
-        class="btn-action"
-        onclick={handleExportMP4}
-        disabled={isExportingMp4}
-        title="Ekspor Video Animasi Rotasi Step-by-Step ke MP4 (siap kirim ke WhatsApp)"
-      >
-        <Film size={15} />
-        <span>{isExportingMp4 ? 'Merender...' : 'Video MP4'}</span>
-      </button>
-      <button class="btn-action" onclick={handleExportPNG} title="Ekspor Gambar PNG">
-        <Download size={15} />
-        <span>PNG</span>
-      </button>
-      <button class="btn-action btn-pdf" onclick={handleExportPDF} title="Ekspor Lembar Taktik PDF">
-        <FileText size={15} />
-        <span>PDF Drill</span>
-      </button>
+      <div class="tb-export-anchor">
+        <button
+          type="button"
+          class="btn-action btn-pdf"
+          onclick={(e) => {
+            e.stopPropagation();
+            showExportMenu = !showExportMenu;
+          }}
+          disabled={isExportingMp4}
+          title="Ekspor Video MP4, Gambar PNG, atau PDF Drill"
+        >
+          <Download size={14} />
+          <span>{isExportingMp4 ? 'Merender...' : 'Ekspor'}</span>
+          <ChevronDown size={13} />
+        </button>
+        {#if showExportMenu}
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <div class="tb-export-dropdown" role="menu" tabindex="-1" onclick={(e) => e.stopPropagation()}>
+            <button type="button" class="tb-exp-item" onclick={() => { showExportMenu = false; handleExportMP4(); }} disabled={isExportingMp4}>
+              <Film size={13} />
+              <span>Video Animasi MP4</span>
+            </button>
+            <button type="button" class="tb-exp-item" onclick={() => { showExportMenu = false; handleExportPNG(); }}>
+              <Download size={13} />
+              <span>Gambar PNG</span>
+            </button>
+            <button type="button" class="tb-exp-item" onclick={() => { showExportMenu = false; handleExportPDF(); }}>
+              <FileText size={13} />
+              <span>Lembar Taktik PDF</span>
+            </button>
+          </div>
+        {/if}
+      </div>
     </div>
   </header>
 
@@ -1233,12 +1257,52 @@
     outline: none;
   }
 
-  .surface-selector,
-  .formation-presets {
+  .surface-selector {
     display: flex;
     align-items: center;
     flex-shrink: 0;
     white-space: nowrap;
+  }
+
+  .tb-export-anchor {
+    position: relative;
+  }
+
+  .tb-export-dropdown {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 80;
+    min-width: 185px;
+    background: #0f172a;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    padding: 4px;
+    box-shadow: 0 14px 32px rgba(0, 0, 0, 0.7);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .tb-exp-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    border: none;
+    color: #e2e8f0;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 7px 9px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  .tb-exp-item:hover:not(:disabled) {
+    background: #1e293b;
+    color: #ffffff;
   }
 
   .select-clean {
@@ -1744,7 +1808,6 @@
       padding: 8px 10px;
     }
 
-    .formation-presets,
     .export-actions {
       flex-wrap: wrap;
       white-space: normal;

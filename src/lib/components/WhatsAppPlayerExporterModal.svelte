@@ -19,6 +19,7 @@
     Download,
     Clock,
     HardDrive,
+    ExternalLink,
   } from 'lucide-svelte';
 
   interface Props {
@@ -45,6 +46,39 @@
       (t) => projectStore.normalizePlayerLabel(t.playerLabel) === selectedPlayer
     )
   );
+
+  const selectedPlayerWhatsapp = $derived.by(() => {
+    const activeMatch = projectStore.roster.find(
+      (p) => projectStore.getPlayerDisplayLabel(p) === selectedPlayer
+    );
+    if (activeMatch?.whatsapp?.trim()) return activeMatch.whatsapp.trim();
+    for (const club of projectStore.clubLibrary) {
+      const cp = club.players.find(
+        (p) => `${p.num.startsWith('#') ? p.num : `#${p.num}`} ${p.name}`.trim() === selectedPlayer
+      );
+      if (cp?.whatsapp?.trim()) return cp.whatsapp.trim();
+    }
+    return '';
+  });
+
+  function buildWhatsAppChatUrl(rawNumber: string): string | null {
+    let digits = rawNumber.replace(/\D/g, '');
+    if (digits.startsWith('0')) digits = `62${digits.slice(1)}`;
+    if (digits.length < 8) return null;
+    const text = `Halo ${selectedPlayer}, ini video evaluasi ${playerClips.length} momen dari laga ${projectStore.videoTitle}.`;
+    return `https://wa.me/${digits}?text=${encodeURIComponent(text)}`;
+  }
+
+  async function handleOpenWhatsAppChat() {
+    const url = buildWhatsAppChatUrl(selectedPlayerWhatsapp);
+    if (!url) return;
+    if (isTauriDesktop()) {
+      const { openUrl } = await import('@tauri-apps/plugin-opener');
+      await openUrl(url);
+    } else {
+      window.open(url, '_blank', 'noopener,noreferrer');
+    }
+  }
 
   let totalDurationSec = $derived(
     playerClips.reduce((acc, c) => {
@@ -215,6 +249,13 @@
               </button>
             {/each}
           </div>
+          <div class="wa-target-note">
+            {#if selectedPlayerWhatsapp}
+              <span class="wa-found">No. WhatsApp terdaftar: <strong>{selectedPlayerWhatsapp}</strong></span>
+            {:else}
+              <span class="wa-missing">Belum ada No. WhatsApp — isi di menu <strong>Alat Pro → Database Klub</strong>.</span>
+            {/if}
+          </div>
         </div>
 
         <!-- TELEMETRY STATS -->
@@ -290,6 +331,17 @@
       <!-- FOOTER -->
       <div class="modal-footer">
         <button class="btn-cancel" onclick={onClose}>Tutup</button>
+        {#if buildWhatsAppChatUrl(selectedPlayerWhatsapp)}
+          <button
+            type="button"
+            class="btn-open-wa"
+            onclick={handleOpenWhatsAppChat}
+            title="Buka chat WhatsApp langsung ke {selectedPlayerWhatsapp}"
+          >
+            <ExternalLink size={14} />
+            <span>Buka Chat WA</span>
+          </button>
+        {/if}
         <button
           class="btn-export-wa"
           onclick={exportWhatsAppPackage}
@@ -646,6 +698,37 @@
   .btn-export-wa:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+  }
+
+  .wa-target-note {
+    margin-top: 6px;
+    font-size: 10.5px;
+  }
+
+  .wa-found {
+    color: #34d399;
+  }
+
+  .wa-missing {
+    color: #94a3b8;
+  }
+
+  .btn-open-wa {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: #0b2447;
+    border: 1px solid #38bdf8;
+    color: #e0f2fe;
+    padding: 7px 12px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .btn-open-wa:hover {
+    background: #0369a1;
   }
 
   @media (max-width: 560px) {

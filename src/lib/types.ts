@@ -338,6 +338,7 @@ export interface RosterPlayer {
   name: string;
   role: string;
   color: string;
+  whatsapp?: string;
   isOpponent?: boolean;
 }
 
@@ -350,6 +351,7 @@ export interface ClubPlayerProfile {
   name: string;
   role: FutsalPositionRole;
   dominantFoot: DominantFoot;
+  whatsapp?: string;
   color?: string;
 }
 

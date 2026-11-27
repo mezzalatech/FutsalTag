@@ -151,9 +151,24 @@
     }
   }
 
+  const TAG_PALETTE = ['#10b981', '#38bdf8', '#f59e0b', '#a855f7', '#ec4899', '#14b8a6', '#f97316', '#6366f1'];
+
+  function normalizeTagCat(cat?: string): string {
+    return (cat || 'Lainnya').trim() || 'Lainnya';
+  }
+
   function loadDemoSeason() {
+    selectedChartCats = null;
     const baseRoster = projectStore.roster.filter((p) => !p.isOpponent);
     const ids = baseRoster.slice(0, 5).map((p) => p.id);
+    const demoColors: Record<string, string> = {
+      Goal: '#10b981',
+      'Shot on Target': '#38bdf8',
+      'Pressing High': '#f59e0b',
+      'Power Play': '#a855f7',
+      'Kick-in Set Piece': '#ec4899',
+      'Corner Set Piece': '#14b8a6',
+    };
     const makeTag = (
       id: string,
       cat: string,
@@ -170,7 +185,7 @@
       category: cat,
       startTime: t,
       endTime: t + 7,
-      color: cat === 'Goal' ? '#10b981' : '#0ea5e9',
+      color: demoColors[cat] || '#0ea5e9',
       playerLabel: player,
       playersInvolved: [player],
       passTargetPlayer: target,
@@ -244,72 +259,81 @@
     notify('3 pertandingan demo musim berhasil dimuat.');
   }
 
-  // --- MATCH TREND METRICS ---
+  // --- DYNAMIC CODING-BOARD CATEGORIES & MATCH TREND METRICS ---
+  interface SeasonCategoryInfo {
+    name: string;
+    total: number;
+    color: string;
+  }
+
   interface MatchTrendRow {
     id: string;
     title: string;
-    goals: number;
-    conceded: number;
-    sot: number;
-    pressing: number;
-    powerPlay: number;
-    setPiece: number;
     totalClips: number;
+    counts: Record<string, number>;
   }
+
+  const seasonCategories = $derived.by<SeasonCategoryInfo[]>(() => {
+    const map = new Map<string, { name: string; total: number; color: string }>();
+    for (const m of matches) {
+      for (const t of m.tags) {
+        const name = normalizeTagCat(t.category);
+        const existing = map.get(name);
+        const validColor = t.color && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(t.color.trim()) ? t.color.trim() : '';
+        if (existing) {
+          existing.total += 1;
+          if (!existing.color && validColor) existing.color = validColor;
+        } else {
+          map.set(name, { name, total: 1, color: validColor });
+        }
+      }
+    }
+    return Array.from(map.values())
+      .sort((a, b) => b.total - a.total || a.name.localeCompare(b.name))
+      .map((c, idx) => ({
+        name: c.name,
+        total: c.total,
+        color: c.color || TAG_PALETTE[idx % TAG_PALETTE.length],
+      }));
+  });
 
   const matchTrends = $derived.by<MatchTrendRow[]>(() => {
     return matches.map((m) => {
-      let goals = 0;
-      let conceded = 0;
-      let sot = 0;
-      let pressing = 0;
-      let powerPlay = 0;
-      let setPiece = 0;
-
+      const counts: Record<string, number> = {};
       for (const t of m.tags) {
-        const isAway = t.teamSide === 'away' || projectStore.normalizePlayerLabel(t.playerLabel) === 'Tim Lawan';
-        const isGoal = /\b(goal|gol)\b/i.test(t.category);
-        if (isGoal && !isAway) goals += 1;
-        if ((isGoal && isAway) || /kebobolan|conceded/i.test(t.category)) conceded += 1;
-        if (/shot on target|shoot ot|\bsot\b/i.test(t.category) && !isAway) sot += 1;
-        if (/pressing/i.test(t.category) && t.outcomeLabel !== 'Keluar / Gagal' && !isAway) pressing += 1;
-        if (/power play|5v4/i.test(t.category)) powerPlay += 1;
-        if (/kick-in|corner|set piece/i.test(t.category)) setPiece += 1;
+        const name = normalizeTagCat(t.category);
+        counts[name] = (counts[name] || 0) + 1;
       }
-
       return {
         id: m.id,
         title: m.title,
-        goals,
-        conceded,
-        sot,
-        pressing,
-        powerPlay,
-        setPiece,
         totalClips: m.tags.length,
+        counts,
       };
     });
   });
 
-  const seasonTotals = $derived.by(() => {
-    return matchTrends.reduce(
-      (acc, r) => ({
-        matches: acc.matches + 1,
-        goals: acc.goals + r.goals,
-        conceded: acc.conceded + r.conceded,
-        sot: acc.sot + r.sot,
-        pressing: acc.pressing + r.pressing,
-        powerPlay: acc.powerPlay + r.powerPlay,
-        setPiece: acc.setPiece + r.setPiece,
-      }),
-      { matches: 0, goals: 0, conceded: 0, sot: 0, pressing: 0, powerPlay: 0, setPiece: 0 }
-    );
+  let selectedChartCats = $state<string[] | null>(null);
+
+  const activeChartCats = $derived.by<SeasonCategoryInfo[]>(() => {
+    if (selectedChartCats === null) return seasonCategories.slice(0, 6);
+    const chosen = new Set(selectedChartCats);
+    return seasonCategories.filter((c) => chosen.has(c.name));
   });
+
+  function toggleChartCat(name: string) {
+    const current =
+      selectedChartCats === null ? seasonCategories.slice(0, 6).map((c) => c.name) : [...selectedChartCats];
+    const idx = current.indexOf(name);
+    if (idx !== -1) current.splice(idx, 1);
+    else current.push(name);
+    selectedChartCats = current;
+  }
 
   const maxChartY = $derived(
     Math.max(
       4,
-      ...matchTrends.flatMap((m) => [m.goals, m.sot, m.pressing, m.powerPlay, m.setPiece])
+      ...matchTrends.flatMap((m) => activeChartCats.map((c) => m.counts[c.name] || 0))
     )
   );
 
@@ -360,6 +384,7 @@
     matchesCount: number;
     totalSec: number;
     totalActions: number;
+    topTagsText: string;
     goalInvolvements: number;
     sot: number;
     accuracyPct: number;
@@ -373,6 +398,7 @@
         matchIds: Set<string>;
         totalSec: number;
         totalActions: number;
+        catCounts: Map<string, number>;
         goalInvolvements: number;
         sot: number;
         successCount: number;
@@ -388,6 +414,7 @@
           matchIds: new Set(),
           totalSec: 0,
           totalActions: 0,
+          catCounts: new Map(),
           goalInvolvements: 0,
           sot: 0,
           successCount: 0,
@@ -423,6 +450,8 @@
         const row = ensure(primary);
         row.matchIds.add(m.id);
         row.totalActions += 1;
+        const catName = normalizeTagCat(t.category);
+        row.catCounts.set(catName, (row.catCounts.get(catName) || 0) + 1);
         if (/\b(goal|gol)\b/i.test(t.category)) row.goalInvolvements += 1;
         if (/shot on target|shoot ot|\bsot\b/i.test(t.category)) row.sot += 1;
         if (t.outcomeLabel) {
@@ -442,15 +471,22 @@
     }
 
     return Array.from(map.values())
-      .map((r) => ({
-        label: r.label,
-        matchesCount: r.matchIds.size,
-        totalSec: r.totalSec,
-        totalActions: r.totalActions,
-        goalInvolvements: r.goalInvolvements,
-        sot: r.sot,
-        accuracyPct: r.ratedCount > 0 ? Math.round((r.successCount / r.ratedCount) * 100) : 0,
-      }))
+      .map((r) => {
+        const topTags = Array.from(r.catCounts.entries())
+          .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+          .slice(0, 2)
+          .map(([name, cnt]) => `${name} (${cnt})`);
+        return {
+          label: r.label,
+          matchesCount: r.matchIds.size,
+          totalSec: r.totalSec,
+          totalActions: r.totalActions,
+          topTagsText: topTags.length > 0 ? topTags.join(', ') : '—',
+          goalInvolvements: r.goalInvolvements,
+          sot: r.sot,
+          accuracyPct: r.ratedCount > 0 ? Math.round((r.successCount / r.ratedCount) * 100) : 0,
+        };
+      })
       .sort((a, b) => b.goalInvolvements - a.goalInvolvements || b.totalActions - a.totalActions);
   });
 
@@ -756,7 +792,15 @@
           <span>Demo 3 Laga</span>
         </button>
         {#if matches.length > 0}
-          <button type="button" class="btn-act danger" onclick={() => (matches = [])} title="Bersihkan daftar pertandingan">
+          <button
+            type="button"
+            class="btn-act danger"
+            onclick={() => {
+              matches = [];
+              selectedChartCats = null;
+            }}
+            title="Bersihkan daftar pertandingan"
+          >
             <Trash2 size={12} />
           </button>
         {/if}
@@ -786,23 +830,38 @@
       {:else if activeTab === 'trends'}
         <!-- KPI SUMMARY STRIP -->
         <div class="kpi-strip">
-          <div class="kpi-box"><span class="k-lbl">Total Laga</span><span class="k-val">{seasonTotals.matches}</span></div>
-          <div class="kpi-box"><span class="k-lbl">Gol Tim</span><span class="k-val text-emerald">{seasonTotals.goals}</span></div>
-          <div class="kpi-box"><span class="k-lbl">Shot on Target</span><span class="k-val text-sky">{seasonTotals.sot}</span></div>
-          <div class="kpi-box"><span class="k-lbl">Pressing Sukses</span><span class="k-val text-amber">{seasonTotals.pressing}</span></div>
-          <div class="kpi-box"><span class="k-lbl">Power Play 5v4</span><span class="k-val">{seasonTotals.powerPlay}</span></div>
-          <div class="kpi-box"><span class="k-lbl">Set Piece</span><span class="k-val">{seasonTotals.setPiece}</span></div>
+          <div class="kpi-box"><span class="k-lbl">Total Laga</span><span class="k-val">{matches.length}</span></div>
+          <div class="kpi-box"><span class="k-lbl">Total Klip</span><span class="k-val text-sky">{allSeasonTags.length}</span></div>
+          {#each seasonCategories.slice(0, 4) as cat (cat.name)}
+            <div class="kpi-box">
+              <span class="k-lbl k-lbl-dot"><i style="background:{cat.color};"></i>{cat.name}</span>
+              <span class="k-val" style="color:{cat.color};">{cat.total}</span>
+            </div>
+          {/each}
         </div>
 
         <!-- SVG TREND CHART -->
         <div class="chart-card">
           <div class="chart-hdr">
-            <span>Grafik Tren Performa Antar-Pertandingan</span>
+            <span>Grafik Tren Tag Antar-Pertandingan</span>
             <div class="chart-legend">
-              <span class="leg"><i style="background:#10b981;"></i>Gol</span>
-              <span class="leg"><i style="background:#38bdf8;"></i>Shot OT</span>
-              <span class="leg"><i style="background:#f59e0b;"></i>Pressing</span>
-              <span class="leg"><i style="background:#a855f7;"></i>Power Play / Set Piece</span>
+              {#if seasonCategories.length === 0}
+                <span class="leg">Belum ada tag di laga yang dimuat</span>
+              {:else}
+                {#each seasonCategories as cat (cat.name)}
+                  {@const isOn = activeChartCats.some((a) => a.name === cat.name)}
+                  <button
+                    type="button"
+                    class="leg-btn"
+                    class:off={!isOn}
+                    onclick={() => toggleChartCat(cat.name)}
+                    title={isOn ? `Sembunyikan ${cat.name}` : `Tampilkan ${cat.name}`}
+                  >
+                    <i style="background:{cat.color};"></i>
+                    <span>{cat.name} ({cat.total})</span>
+                  </button>
+                {/each}
+              {/if}
             </div>
           </div>
 
@@ -820,37 +879,22 @@
               {@const xAt = (i: number) => (matchTrends.length === 1 ? 395 : 70 + i * stepX)}
               {@const yAt = (v: number) => 175 - (v / maxChartY) * 145}
 
-              <polyline
-                fill="none"
-                stroke="#10b981"
-                stroke-width="2.5"
-                points={matchTrends.map((m, i) => `${xAt(i)},${yAt(m.goals)}`).join(' ')}
-              />
-              <polyline
-                fill="none"
-                stroke="#38bdf8"
-                stroke-width="2.5"
-                points={matchTrends.map((m, i) => `${xAt(i)},${yAt(m.sot)}`).join(' ')}
-              />
-              <polyline
-                fill="none"
-                stroke="#f59e0b"
-                stroke-width="2"
-                stroke-dasharray="4 3"
-                points={matchTrends.map((m, i) => `${xAt(i)},${yAt(m.pressing)}`).join(' ')}
-              />
-              <polyline
-                fill="none"
-                stroke="#a855f7"
-                stroke-width="2"
-                points={matchTrends.map((m, i) => `${xAt(i)},${yAt(m.powerPlay + m.setPiece)}`).join(' ')}
-              />
+              {#each activeChartCats as cat (cat.name)}
+                <polyline
+                  fill="none"
+                  stroke={cat.color}
+                  stroke-width="2.4"
+                  points={matchTrends.map((m, i) => `${xAt(i)},${yAt(m.counts[cat.name] || 0)}`).join(' ')}
+                />
+                {#each matchTrends as m, i (m.id)}
+                  {@const val = m.counts[cat.name] || 0}
+                  <circle cx={xAt(i)} cy={yAt(val)} r="4" fill={cat.color}>
+                    <title>{m.title} — {cat.name}: {val}</title>
+                  </circle>
+                {/each}
+              {/each}
 
               {#each matchTrends as m, i (m.id)}
-                <circle cx={xAt(i)} cy={yAt(m.goals)} r="4" fill="#10b981" />
-                <circle cx={xAt(i)} cy={yAt(m.sot)} r="4" fill="#38bdf8" />
-                <circle cx={xAt(i)} cy={yAt(m.pressing)} r="3.5" fill="#f59e0b" />
-                <circle cx={xAt(i)} cy={yAt(m.powerPlay + m.setPiece)} r="3.5" fill="#a855f7" />
                 <text x={xAt(i)} y="196" text-anchor="middle" fill="#cbd5e1" font-size="9.5">
                   {m.title.slice(0, 18)}
                 </text>
@@ -865,13 +909,12 @@
             <thead>
               <tr>
                 <th class="th-left">Pertandingan</th>
-                <th>Klip</th>
-                <th>Gol</th>
-                <th>Kebobolan</th>
-                <th>Shot OT</th>
-                <th>Pressing</th>
-                <th>Power Play</th>
-                <th>Set Piece</th>
+                <th>Total Klip</th>
+                {#each seasonCategories as cat (cat.name)}
+                  <th>
+                    <span class="th-cat"><i class="th-dot" style="background:{cat.color};"></i>{cat.name}</span>
+                  </th>
+                {/each}
                 <th></th>
               </tr>
             </thead>
@@ -879,13 +922,10 @@
               {#each matchTrends as m (m.id)}
                 <tr>
                   <td class="td-left">{m.title}</td>
-                  <td>{m.totalClips}</td>
-                  <td class="text-emerald">{m.goals}</td>
-                  <td class="text-red">{m.conceded}</td>
-                  <td class="text-sky">{m.sot}</td>
-                  <td class="text-amber">{m.pressing}</td>
-                  <td>{m.powerPlay}</td>
-                  <td>{m.setPiece}</td>
+                  <td><strong>{m.totalClips}</strong></td>
+                  {#each seasonCategories as cat (cat.name)}
+                    <td>{m.counts[cat.name] || 0}</td>
+                  {/each}
                   <td>
                     <button
                       type="button"
@@ -899,6 +939,18 @@
                 </tr>
               {/each}
             </tbody>
+            {#if seasonCategories.length > 0}
+              <tfoot>
+                <tr>
+                  <td class="td-left"><strong>Total Musim ({matches.length} Laga)</strong></td>
+                  <td><strong>{allSeasonTags.length}</strong></td>
+                  {#each seasonCategories as cat (cat.name)}
+                    <td style="color:{cat.color};"><strong>{cat.total}</strong></td>
+                  {/each}
+                  <td></td>
+                </tr>
+              </tfoot>
+            {/if}
           </table>
         </div>
       {:else if activeTab === 'spatial'}
@@ -938,6 +990,7 @@
                 <th>Laga</th>
                 <th>Total Menit</th>
                 <th>Total Aksi</th>
+                <th class="th-left">Tag Dominan</th>
                 <th>Keterlibatan Gol</th>
                 <th>Shot OT</th>
                 <th>Akurasi Eksekusi</th>
@@ -950,6 +1003,7 @@
                   <td>{row.matchesCount}</td>
                   <td class="mono">{formatMinSec(row.totalSec)}</td>
                   <td>{row.totalActions}</td>
+                  <td class="td-left">{row.topTagsText}</td>
                   <td class="text-emerald"><strong>{row.goalInvolvements}</strong></td>
                   <td class="text-sky">{row.sot}</td>
                   <td>{row.accuracyPct}%</td>
@@ -1169,7 +1223,7 @@
 
   .kpi-strip {
     display: grid;
-    grid-template-columns: repeat(6, 1fr);
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
     gap: 8px;
   }
 
@@ -1189,6 +1243,20 @@
     font-weight: 700;
   }
 
+  .k-lbl-dot {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: #94a3b8;
+  }
+
+  .k-lbl-dot i {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
   .k-val {
     font-family: 'Fira Code', monospace;
     font-size: 16px;
@@ -1203,10 +1271,16 @@
     padding: 12px;
   }
 
+  .table-card {
+    overflow-x: auto;
+  }
+
   .chart-hdr {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
     font-size: 11px;
     font-weight: 800;
     color: #93c5fd;
@@ -1215,7 +1289,8 @@
 
   .chart-legend {
     display: flex;
-    gap: 10px;
+    flex-wrap: wrap;
+    gap: 6px;
     font-size: 10px;
     color: #cbd5e1;
   }
@@ -1226,11 +1301,37 @@
     gap: 4px;
   }
 
-  .leg i {
-    width: 8px;
-    height: 8px;
+  .leg-btn i,
+  .th-dot {
+    width: 7px;
+    height: 7px;
     border-radius: 50%;
     display: inline-block;
+    flex-shrink: 0;
+  }
+
+  .leg-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: #0b1a2e;
+    border: 1px solid #1a355d;
+    color: #e2e8f0;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 3px 8px;
+    border-radius: 999px;
+    cursor: pointer;
+  }
+
+  .leg-btn.off {
+    opacity: 0.4;
+  }
+
+  .th-cat {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
   }
 
   .trend-svg {
@@ -1252,11 +1353,18 @@
     font-size: 10px;
     padding: 7px 10px;
     border-bottom: 1px solid #1a355d;
+    white-space: nowrap;
   }
 
   .season-table td {
     padding: 7px 10px;
     border-bottom: 1px solid #122440;
+  }
+
+  .season-table tfoot td {
+    background: #060b14;
+    border-top: 1px solid #1e3b68;
+    border-bottom: none;
   }
 
   .th-left,
@@ -1278,10 +1386,6 @@
 
   .text-sky {
     color: #38bdf8;
-  }
-
-  .text-amber {
-    color: #fbbf24;
   }
 
   .btn-del {

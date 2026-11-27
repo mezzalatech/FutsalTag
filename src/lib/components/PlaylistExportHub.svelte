@@ -37,6 +37,7 @@
     Type,
     Image as ImageIcon,
     Video,
+    ChevronDown,
   } from "lucide-svelte";
   import { exportInteractiveHtmlStatsReport } from "$lib/export/htmlStatsReport";
   import CloudExportModal from "$lib/components/CloudExportModal.svelte";
@@ -98,12 +99,21 @@
   let newSlideTitle = $state("");
   let newSlideSubtitle = $state("");
   let newSlideBgColor = $state("#0f172a");
+  let rightPanelTab = $state<"deck" | "export">("deck");
+  let showMoreExportMenu = $state(false);
 
   const activeDeck = $derived(projectStore.activeDeck);
   const allFilteredChecked = $derived(
     filteredClips.length > 0 &&
       filteredClips.every((c) => selectedClipKeys.includes(c.key)),
   );
+
+  function fmtClipClock(sec: number): string {
+    const s = Math.max(0, Math.floor(sec));
+    const m = Math.floor(s / 60);
+    const rem = s % 60;
+    return `${String(m).padStart(2, "0")}:${String(rem).padStart(2, "0")}`;
+  }
 
   function toggleClipSelection(key: string) {
     if (selectedClipKeys.includes(key)) {
@@ -1023,6 +1033,7 @@
   }
 </script>
 
+<svelte:window onclick={() => (showMoreExportMenu = false)} />
 <div class="playlist-export-hub">
   <!-- TOP SUB-HEADER -->
   <header class="hub-header">
@@ -1032,124 +1043,56 @@
         <span>Kembali ke Tagging</span>
       </button>
       <div class="header-title-wrap">
-        <span class="hub-main-title">Pusat Playlist & Ekspor Multi-Format</span>
+        <span class="hub-main-title">Presentasi &amp; Ekspor Video</span>
         <span class="hub-sub-title"
-          >Susun urutan klip presentasi dan ekspor video siaran tim</span
+          >Kumpulkan klip dari pertandingan, lalu putar di TV atau jadikan satu video.</span
         >
       </div>
     </div>
 
     <div class="header-right">
-      {#if onOpenPresentation}
+      <div class="hd-more-anchor">
         <button
+          type="button"
           class="btn-csv"
-          onclick={onOpenPresentation}
-          title="Buka Studio Presentasi Fullscreen Ruang Ganti"
+          onclick={(e) => {
+            e.stopPropagation();
+            showMoreExportMenu = !showMoreExportMenu;
+          }}
         >
-          <MonitorPlay size={15} />
-          <span>Presenter Fullscreen</span>
+          <FileSpreadsheet size={15} />
+          <span>Ekspor Lain</span>
+          <ChevronDown size={13} />
         </button>
-      {/if}
-      <button class="btn-csv" onclick={exportCSVStats}>
-        <FileSpreadsheet size={15} />
-        <span>Ekspor Rekap CSV</span>
-      </button>
-      <button
-        class="btn-csv"
-        onclick={handleExportMatchPdf}
-        title="Cetak Laporan Pertandingan PDF 1-Klik (A4 Landscape)"
-      >
-        <Download size={15} />
-        <span>Laporan PDF</span>
-      </button>
-      <button
-        class="btn-primary-export"
-        onclick={triggerExport}
-        disabled={isExporting}
-      >
-        <Download size={15} />
-        <span>{isExporting ? "Sedang Merender..." : "Mulai Ekspor Video"}</span>
-      </button>
+        {#if showMoreExportMenu}
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <div class="hd-dropdown" role="menu" tabindex="-1" onclick={(e) => e.stopPropagation()}>
+            <button type="button" class="hd-dd-item" onclick={() => { showMoreExportMenu = false; exportCSVStats(); }}>
+              <FileSpreadsheet size={13} />
+              <span>Ekspor Rekap CSV</span>
+            </button>
+            <button type="button" class="hd-dd-item" onclick={() => { showMoreExportMenu = false; handleExportMatchPdf(); }}>
+              <Download size={13} />
+              <span>Laporan PDF (A4)</span>
+            </button>
+          </div>
+        {/if}
+      </div>
     </div>
   </header>
 
-  <!-- MAIN BODY: 2 COLUMNS (LEFT: PRESENTATION PLAYER & PLAYLIST, RIGHT: EXPORT SETTINGS) -->
+  <!-- MAIN BODY: MOMEN 3-COLUMN LAYOUT (CLIPS SOURCE | PREVIEW STAGE | PRESENTASI & EXPORT) -->
   <div class="hub-grid">
-    <!-- LEFT: FILTER + TV PRESENTATION PLAYER & REORDERABLE PLAYLIST -->
-    <div class="playlist-column">
-      <ClipFilterBar />
+    <!-- COL 1: FILTER + CLIPS LIST -->
+    <div class="clips-source-column">
+      <ClipFilterBar compact={true} />
 
-      <!-- TV PRESENTATION PLAYER -->
-      <div class="presentation-player-card">
-        <div class="card-bar">
-          <div class="bar-title">
-            <Tv size={15} />
-            <span>Mode Simulasi Siaran Presentasi TV (Auto-Play Sequencer)</span
-            >
-          </div>
-          {#if activePreviewClip}
-            <span class="now-playing-badge">
-              [{activePreviewClip.matchTitle}] Klip #{selectedItemIndex + 1}: {activePreviewClip
-                .tag.title}
-            </span>
-          {/if}
-        </div>
-
-        <div class="video-frame">
-          {#if activePreviewSrc}
-            <!-- svelte-ignore a11y_media_has_caption -->
-            <video
-              bind:this={presentationVideoEl}
-              src={activePreviewSrc}
-              class="pres-video"
-              ontimeupdate={handlePresentationTimeUpdate}
-            ></video>
-          {:else}
-            <div class="mock-pres-screen">
-              <Film size={36} />
-              <p>Simulasi Presentasi TV Berurutan Aktif</p>
-              <span
-                >Setiap klip akan diputar berurutan lintas pertandingan sesuai
-                filter aktif.</span
-              >
-            </div>
-          {/if}
-        </div>
-
-        <div class="pres-controls">
-          <button
-            class="btn-pres-play"
-            onclick={() => {
-              if (isPlayingPresentation && presentationVideoEl) {
-                presentationVideoEl.pause();
-                isPlayingPresentation = false;
-              } else {
-                playPresentationItem(selectedItemIndex);
-              }
-            }}
-          >
-            {#if isPlayingPresentation}
-              <Pause size={16} />
-              <span>Jeda Presentasi</span>
-            {:else}
-              <Play size={16} />
-              <span>Putar Seluruh Playlist</span>
-            {/if}
-          </button>
-
-          <span class="pres-counter">
-            Total {filteredClips.length} Klip Terfilter
-          </span>
-        </div>
-      </div>
-
-      <!-- PLAYLIST ITEMS LIST -->
       <div class="playlist-items-card">
         <div class="items-header">
           <div class="title-wrap">
             <Layers size={15} />
             <span class="title-text"
-              >Klip Hasil Saring ({filteredClips.length})</span
+              >Klip ({filteredClips.length})</span
             >
           </div>
           <div class="items-hdr-actions">
@@ -1196,108 +1139,107 @@
                     playPresentationItem(idx);
                 }}
               >
-                <input
-                  type="checkbox"
-                  class="clip-check-box"
-                  checked={selectedClipKeys.includes(clip.key)}
-                  onclick={(e) => {
-                    e.stopPropagation();
-                    toggleClipSelection(clip.key);
-                  }}
-                  aria-label="Pilih klip {clip.tag.title}"
-                />
-                <div class="item-order-box">{idx + 1}</div>
+                <div class="pir-top">
+                  <input
+                    type="checkbox"
+                    class="clip-check-box"
+                    checked={selectedClipKeys.includes(clip.key)}
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      toggleClipSelection(clip.key);
+                    }}
+                    aria-label="Pilih klip {clip.tag.title}"
+                  />
+                  <div class="item-order-box">{idx + 1}</div>
+                  <span
+                    class="item-cat"
+                    style="background-color: {clip.tag.color}"
+                  >
+                    {clip.tag.category}
+                  </span>
+                  <span class="item-title" title={clip.tag.title}>{clip.tag.title}</span>
+                  <span class="meta-time">
+                    {fmtClipClock(clip.tag.startTime)}–{fmtClipClock(clip.tag.endTime)}
+                  </span>
+                </div>
 
-                <div class="item-info">
-                  <div class="item-title-row">
-                    <span class="match-pill-tag">{clip.matchTitle}</span>
-                    <span class="item-title">{clip.tag.title}</span>
-                    <span
-                      class="item-cat"
-                      style="background-color: {clip.tag.color}"
-                    >
-                      {clip.tag.category}
-                    </span>
-                  </div>
-                  <div class="item-meta">
-                    <span class="meta-time">
-                      [{clip.tag.startTime.toFixed(1)}s - {clip.tag.endTime.toFixed(
-                        1,
-                      )}s]
-                    </span>
+                <div class="pir-bottom">
+                  <div class="pir-meta">
+                    {#if hasMultiMatch}
+                      <span class="match-pill-tag">{clip.matchTitle}</span>
+                    {/if}
                     {#if clip.tag.playerLabel}
                       <span class="meta-badge">{clip.tag.playerLabel}</span>
                     {/if}
-                    {#each (clip.tag.labels ?? []).slice(0, 3) as lbl}
+                    {#each (clip.tag.labels ?? []).slice(0, 2) as lbl}
                       <span class="meta-lbl-pill">{lbl.name}</span>
                     {/each}
                     <span class="meta-freeze">
                       {#if (clip.tag.freezeStops?.length ?? 0) > 1}
                         {clip.tag.freezeStops?.length} Jeda
                       {:else}
-                        Jeda: {(
+                        {(
                           clip.tag.freezeStops?.[0]?.duration ??
                           clip.tag.pauseDuration ??
                           3.0
                         ).toFixed(1)}s
                       {/if}
-                      {clip.tag.appendCleanReplay ? " + Replay" : ""}
+                      {clip.tag.appendCleanReplay ? "+R" : ""}
                     </span>
                   </div>
-                </div>
 
-                <!-- TELESTRATION PER-CLIP TOGGLE & REORDER -->
-                <div class="item-actions">
-                  <button
-                    type="button"
-                    class="btn-tel-toggle"
-                    class:active={clip.useTelestration}
-                    onclick={(e) => {
-                      e.stopPropagation();
-                      projectStore.setClipTelestration(
-                        clip.key,
-                        !clip.useTelestration,
-                      );
-                    }}
-                    title={clip.hasTelestration
-                      ? "Klik untuk pilih ekspor/tayang Dengan Telestrasi atau Video Polos"
-                      : "Klip ini polos (belum ada telestrasi)"}
-                  >
-                    <Sparkles size={11} />
-                    <span>{clip.useTelestration ? "Telestrasi" : "Polos"}</span>
-                  </button>
-                  <button
-                    class="btn-order"
-                    disabled={idx === 0}
-                    onclick={(e) => {
-                      e.stopPropagation();
-                      moveItem(idx, "up");
-                    }}
-                    title="Pindahkan ke atas"
-                  >
-                    <MoveUp size={13} />
-                  </button>
-                  <button
-                    class="btn-order"
-                    disabled={idx === filteredClips.length - 1}
-                    onclick={(e) => {
-                      e.stopPropagation();
-                      moveItem(idx, "down");
-                    }}
-                    title="Pindahkan ke bawah"
-                  >
-                    <MoveDown size={13} />
-                  </button>
-                  <button
-                    class="btn-del"
-                    onclick={(e) => {
-                      e.stopPropagation();
-                      removeItem(idx);
-                    }}
-                    title="Keluarkan sementara dari ekspor"
-                  >
-                    <Trash2 size={13} />
-                  </button>
+                  <!-- TELESTRATION PER-CLIP TOGGLE & REORDER -->
+                  <div class="item-actions">
+                    <button
+                      type="button"
+                      class="btn-tel-toggle"
+                      class:active={clip.useTelestration}
+                      onclick={(e) => {
+                        e.stopPropagation();
+                        projectStore.setClipTelestration(
+                          clip.key,
+                          !clip.useTelestration,
+                        );
+                      }}
+                      title={clip.useTelestration
+                        ? "Tampil Dengan Telestrasi (klik untuk Video Polos)"
+                        : "Tampil Video Polos (klik untuk Telestrasi)"}
+                    >
+                      <Sparkles size={11} />
+                    </button>
+                    <button
+                      class="btn-order"
+                      disabled={idx === 0}
+                      onclick={(e) => {
+                        e.stopPropagation();
+                        moveItem(idx, "up");
+                      }}
+                      title="Pindahkan ke atas"
+                    >
+                      <MoveUp size={12} />
+                    </button>
+                    <button
+                      class="btn-order"
+                      disabled={idx === filteredClips.length - 1}
+                      onclick={(e) => {
+                        e.stopPropagation();
+                        moveItem(idx, "down");
+                      }}
+                      title="Pindahkan ke bawah"
+                    >
+                      <MoveDown size={12} />
+                    </button>
+                    <button
+                      class="btn-del"
+                      onclick={(e) => {
+                        e.stopPropagation();
+                        removeItem(idx);
+                      }}
+                      title="Keluarkan sementara dari ekspor"
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
                 </div>
               </div>
             {/each}
@@ -1306,8 +1248,113 @@
       </div>
     </div>
 
-    <!-- RIGHT: MULTI-PRESENTATION DECK + MULTI-FORMAT EXPORT OPTIONS -->
+    <!-- COL 2: CENTER PREVIEW STAGE -->
+    <div class="preview-column">
+      <div class="presentation-player-card">
+        <div class="card-bar">
+          <div class="bar-title">
+            <Tv size={15} />
+            <span>Preview</span>
+          </div>
+          {#if activePreviewClip}
+            <span class="now-playing-badge">
+              [{activePreviewClip.matchTitle}] Klip #{selectedItemIndex + 1}: {activePreviewClip
+                .tag.title}
+            </span>
+          {/if}
+        </div>
+
+        <div class="video-frame">
+          {#if activePreviewSrc}
+            <!-- svelte-ignore a11y_media_has_caption -->
+            <video
+              bind:this={presentationVideoEl}
+              src={activePreviewSrc}
+              class="pres-video"
+              ontimeupdate={handlePresentationTimeUpdate}
+            ></video>
+          {:else}
+            <div class="mock-pres-screen">
+              <Film size={36} />
+              <p>Pilih klip di kiri atau klik Putar</p>
+              <span
+                >Klik klip untuk pratinjau cepat, atau kirim ke Presentasi di sebelah kanan.</span
+              >
+            </div>
+          {/if}
+        </div>
+
+        <div class="pres-controls">
+          <button
+            class="btn-pres-play"
+            onclick={() => {
+              if (isPlayingPresentation && presentationVideoEl) {
+                presentationVideoEl.pause();
+                isPlayingPresentation = false;
+              } else {
+                playPresentationItem(selectedItemIndex);
+              }
+            }}
+          >
+            {#if isPlayingPresentation}
+              <Pause size={16} />
+              <span>Jeda Preview</span>
+            {:else}
+              <Play size={16} />
+              <span>Putar Preview</span>
+            {/if}
+          </button>
+
+          <span class="pres-counter">
+            {filteredClips.length} Klip Terfilter
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <!-- COL 3: MULTI-PRESENTATION DECK | EXPORT SETTINGS -->
     <div class="export-column">
+      <div class="export-tab-switch" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={rightPanelTab === "deck"}
+          class="ets-btn"
+          class:active={rightPanelTab === "deck"}
+          onclick={() => (rightPanelTab = "deck")}
+        >
+          Daftar Presentasi ({activeDeck.slides.length})
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={rightPanelTab === "export"}
+          class="ets-btn"
+          class:active={rightPanelTab === "export"}
+          onclick={() => (rightPanelTab = "export")}
+        >
+          Pengaturan Ekspor
+        </button>
+      </div>
+
+      {#if rightPanelTab === "deck"}
+        {#if isExporting || exportProgress > 0}
+          <div class="progress-wrap deck-progress-mini">
+            <div class="progress-bar-bg">
+              <div class="progress-bar-fill" style="width: {exportProgress}%"></div>
+            </div>
+            <div class="progress-meta">
+              <span class="status-msg">{exportStatusMessage}</span>
+              <span class="pct-num">{exportProgress}%</span>
+            </div>
+          </div>
+        {/if}
+        {#if exportSuccessPath}
+          <div class="success-box">
+            <CheckCircle2 size={16} />
+            <span>File berhasil dirender: {exportSuccessPath}</span>
+          </div>
+        {/if}
       <!-- MULTI-PRESENTATION DECK BASKET (MOMEN STYLE) -->
       <div class="export-config-card deck-basket-card">
         <div class="deck-top-bar">
@@ -1526,7 +1573,7 @@
           </button>
         </div>
       </div>
-
+      {:else}
       <div class="export-config-card">
         <div class="config-header">
           <Settings2 size={16} />
@@ -1856,6 +1903,7 @@
           </button>
         </div>
       </div>
+      {/if}
     </div>
   </div>
 </div>
@@ -2005,24 +2053,123 @@
     cursor: not-allowed;
   }
 
-  /* GRID */
+  /* GRID (MOMEN 3-COLUMN: FILTER+KLIP | PREVIEW | PRESENTASI/EKSPOR) */
   .hub-grid {
     flex: 1;
+    min-height: 0;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(350px, 410px);
-    gap: 14px;
-    padding: 14px;
+    grid-template-columns: minmax(275px, 325px) minmax(0, 1fr) minmax(325px, 390px);
+    gap: 12px;
+    padding: 12px 14px;
     overflow: hidden;
     box-sizing: border-box;
   }
 
-  /* PLAYLIST COLUMN */
-  .playlist-column {
+  .clips-source-column,
+  .preview-column {
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: 10px;
     min-width: 0;
+    min-height: 0;
     overflow: hidden;
+  }
+
+  .preview-column .presentation-player-card {
+    flex: 1;
+    min-height: 0;
+  }
+
+  .preview-column .video-frame {
+    flex: 1;
+    height: auto;
+    min-height: 220px;
+  }
+
+  .hd-more-anchor {
+    position: relative;
+  }
+
+  .hd-dropdown {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 80;
+    min-width: 190px;
+    background: #091322;
+    border: 1px solid #1e4570;
+    border-radius: 8px;
+    padding: 4px;
+    box-shadow: 0 14px 32px rgba(0, 0, 0, 0.7);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .hd-dd-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    border: none;
+    color: #cbd5e1;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 7px 9px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  .hd-dd-item:hover {
+    background: #12284a;
+    color: #ffffff;
+  }
+
+  .export-tab-switch {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px;
+    background: #050b16;
+    border: 1px solid #1a355d;
+    border-radius: 8px;
+    padding: 3px;
+    flex-shrink: 0;
+  }
+
+  .ets-btn {
+    background: transparent;
+    border: none;
+    color: #94a3b8;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 6px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .ets-btn.active {
+    background: linear-gradient(135deg, #0284c7, #2563eb);
+    color: #ffffff;
+  }
+
+  .export-column .deck-basket-card {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .export-column .deck-slides-list {
+    flex: 1;
+    min-height: 140px;
+    max-height: none;
+  }
+
+  .deck-progress-mini {
+    flex-shrink: 0;
   }
 
   .presentation-player-card {
@@ -2042,6 +2189,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: 8px;
   }
 
   .bar-title {
@@ -2051,6 +2199,7 @@
     font-size: 11px;
     font-weight: 700;
     color: #38bdf8;
+    flex-shrink: 0;
   }
 
   .now-playing-badge {
@@ -2061,6 +2210,11 @@
     padding: 2px 8px;
     border-radius: 4px;
     font-weight: 600;
+    min-width: 0;
+    max-width: 72%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .video-frame {
@@ -2180,10 +2334,11 @@
     background-color: #0d1e38;
     border: 1px solid #1a355d;
     border-radius: 8px;
-    padding: 8px 10px;
+    padding: 7px 9px;
     display: flex;
-    align-items: center;
-    gap: 10px;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 5px;
     cursor: pointer;
     transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   }
@@ -2200,34 +2355,49 @@
     box-shadow: 0 0 14px rgba(56, 189, 248, 0.2);
   }
 
+  .pir-top,
+  .pir-bottom {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .pir-bottom {
+    justify-content: space-between;
+    padding-left: 20px;
+  }
+
+  .pir-meta {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: wrap;
+    min-width: 0;
+    flex: 1;
+  }
+
   .item-order-box {
-    width: 22px;
-    height: 22px;
+    width: 19px;
+    height: 19px;
     background-color: #060b14;
     color: #38bdf8;
-    font-size: 10px;
+    font-size: 9.5px;
     font-weight: 800;
     border-radius: 4px;
     display: flex;
     align-items: center;
     justify-content: center;
     border: 1px solid #1a355d;
-  }
-
-  .item-info {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-
-  .item-title-row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
+    flex-shrink: 0;
   }
 
   .item-title {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     font-size: 11px;
     font-weight: 600;
     color: #f0f6fc;
@@ -2239,18 +2409,16 @@
     color: #ffffff;
     padding: 1px 5px;
     border-radius: 3px;
-  }
-
-  .item-meta {
-    display: flex;
-    align-items: center;
-    gap: 8px;
+    flex-shrink: 0;
+    white-space: nowrap;
   }
 
   .meta-time {
     font-family: monospace;
-    font-size: 9px;
+    font-size: 9.5px;
     color: #38bdf8;
+    flex-shrink: 0;
+    white-space: nowrap;
   }
 
   .meta-badge {
@@ -2260,17 +2428,20 @@
     border: 1px solid #1a355d;
     padding: 1px 5px;
     border-radius: 3px;
+    white-space: nowrap;
   }
 
   .meta-freeze {
     font-size: 9px;
     color: #fbbf24;
+    white-space: nowrap;
   }
 
   .item-actions {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 3px;
+    flex-shrink: 0;
   }
 
   .btn-order {
@@ -2608,7 +2779,7 @@
     cursor: not-allowed;
   }
 
-  @media (max-width: 1024px) {
+  @media (max-width: 1120px) {
     .playlist-export-hub {
       overflow-y: auto;
       height: auto;
@@ -2628,7 +2799,8 @@
       padding: 12px;
     }
 
-    .playlist-column,
+    .clips-source-column,
+    .preview-column,
     .playlist-items-card,
     .export-column {
       overflow: visible;
@@ -2785,6 +2957,14 @@
     border: 1px solid #1a355d;
     border-radius: 8px;
     padding: 8px 10px;
+    cursor: pointer;
+  }
+
+  .deck-title-card-toggle input[type="checkbox"] {
+    accent-color: #38bdf8;
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
     cursor: pointer;
   }
 

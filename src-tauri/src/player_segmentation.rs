@@ -323,7 +323,13 @@ pub fn segment_players_on_rgb_frame(
 }
 
 #[tauri::command]
-pub fn check_seg_model_status(app: tauri::AppHandle) -> SegModelStatus {
+pub async fn check_seg_model_status(app: tauri::AppHandle) -> Result<SegModelStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || check_seg_model_status_blocking(app))
+        .await
+        .map_err(|e| format!("AI worker terhenti: {}", e))
+}
+
+fn check_seg_model_status_blocking(app: tauri::AppHandle) -> SegModelStatus {
     match resolve_seg_model_path(Some(&app)) {
         Some(path) => match with_seg_session(&path, |_, in_w, in_h| Ok((in_w, in_h))) {
             Ok((in_w, in_h)) => SegModelStatus {
@@ -346,7 +352,19 @@ pub fn check_seg_model_status(app: tauri::AppHandle) -> SegModelStatus {
 }
 
 #[tauri::command]
-pub fn segment_players_in_frame_onnx(
+pub async fn segment_players_in_frame_onnx(
+    app: tauri::AppHandle,
+    input_path: String,
+    time_sec: f64,
+) -> Result<PlayerSilhouetteMaskDto, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        segment_players_in_frame_onnx_blocking(app, input_path, time_sec)
+    })
+    .await
+    .map_err(|e| format!("AI worker terhenti: {}", e))?
+}
+
+fn segment_players_in_frame_onnx_blocking(
     app: tauri::AppHandle,
     input_path: String,
     time_sec: f64,
@@ -403,7 +421,21 @@ pub fn segment_players_in_frame_onnx(
 }
 
 #[tauri::command]
-pub fn segment_players_range_onnx(
+pub async fn segment_players_range_onnx(
+    app: tauri::AppHandle,
+    input_path: String,
+    start_sec: f64,
+    end_sec: f64,
+    fps: Option<f64>,
+) -> Result<Vec<PlayerSilhouetteMaskDto>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        segment_players_range_onnx_blocking(app, input_path, start_sec, end_sec, fps)
+    })
+    .await
+    .map_err(|e| format!("AI worker terhenti: {}", e))?
+}
+
+fn segment_players_range_onnx_blocking(
     app: tauri::AppHandle,
     input_path: String,
     start_sec: f64,

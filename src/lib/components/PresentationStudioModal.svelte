@@ -35,14 +35,20 @@
     Sparkles,
     MonitorPlay,
     Film,
+    ArrowLeft,
+    ChevronDown,
+    FolderOpen,
+    Scissors,
   } from 'lucide-svelte';
 
   interface Props {
     isOpen: boolean;
     onClose: () => void;
+    onNavigateStage?: (stage: 'hub' | 'tagging' | 'telestrator' | 'playlist_export' | 'coachboard') => void;
   }
 
-  let { isOpen, onClose }: Props = $props();
+  let { isOpen, onClose, onNavigateStage }: Props = $props();
+  let openHudMenu = $state<'nav' | 'insert' | 'tools' | null>(null);
 
   interface LiveStroke {
     color: string;
@@ -215,8 +221,8 @@
       return;
     }
     untrack(() => {
-      const baseSource = projectStore.presentationSlides.length > 0 ? projectStore.presentationSlides : slides;
-      commitSlides(buildFilteredSlides(baseSource));
+      const hasPresetSlides = projectStore.presentationSlides.length > 0;
+      commitSlides(hasPresetSlides ? [...projectStore.presentationSlides] : buildFilteredSlides(slides));
       currentSlideIdx = 0;
       liveStrokes = [];
       isDrawMode = false;
@@ -224,7 +230,7 @@
 
       if (isTauriDesktop() && projectStore.libraryMatches.length === 0) {
         projectStore.scanMatchLibrary().then(() => {
-          if (isOpen) {
+          if (isOpen && !hasPresetSlides && slides.length === 0) {
             commitSlides(buildFilteredSlides(slides));
           }
         });
@@ -287,7 +293,9 @@
         toggleFullscreen();
       } else if (e.key === 'Escape') {
         e.preventDefault();
-        if (isDrawMode) {
+        if (openHudMenu) {
+          openHudMenu = null;
+        } else if (isDrawMode) {
           isDrawMode = false;
         } else {
           handleClose();
@@ -837,16 +845,64 @@
 </script>
 
 {#if isOpen}
-<div class="presenter-overlay" role="dialog" aria-label="Fullscreen Presentation Studio" tabindex="-1">
+<!-- svelte-ignore a11y_click_events_have_key_events -->
+<div
+  class="presenter-overlay"
+  role="dialog"
+  aria-label="Fullscreen Presentation Studio"
+  tabindex="-1"
+  onclick={() => (openHudMenu = null)}
+>
   <!-- TOP MINIMAL HUD -->
   <div class="presenter-top-hud">
     <div class="pth-left">
-      <span class="pth-badge">PRESENTER STUDIO</span>
-      <span class="pth-match">{projectStore.videoTitle}</span>
-      {#if currentSlide}
-        {#if currentSlide.kind === 'clip' && currentSlide.matchTitle}
-          <span class="pth-match-badge">{currentSlide.matchTitle}</span>
+      <button type="button" class="hud-btn hud-exit" onclick={handleClose} title="Keluar ke tampilan sebelumnya (Esc)">
+        <ArrowLeft size={14} />
+        <span>Keluar</span>
+      </button>
+
+      <div class="hud-menu-anchor">
+        <button
+          type="button"
+          class="hud-btn"
+          class:active-draw={openHudMenu === 'nav'}
+          onclick={(e) => {
+            e.stopPropagation();
+            openHudMenu = openHudMenu === 'nav' ? null : 'nav';
+          }}
+          title="Pindah langsung ke menu analisis lain"
+        >
+          <LayoutGrid size={13} />
+          <span>Pindah Menu</span>
+          <ChevronDown size={12} />
+        </button>
+        {#if openHudMenu === 'nav'}
+          <div class="hud-dropdown left" role="menu" tabindex="-1" onclick={(e) => e.stopPropagation()}>
+            <button type="button" class="hud-dd-item" onclick={() => { openHudMenu = null; handleClose(); (onNavigateStage ?? projectStore.setStage.bind(projectStore))('hub'); }}>
+              <FolderOpen size={13} />
+              <span>1. Hub Proyek</span>
+            </button>
+            <button type="button" class="hud-dd-item" onclick={() => { openHudMenu = null; handleClose(); (onNavigateStage ?? projectStore.setStage.bind(projectStore))('tagging'); }}>
+              <Scissors size={13} />
+              <span>2. Tagging</span>
+            </button>
+            <button type="button" class="hud-dd-item" onclick={() => { openHudMenu = null; handleClose(); (onNavigateStage ?? projectStore.setStage.bind(projectStore))('telestrator'); }}>
+              <Sparkles size={13} />
+              <span>3. Telestrasi</span>
+            </button>
+            <button type="button" class="hud-dd-item" onclick={() => { openHudMenu = null; handleClose(); (onNavigateStage ?? projectStore.setStage.bind(projectStore))('playlist_export'); }}>
+              <Film size={13} />
+              <span>4. Presentasi & Ekspor</span>
+            </button>
+            <button type="button" class="hud-dd-item" onclick={() => { openHudMenu = null; handleClose(); (onNavigateStage ?? projectStore.setStage.bind(projectStore))('coachboard'); }}>
+              <LayoutGrid size={13} />
+              <span>Taktik 2D</span>
+            </button>
+          </div>
         {/if}
+      </div>
+
+      {#if currentSlide}
         <span class="pth-slide-pill">
           Slide {currentSlideIdx + 1}/{slides.length}: <strong>{currentSlide.title}</strong>
         </span>
@@ -880,58 +936,109 @@
         class="hidden-file-input"
         onchange={onExternalVideoSelected}
       />
-      <button type="button" class="hud-btn" onclick={openSecondScreenWindow} title="Buka Jendela Bersih di Monitor / Proyektor Kedua">
-        <MonitorPlay size={13} />
-        <span>{projectorActive ? 'Proyektor Aktif' : 'Layar Proyektor Ke-2'}</span>
-      </button>
-      <button type="button" class="hud-btn" class:active-draw={showFilterPanel} onclick={() => (showFilterPanel = !showFilterPanel)} title="Filter Klip Lintas Pertandingan (Tag × Label × Pemain × Telestrasi)">
-        <Filter size={13} />
-        <span>Filter Klip</span>
-      </button>
-      <button type="button" class="hud-btn" onclick={() => (showSlideDrawer = !showSlideDrawer)}>
+
+      <button
+        type="button"
+        class="hud-btn"
+        class:active-draw={showSlideDrawer}
+        onclick={() => {
+          openHudMenu = null;
+          showSlideDrawer = !showSlideDrawer;
+        }}
+      >
         <List size={14} />
         <span>Slide ({slides.length})</span>
       </button>
-      <button type="button" class="hud-btn" onclick={syncFilteredClipsToSlides} title="Sinkronkan ulang klip sesuai filter aktif">
-        <RefreshCw size={13} />
-        <span>Sinkron Klip</span>
-      </button>
-      <button type="button" class="hud-btn" onclick={insertTitleSlide} title="Sisipkan Kartu Judul / Pemisah Babak">
-        <Type size={13} />
-        <span>+ Judul</span>
-      </button>
-      <button type="button" class="hud-btn" onclick={() => imageInputEl?.click()} title="Sisipkan Slide Gambar / Diagram Pelatih">
-        <ImageIcon size={13} />
-        <span>+ Gambar</span>
-      </button>
-      <button type="button" class="hud-btn" onclick={handleInsertExternalVideo} title="Sisipkan File Video Eksternal (.mp4) dari Disk ke Playlist Briefing">
-        <Film size={13} />
-        <span>+ Video</span>
-      </button>
-      <button type="button" class="hud-btn" onclick={insertTacticalSlide} title="Sisipkan Slide Papan Taktik 2D">
-        <Plus size={14} />
-        <span>+ Taktik 2D</span>
-      </button>
-      <button type="button" class="hud-btn" onclick={() => logoInputEl?.click()} title="Pasang Logo Klub sebagai Watermark Presentasi">
-        <Shield size={13} />
-        <span>{projectStore.clubLogoDataUrl ? 'Ganti Logo' : '+ Logo'}</span>
-      </button>
-      {#if projectStore.clubLogoDataUrl}
-        <button type="button" class="hud-btn" onclick={() => (projectStore.clubLogoDataUrl = null)} title="Hapus Logo Watermark">
-          <X size={12} />
+
+      <div class="hud-menu-anchor">
+        <button
+          type="button"
+          class="hud-btn"
+          class:active-draw={openHudMenu === 'insert'}
+          onclick={(e) => {
+            e.stopPropagation();
+            openHudMenu = openHudMenu === 'insert' ? null : 'insert';
+          }}
+          title="Sisipkan slide judul, gambar, video, atau papan taktik 2D"
+        >
+          <Plus size={13} />
+          <span>Sisipkan</span>
+          <ChevronDown size={12} />
         </button>
-      {/if}
-      <button type="button" class="hud-btn" onclick={toggleFullscreen} title="Toggle Layar Penuh (F)">
-        {#if isFullscreen}
-          <Minimize2 size={14} />
-        {:else}
-          <Maximize2 size={14} />
+        {#if openHudMenu === 'insert'}
+          <div class="hud-dropdown" role="menu" tabindex="-1" onclick={(e) => e.stopPropagation()}>
+            <button type="button" class="hud-dd-item" onclick={() => { openHudMenu = null; insertTitleSlide(); }}>
+              <Type size={13} />
+              <span>Kartu Judul</span>
+            </button>
+            <button type="button" class="hud-dd-item" onclick={() => { openHudMenu = null; imageInputEl?.click(); }}>
+              <ImageIcon size={13} />
+              <span>Gambar / Diagram</span>
+            </button>
+            <button type="button" class="hud-dd-item" onclick={() => { openHudMenu = null; handleInsertExternalVideo(); }}>
+              <Film size={13} />
+              <span>Video Eksternal (.mp4)</span>
+            </button>
+            <button type="button" class="hud-dd-item" onclick={() => { openHudMenu = null; insertTacticalSlide(); }}>
+              <LayoutGrid size={13} />
+              <span>Papan Taktik 2D</span>
+            </button>
+          </div>
         {/if}
-      </button>
-      <button type="button" class="hud-btn hud-exit" onclick={handleClose} title="Keluar Presentasi (Esc)">
-        <X size={15} />
-        <span>Keluar</span>
-      </button>
+      </div>
+
+      <div class="hud-menu-anchor">
+        <button
+          type="button"
+          class="hud-btn"
+          class:active-draw={openHudMenu === 'tools' || projectorActive || showFilterPanel}
+          onclick={(e) => {
+            e.stopPropagation();
+            openHudMenu = openHudMenu === 'tools' ? null : 'tools';
+          }}
+          title="Menu presentasi: Proyektor, Filter Klip, Sinkron, Logo, Layar Penuh"
+        >
+          <MonitorPlay size={13} />
+          <span>Menu Presentasi</span>
+          <ChevronDown size={12} />
+        </button>
+        {#if openHudMenu === 'tools'}
+          <div class="hud-dropdown" role="menu" tabindex="-1" onclick={(e) => e.stopPropagation()}>
+            <button type="button" class="hud-dd-item" class:active={projectorActive} onclick={() => { openHudMenu = null; openSecondScreenWindow(); }}>
+              <MonitorPlay size={13} />
+              <span>{projectorActive ? 'Proyektor Aktif ✓' : 'Layar Proyektor Ke-2'}</span>
+            </button>
+            <button type="button" class="hud-dd-item" class:active={showFilterPanel} onclick={() => { openHudMenu = null; showFilterPanel = !showFilterPanel; }}>
+              <Filter size={13} />
+              <span>Filter Klip</span>
+            </button>
+            <button type="button" class="hud-dd-item" onclick={() => { openHudMenu = null; syncFilteredClipsToSlides(); }}>
+              <RefreshCw size={13} />
+              <span>Sinkron Klip</span>
+            </button>
+            <div class="hud-dd-sep"></div>
+            <button type="button" class="hud-dd-item" onclick={() => { openHudMenu = null; logoInputEl?.click(); }}>
+              <Shield size={13} />
+              <span>{projectStore.clubLogoDataUrl ? 'Ganti Logo Watermark' : '+ Logo Watermark'}</span>
+            </button>
+            {#if projectStore.clubLogoDataUrl}
+              <button type="button" class="hud-dd-item" onclick={() => { openHudMenu = null; projectStore.clubLogoDataUrl = null; }}>
+                <X size={13} />
+                <span>Hapus Logo Watermark</span>
+              </button>
+            {/if}
+            <button type="button" class="hud-dd-item" onclick={() => { openHudMenu = null; toggleFullscreen(); }}>
+              {#if isFullscreen}
+                <Minimize2 size={13} />
+                <span>Keluar Layar Penuh (F)</span>
+              {:else}
+                <Maximize2 size={13} />
+                <span>Layar Penuh (F)</span>
+              {/if}
+            </button>
+          </div>
+        {/if}
+      </div>
     </div>
   </div>
 
@@ -1333,6 +1440,12 @@
   .presenter-bottom-hud {
     border-bottom: none;
     border-top: 1px solid #1a355d;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .presenter-bottom-hud::-webkit-scrollbar {
+    display: none;
   }
 
   .pth-left,
@@ -1344,25 +1457,68 @@
     min-width: 0;
   }
 
-  .pth-badge {
-    font-size: 9px;
-    font-weight: 900;
-    letter-spacing: 0.08em;
-    background: linear-gradient(135deg, #0284c7, #2563eb);
-    color: #ffffff;
-    padding: 3px 8px;
-    border-radius: 4px;
+  .pbh-group,
+  .pth-right {
+    flex-shrink: 0;
+  }
+
+  .hud-menu-anchor {
+    position: relative;
+    flex-shrink: 0;
+  }
+
+  .hud-dropdown {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 260;
+    min-width: 210px;
+    background: #091324;
+    border: 1px solid #23436e;
+    border-radius: 10px;
+    padding: 5px;
+    box-shadow: 0 14px 36px rgba(0, 0, 0, 0.72);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .hud-dropdown.left {
+    left: 0;
+    right: auto;
+  }
+
+  .hud-dd-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    border: none;
+    color: #cbd5e1;
+    font-size: 11.5px;
+    font-weight: 700;
+    padding: 7px 10px;
+    border-radius: 7px;
+    cursor: pointer;
     white-space: nowrap;
   }
 
-  .pth-match {
-    font-size: 11px;
-    font-weight: 700;
-    color: #93c5fd;
-    max-width: 180px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+  .hud-dd-item:hover {
+    background: #13284a;
+    color: #ffffff;
+  }
+
+  .hud-dd-item.active {
+    background: rgba(16, 185, 129, 0.16);
+    color: #34d399;
+  }
+
+  .hud-dd-sep {
+    height: 1px;
+    background: #1a355d;
+    margin: 3px 6px;
   }
 
   .pth-slide-pill {
@@ -1685,9 +1841,6 @@
   }
 
   @media (max-width: 1120px) {
-    .pth-match {
-      display: none;
-    }
     .hud-btn span {
       display: none;
     }
@@ -1895,20 +2048,7 @@
     color: #e2e8f0;
     font-size: 11px;
     padding: 4px 8px;
-    width: 148px;
-  }
-
-  .pth-match-badge {
-    font-size: 10px;
-    font-weight: 800;
-    background: #0f766e;
-    color: #ccfbf1;
-    padding: 2px 8px;
-    border-radius: 999px;
-    max-width: 170px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    width: 125px;
   }
 
   .sd-match-sub {

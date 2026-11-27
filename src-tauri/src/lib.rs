@@ -29,7 +29,7 @@ fn open_projector_window(app: tauri::AppHandle) -> Result<(), String> {
     tauri::WebviewWindowBuilder::new(
         &app,
         "projector",
-        tauri::WebviewUrl::App("index.html?screen=presenter".into()),
+        tauri::WebviewUrl::App("?screen=presenter".into()),
     )
     .title("ARF FutsalTag — Layar Proyektor")
     .inner_size(1280.0, 720.0)
@@ -270,9 +270,10 @@ fn scan_folder_for_relink(
     }
     let mut targets_lower: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for target in target_filenames {
-        let name = Path::new(&target)
-            .file_name()
-            .and_then(|s| s.to_str())
+        let name = target
+            .trim_end_matches(['/', '\\'])
+            .rsplit(['/', '\\'])
+            .next()
             .unwrap_or(&target)
             .to_string();
         if !name.trim().is_empty() {
@@ -388,6 +389,8 @@ pub fn run() {
             whisper_asr::transcribe_voiceover_base64_whisper,
             whisper_asr::transcribe_video_clip_whisper,
             xlsx_export::export_native_xlsx,
+            xlsx_export::export_roster_template_xlsx,
+            xlsx_export::import_roster_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

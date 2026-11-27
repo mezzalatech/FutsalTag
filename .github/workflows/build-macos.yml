@@ -23,7 +23,7 @@ jobs:
             target: aarch64-apple-darwin
             tauri_platform: darwin-aarch64
           - arch: Intel-Mac
-            os: macos-13
+            os: macos-15-intel
             target: x86_64-apple-darwin
             tauri_platform: darwin-x86_64
 
@@ -163,15 +163,21 @@ jobs:
           New-Item -ItemType Directory -Force -Path "release-assets" | Out-Null
           Copy-Item "src-tauri\target\release\bundle\nsis\*.exe" "release-assets\" -Force
           Copy-Item "src-tauri\target\release\bundle\msi\*.msi" "release-assets\" -Force
+          $nsisExe = Get-ChildItem "src-tauri\target\release\bundle\nsis\*-setup.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
           $nsisZip = Get-ChildItem "src-tauri\target\release\bundle\nsis\*.nsis.zip" -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($nsisZip -and (Test-Path "$($nsisZip.FullName).sig")) {
-            $outZip = "ARF-FutsalTag-Windows-x64.nsis.zip"
-            Copy-Item $nsisZip.FullName "release-assets\$outZip" -Force
-            Copy-Item "$($nsisZip.FullName).sig" "release-assets\$outZip.sig" -Force
-            $sig = (Get-Content "release-assets\$outZip.sig" -Raw).Trim()
+          $updaterArtifact = if ($nsisExe -and (Test-Path "$($nsisExe.FullName).sig")) {
+            @{ File = $nsisExe; OutName = "ARF-FutsalTag-Windows-x64-setup.exe" }
+          } elseif ($nsisZip -and (Test-Path "$($nsisZip.FullName).sig")) {
+            @{ File = $nsisZip; OutName = "ARF-FutsalTag-Windows-x64.nsis.zip" }
+          } else { $null }
+          if ($updaterArtifact) {
+            $outName = $updaterArtifact.OutName
+            Copy-Item $updaterArtifact.File.FullName "release-assets\$outName" -Force
+            Copy-Item "$($updaterArtifact.File.FullName).sig" "release-assets\$outName.sig" -Force
+            $sig = (Get-Content "release-assets\$outName.sig" -Raw).Trim()
             @{
               platform = "windows-x86_64"
-              filename = $outZip
+              filename = $outName
               signature = $sig
             } | ConvertTo-Json | Set-Content "release-assets\platform-windows-x86_64.json" -Encoding UTF8
           }

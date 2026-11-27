@@ -52,6 +52,7 @@
   let metaComp = $state("");
   let metaDate = $state("");
   let saveToast = $state<string | null>(null);
+  let saveToastTone = $state<"ok" | "err">("ok");
   let openProjectInputEl: HTMLInputElement | undefined = $state();
   let availableUpdate = $state<Update | null>(null);
   let isCheckingUpdate = $state(false);
@@ -62,11 +63,12 @@
     typeof window !== "undefined" &&
     new URLSearchParams(window.location.search).get("screen") === "presenter";
 
-  function showSaveToast(msg: string) {
+  function showSaveToast(msg: string, tone: "ok" | "err" = "ok") {
+    saveToastTone = tone;
     saveToast = msg;
     setTimeout(() => {
       if (saveToast === msg) saveToast = null;
-    }, 2800);
+    }, tone === "err" ? 3600 : 2800);
   }
 
   async function handleManualCheckUpdate() {
@@ -81,8 +83,15 @@
       } else {
         showSaveToast("ARF FutsalTag sudah versi terbaru");
       }
-    } catch {
-      showSaveToast("Gagal memeriksa update (periksa koneksi internet)");
+    } catch (err: any) {
+      const raw = String(err?.message || err || "");
+      const isNotPublished = /404|not found|release|json|status/i.test(raw);
+      showSaveToast(
+        isNotPublished
+          ? "Rilis update publik belum tersedia (repo masih Private / belum ada latest.json)"
+          : "Gagal memeriksa update (periksa koneksi internet)",
+        "err",
+      );
     } finally {
       isCheckingUpdate = false;
     }
@@ -357,16 +366,16 @@
         <span class="step-label">Telestrasi</span>
       </button>
 
-      <!-- STEP 4: PLAYLIST & EXPORT -->
+      <!-- STEP 4: PRESENTASI & EXPORT -->
       <button
         type="button"
         class="step-btn"
         class:active={projectStore.stage === "playlist_export"}
         onclick={() => projectStore.setStage("playlist_export")}
-        title="Playlist & Ekspor Video"
+        title="Presentasi, Susun Klip & Ekspor Video"
       >
         <Film size={14} />
-        <span class="step-label">Playlist</span>
+        <span class="step-label">Presentasi</span>
       </button>
 
       <div class="stepper-mode-divider"></div>
@@ -493,8 +502,8 @@
       >
         <MonitorPlay size={14} class="pt-purple" />
         <div class="pro-item-text">
-          <div class="pro-item-title">Studio Presentasi</div>
-          <div class="pro-item-sub">Klip, slide taktik &amp; proyektor</div>
+          <div class="pro-item-title">Presenter Layar Penuh</div>
+          <div class="pro-item-sub">Mode briefing TV &amp; proyektor</div>
         </div>
       </button>
       <button
@@ -622,7 +631,7 @@
   {/if}
 
   {#if saveToast}
-    <div class="save-toast" role="status">{saveToast}</div>
+    <div class="save-toast" class:err={saveToastTone === "err"} role="status">{saveToast}</div>
   {/if}
 
   {#if projectStore.videoMissing}
@@ -701,6 +710,10 @@
       <PresentationStudioModal
         isOpen={isPresentationOpen}
         onClose={() => (isPresentationOpen = false)}
+        onNavigateStage={(stage) => {
+          isPresentationOpen = false;
+          projectStore.setStage(stage);
+        }}
       />
     {/await}
   {/if}
@@ -1305,6 +1318,12 @@
     padding: 8px 14px;
     border-radius: 8px;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+  }
+
+  .save-toast.err {
+    background: #7f1d1d;
+    border-color: #ef4444;
+    color: #fecaca;
   }
 
   .missing-video-banner {

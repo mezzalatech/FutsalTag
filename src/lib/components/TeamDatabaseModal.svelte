@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick, untrack } from 'svelte';
-  import { projectStore } from '$lib/stores/projectStore.svelte';
+  import { invoke } from '@tauri-apps/api/core';
+  import { projectStore, isTauriDesktop } from '$lib/stores/projectStore.svelte';
   import type {
     ClubPlayerProfile,
     ClubProfile,
@@ -16,6 +17,9 @@
     CheckCircle2,
     Users,
     UserPlus,
+    Download,
+    Upload,
+    FileSpreadsheet,
   } from 'lucide-svelte';
 
   interface Props {
@@ -40,8 +44,10 @@
   // New player quick inputs
   let newNum = $state('#12');
   let newName = $state('');
+  let newWhatsapp = $state('');
   let newRole = $state<FutsalPositionRole>('Flank');
   let newFoot = $state<DominantFoot>('Kanan');
+  let rosterCsvInputEl = $state<HTMLInputElement | null>(null);
 
   $effect(() => {
     if (!isOpen) return;
@@ -112,9 +118,11 @@
       name,
       role: newRole,
       dominantFoot: newFoot,
+      whatsapp: newWhatsapp.trim() || undefined,
     };
     draftClub.players = [...draftClub.players, player];
     newName = '';
+    newWhatsapp = '';
     newNum = `#${draftClub.players.length + 1}`;
     await projectStore.upsertClubProfile(draftClub);
     await tick();
@@ -173,6 +181,98 @@
       projectStore.applyClubsToMatchRoster(null, draftClub.id);
       notify(`Profil lawan "${draftClub.name}" diterapkan ke laga aktif!`);
     }
+  }
+
+  async function applyImportedRosterRows(rows: { num: string; name: string; whatsapp: string }[]) {
+    if (!draftClub || rows.length === 0) return;
+    const existingByNum = new Map(
+      draftClub.players.map((p) => [p.num.trim().toLowerCase(), p]),
+    );
+    draftClub.players = rows.map((r, i) => {
+      const prev = existingByNum.get(r.num.trim().toLowerCase());
+      return {
+        id: prev?.id || `cp-${Date.now()}-${i}`,
+        num: r.num,
+        name: r.name,
+        role: prev?.role || 'Flank',
+        dominantFoot: prev?.dominantFoot || 'Kanan',
+        whatsapp: r.whatsapp.trim() || undefined,
+        color: prev?.color,
+      };
+    });
+    await projectStore.upsertClubProfile(draftClub);
+    notify(`Berhasil impor ${rows.length} pemain ke "${draftClub.name}"!`);
+  }
+
+  async function handleDownloadRosterTemplate() {
+    if (!draftClub) return;
+    if (!isTauriDesktop()) {
+      notify('Template Excel berwarna (.xlsx) tersedia di aplikasi desktop ARF FutsalTag.');
+      return;
+    }
+    try {
+      const { save } = await import('@tauri-apps/plugin-dialog');
+      const safe = (draftClub.name || 'klub').replace(/[^a-zA-Z0-9_-]/g, '_');
+      const outPath = await save({
+        title: 'Simpan Template Excel Pemain (Berwarna)',
+        defaultPath: `Template_Pemain_${safe}.xlsx`,
+        filters: [{ name: 'Excel Workbook', extensions: ['xlsx'] }],
+      });
+      if (!outPath) return;
+      await invoke<string>('export_roster_template_xlsx', {
+        filePath: outPath,
+        clubName: draftClub.name,
+      });
+      notify(`Template Excel berwarna tersimpan: ${outPath.split(/[\\/]/).pop()}`);
+    } catch (err: any) {
+      notify(`Gagal membuat template Excel: ${err?.message || err}`);
+    }
+  }
+
+  async function handleImportRosterExcel() {
+    if (!draftClub) return;
+    if (!isTauriDesktop()) {
+      rosterCsvInputEl?.click();
+      return;
+    }
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog');
+      const selected = await open({
+        title: 'Impor Daftar Pemain (Excel .xlsx / .csv)',
+        multiple: false,
+        filters: [{ name: 'Excel / CSV', extensions: ['xlsx', 'csv', 'txt'] }],
+      });
+      if (!selected || typeof selected !== 'string') return;
+      const rows = await invoke<{ num: string; name: string; whatsapp: string }[]>(
+        'import_roster_file',
+        { filePath: selected },
+      );
+      await applyImportedRosterRows(rows);
+    } catch (err: any) {
+      notify(`Gagal impor pemain: ${err?.message || err}`);
+    }
+  }
+
+  function handleBrowserCsvImport(e: Event) {
+    const input = e.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      const txt = String(ev.target?.result || '');
+      const lines = txt.split(/\r?\n/).filter((l) => l.trim().length > 0);
+      const rows = lines
+        .map((l) => l.split(/[;,\t]/).map((s) => s.trim().replace(/^"|"$/g, '')))
+        .filter((cols) => cols[1] && !/nama pemain/i.test(cols[1]))
+        .map((cols, idx) => ({
+          num: cols[0] ? (cols[0].startsWith('#') ? cols[0] : `#${cols[0]}`) : `#${idx + 1}`,
+          name: cols[1],
+          whatsapp: cols[2] || '',
+        }));
+      await applyImportedRosterRows(rows);
+    };
+    reader.readAsText(file);
+    input.value = '';
   }
 </script>
 
@@ -292,7 +392,7 @@
             </div>
           </div>
 
-          <!-- ADD PLAYER ROW -->
+          <!-- ADD PLAYER & EXCEL BAR -->
           <div class="add-player-bar">
             <div class="ap-title">
               <UserPlus size={13} class="text-sky-400" />
@@ -305,6 +405,18 @@
               bind:value={newName}
               placeholder="Nama lengkap / panggilan..."
               class="txt-input flex-1"
+              onkeydown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  addPlayerToDraft();
+                }
+              }}
+            />
+            <input
+              type="text"
+              bind:value={newWhatsapp}
+              placeholder="No. WA (08...)"
+              class="txt-input w-wa"
               onkeydown={(e) => {
                 if (e.key === 'Enter') {
                   e.preventDefault();
@@ -328,6 +440,30 @@
             </button>
           </div>
 
+          <div class="excel-roster-bar">
+            <span class="erb-info">
+              <FileSpreadsheet size={13} />
+              <span>Input Cepat Massal (No. Punggung, Nama Pemain, No. WA):</span>
+            </span>
+            <div class="erb-actions">
+              <button type="button" class="btn-xl-tpl" onclick={handleDownloadRosterTemplate}>
+                <Download size={12} />
+                <span>Unduh Template Excel (.xlsx)</span>
+              </button>
+              <button type="button" class="btn-xl-imp" onclick={handleImportRosterExcel}>
+                <Upload size={12} />
+                <span>Impor Excel / CSV</span>
+              </button>
+              <input
+                bind:this={rosterCsvInputEl}
+                type="file"
+                accept=".csv,.txt"
+                onchange={handleBrowserCsvImport}
+                style="display: none;"
+              />
+            </div>
+          </div>
+
           <!-- ROSTER TABLE -->
           <div class="roster-table-scroll" bind:this={rosterScrollEl}>
             <table class="roster-edit-table">
@@ -335,6 +471,7 @@
                 <tr>
                   <th>No</th>
                   <th>Nama Pemain</th>
+                  <th>No. WhatsApp</th>
                   <th>Peran Futsal</th>
                   <th>Kaki Dominan</th>
                   <th></th>
@@ -347,7 +484,10 @@
                       <input type="text" bind:value={p.num} class="tbl-input w-num" />
                     </td>
                     <td>
-                      <input type="text" bind:value={p.name} class="tbl-input" />
+                      <input type="text" bind:value={p.name} class="tbl-input w-name" />
+                    </td>
+                    <td>
+                      <input type="text" bind:value={p.whatsapp} placeholder="0812..." class="tbl-input w-wa" />
                     </td>
                     <td>
                       <select bind:value={p.role} class="sel-input">
@@ -422,8 +562,8 @@
   }
 
   .modal-card {
-    width: min(960px, 96vw);
-    height: min(640px, 92vh);
+    width: min(1040px, 96vw);
+    height: min(670px, 92vh);
     background: #07101f;
     border: 1px solid #1e3b68;
     border-radius: 14px;
@@ -632,7 +772,76 @@
   }
 
   .w-num {
-    width: 54px;
+    width: 52px;
+  }
+
+  .w-name {
+    width: 100%;
+    min-width: 140px;
+  }
+
+  .w-wa {
+    width: 122px;
+  }
+
+  .excel-roster-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+    background: linear-gradient(90deg, rgba(4, 120, 87, 0.14), rgba(2, 132, 199, 0.12));
+    border: 1px solid #1a475d;
+    padding: 7px 10px;
+    border-radius: 8px;
+  }
+
+  .erb-info {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10.5px;
+    font-weight: 700;
+    color: #6ee7b7;
+  }
+
+  .erb-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .btn-xl-tpl,
+  .btn-xl-imp {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 10.5px;
+    font-weight: 700;
+    padding: 5px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    border: 1px solid;
+  }
+
+  .btn-xl-tpl {
+    background: #064e3b;
+    border-color: #10b981;
+    color: #ecfdf5;
+  }
+
+  .btn-xl-tpl:hover {
+    background: #047857;
+  }
+
+  .btn-xl-imp {
+    background: #0b2447;
+    border-color: #38bdf8;
+    color: #e0f2fe;
+  }
+
+  .btn-xl-imp:hover {
+    background: #0369a1;
   }
 
   .flex-1 {

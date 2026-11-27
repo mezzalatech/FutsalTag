@@ -1291,7 +1291,13 @@ pub fn detect_rgb_frame_sahi_tiled(
 }
 
 #[tauri::command]
-pub fn check_ai_model_status(app: tauri::AppHandle) -> AiModelStatus {
+pub async fn check_ai_model_status(app: tauri::AppHandle) -> Result<AiModelStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || check_ai_model_status_blocking(app))
+        .await
+        .map_err(|e| format!("AI worker terhenti: {}", e))
+}
+
+fn check_ai_model_status_blocking(app: tauri::AppHandle) -> AiModelStatus {
     match resolve_yolox_model_path(Some(&app)) {
         Some(path) => {
             let variant = model_variant_label(&path);
@@ -1320,7 +1326,19 @@ pub fn check_ai_model_status(app: tauri::AppHandle) -> AiModelStatus {
 }
 
 #[tauri::command]
-pub fn detect_players_in_frame_onnx(
+pub async fn detect_players_in_frame_onnx(
+    app: tauri::AppHandle,
+    input_path: String,
+    time_sec: f64,
+) -> Result<Vec<DetectedObject>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        detect_players_in_frame_onnx_blocking(app, input_path, time_sec)
+    })
+    .await
+    .map_err(|e| format!("AI worker terhenti: {}", e))?
+}
+
+fn detect_players_in_frame_onnx_blocking(
     app: tauri::AppHandle,
     input_path: String,
     time_sec: f64,
@@ -1346,7 +1364,21 @@ pub fn detect_players_in_frame_onnx(
 }
 
 #[tauri::command]
-pub fn detect_player_boxes_range_onnx(
+pub async fn detect_player_boxes_range_onnx(
+    app: tauri::AppHandle,
+    input_path: String,
+    start_sec: f64,
+    end_sec: f64,
+    fps: Option<f64>,
+) -> Result<Vec<FrameDetectionsDto>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        detect_player_boxes_range_onnx_blocking(app, input_path, start_sec, end_sec, fps)
+    })
+    .await
+    .map_err(|e| format!("AI worker terhenti: {}", e))?
+}
+
+fn detect_player_boxes_range_onnx_blocking(
     app: tauri::AppHandle,
     input_path: String,
     start_sec: f64,
@@ -1692,7 +1724,41 @@ fn track_one_direction(
 }
 
 #[tauri::command]
-pub fn track_single_player_onnx(
+pub async fn track_single_player_onnx(
+    app: tauri::AppHandle,
+    input_path: String,
+    start_sec: f64,
+    end_sec: f64,
+    anchor_sec: f64,
+    anchor_x: f64,
+    anchor_y: f64,
+    anchor_w: Option<f64>,
+    anchor_h: Option<f64>,
+    anchor_mode: Option<String>,
+    direction: Option<String>,
+    fps: Option<f64>,
+) -> Result<SinglePlayerTrackResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        track_single_player_onnx_blocking(
+            app,
+            input_path,
+            start_sec,
+            end_sec,
+            anchor_sec,
+            anchor_x,
+            anchor_y,
+            anchor_w,
+            anchor_h,
+            anchor_mode,
+            direction,
+            fps,
+        )
+    })
+    .await
+    .map_err(|e| format!("AI worker terhenti: {}", e))?
+}
+
+fn track_single_player_onnx_blocking(
     app: tauri::AppHandle,
     input_path: String,
     start_sec: f64,
@@ -1889,7 +1955,31 @@ fn blend_guided_segment(
 }
 
 #[tauri::command]
-pub fn track_guided_anchors_onnx(
+pub async fn track_guided_anchors_onnx(
+    app: tauri::AppHandle,
+    input_path: String,
+    start_sec: f64,
+    end_sec: f64,
+    anchors: Vec<AnchorPinDto>,
+    anchor_mode: Option<String>,
+    fps: Option<f64>,
+) -> Result<SinglePlayerTrackResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        track_guided_anchors_onnx_blocking(
+            app,
+            input_path,
+            start_sec,
+            end_sec,
+            anchors,
+            anchor_mode,
+            fps,
+        )
+    })
+    .await
+    .map_err(|e| format!("AI worker terhenti: {}", e))?
+}
+
+fn track_guided_anchors_onnx_blocking(
     app: tauri::AppHandle,
     input_path: String,
     start_sec: f64,
@@ -1921,7 +2011,7 @@ pub fn track_guided_anchors_onnx(
 
     if deduped.len() == 1 {
         let p = &deduped[0];
-        return track_single_player_onnx(
+        return track_single_player_onnx_blocking(
             app,
             input_path,
             start_sec,
@@ -2172,7 +2262,21 @@ pub fn track_guided_anchors_onnx(
 }
 
 #[tauri::command]
-pub fn run_multi_player_tracking_onnx(
+pub async fn run_multi_player_tracking_onnx(
+    app: tauri::AppHandle,
+    input_path: String,
+    start_sec: f64,
+    end_sec: f64,
+    fps: Option<f64>,
+) -> Result<OnnxTrackingResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        run_multi_player_tracking_onnx_blocking(app, input_path, start_sec, end_sec, fps)
+    })
+    .await
+    .map_err(|e| format!("AI worker terhenti: {}", e))?
+}
+
+fn run_multi_player_tracking_onnx_blocking(
     app: tauri::AppHandle,
     input_path: String,
     start_sec: f64,

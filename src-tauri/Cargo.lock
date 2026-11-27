@@ -4228,7 +4228,7 @@ dependencies = [
 
 [[package]]
 name = "tauri-app"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64 0.22.1",
  "ort",
@@ -4241,6 +4241,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-process",
  "tauri-plugin-updater",
+ "zip 2.6.1",
 ]
 
 [[package]]

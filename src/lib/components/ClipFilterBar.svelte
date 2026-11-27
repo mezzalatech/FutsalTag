@@ -352,6 +352,18 @@
     color: #ffffff;
   }
 
+  .cfb-chip.match-chip {
+    max-width: 100%;
+    overflow: hidden;
+  }
+
+  .cfb-chip.match-chip span:first-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+
   .cfb-chip.match-chip.active {
     background: #0f766e;
     border-color: #2dd4bf;
@@ -374,7 +386,7 @@
 
   .cfb-search {
     flex: 1;
-    min-width: 180px;
+    min-width: 120px;
     display: flex;
     align-items: center;
     gap: 6px;

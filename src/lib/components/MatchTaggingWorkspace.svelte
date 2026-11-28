@@ -276,6 +276,61 @@
   const activeBoard = $derived(projectStore.activeBoard);
 
   $effect(() => {
+    const labels = FUTSAL_ROSTER.map((p) => projectStore.getPlayerDisplayLabel(p));
+    if (labels.length > 0 && !labels.includes(activeSelectedPlayer)) {
+      const firstField =
+        FUTSAL_ROSTER.find((p) => !p.isOpponent && !projectStore.isGoalkeeper(p)) ??
+        FUTSAL_ROSTER.find((p) => !p.isOpponent) ??
+        FUTSAL_ROSTER[0];
+      if (firstField) {
+        activeSelectedPlayer = projectStore.getPlayerDisplayLabel(firstField);
+      }
+    }
+  });
+
+  const pitchSlots = $derived.by(() => {
+    const slotDefs = [
+      { cls: "kiper-pos", num: "#1", name: "Kiper", label: "#1 Kiper" },
+      { cls: "anchor-pos", num: "#4", name: "Anchor", label: "#4 Anchor" },
+      { cls: "flank-l-pos", num: "#7", name: "Flank Kiri", label: "#7 Flank Kiri" },
+      { cls: "flank-r-pos", num: "#11", name: "Flank Kanan", label: "#11 Flank Kanan" },
+      { cls: "pivot-pos", num: "#9", name: "Pivot", label: "#9 Pivot" },
+    ];
+    const homeRoster = FUTSAL_ROSTER.filter((p) => !p.isOpponent);
+    const starterCandidates = projectStore.startingLineupIds
+      .map((id) => homeRoster.find((p) => p.id === id))
+      .filter((p): p is NonNullable<typeof p> => Boolean(p));
+    const pool = starterCandidates.length >= 5
+      ? [...starterCandidates]
+      : [
+          ...starterCandidates,
+          ...homeRoster.filter((p) => !starterCandidates.some((s) => s.id === p.id)),
+        ];
+    const gkIdx = pool.findIndex((p) => projectStore.isGoalkeeper(p));
+    if (gkIdx > 0) {
+      const [gk] = pool.splice(gkIdx, 1);
+      pool.unshift(gk);
+    }
+    return slotDefs.map((def, idx) => {
+      const p = pool[idx];
+      if (!p) return def;
+      return {
+        cls: def.cls,
+        num: p.num,
+        name: p.name.split(/\s+/).slice(0, 2).join(" "),
+        label: projectStore.getPlayerDisplayLabel(p),
+      };
+    });
+  });
+
+  const unmappedSkuadTagsCount = $derived.by(() => {
+    const rosterLabels = FUTSAL_ROSTER.map((p) => projectStore.getPlayerDisplayLabel(p));
+    return projectStore.tags.filter(
+      (t) => !rosterLabels.some((lbl) => projectStore.tagHasPlayer(t, lbl)),
+    ).length;
+  });
+
+  $effect(() => {
     const b = activeBoard;
     if (b && b.id !== lastSyncedBoardId) {
       lastSyncedBoardId = b.id;
@@ -2369,14 +2424,20 @@
 
   function handlePlayerPress(playerLabel: string) {
     activeSelectedPlayer = playerLabel;
+    const rosterLabels = new Set(
+      FUTSAL_ROSTER.map((p) => projectStore.getPlayerDisplayLabel(p)),
+    );
 
     if (primaryActiveContinuous) {
-      const exists = primaryActiveContinuous.players.includes(playerLabel);
+      const basePlayers = primaryActiveContinuous.players.every((p) => !rosterLabels.has(p))
+        ? []
+        : primaryActiveContinuous.players;
+      const exists = basePlayers.includes(playerLabel);
       const nextPlayers = exists
-        ? primaryActiveContinuous.players.length > 1
-          ? primaryActiveContinuous.players.filter((p) => p !== playerLabel)
-          : primaryActiveContinuous.players
-        : [...primaryActiveContinuous.players, playerLabel];
+        ? basePlayers.length > 1
+          ? basePlayers.filter((p) => p !== playerLabel)
+          : basePlayers
+        : [...basePlayers, playerLabel];
 
       activeContinuousTags = {
         ...activeContinuousTags,
@@ -2395,7 +2456,9 @@
       const existing =
         targetExistingClip.playersInvolved &&
         targetExistingClip.playersInvolved.length > 0
-          ? targetExistingClip.playersInvolved
+          ? targetExistingClip.playersInvolved.map((p) =>
+              projectStore.normalizePlayerLabel(p),
+            )
           : targetExistingClip.playerLabel
             ? [
                 projectStore.normalizePlayerLabel(
@@ -2403,12 +2466,15 @@
                 ),
               ]
             : [];
-      const hasPlayer = existing.includes(playerLabel);
+      const baseExisting = existing.every((p) => !rosterLabels.has(p))
+        ? []
+        : existing;
+      const hasPlayer = baseExisting.includes(playerLabel);
       const nextPlayers = hasPlayer
-        ? existing.length > 1
-          ? existing.filter((p) => p !== playerLabel)
-          : existing
-        : [...existing, playerLabel];
+        ? baseExisting.length > 1
+          ? baseExisting.filter((p) => p !== playerLabel)
+          : baseExisting
+        : [...baseExisting, playerLabel];
 
       projectStore.updateTag({
         ...targetExistingClip,
@@ -2617,15 +2683,7 @@
         filterCategory === "ALL" || t.category === filterCategory;
       const matchPlayer =
         filterPlayer === "ALL" ||
-        projectStore.normalizePlayerLabel(t.playerLabel) ===
-          projectStore.normalizePlayerLabel(filterPlayer) ||
-        Boolean(
-          t.playersInvolved?.some(
-            (p) =>
-              projectStore.normalizePlayerLabel(p) ===
-              projectStore.normalizePlayerLabel(filterPlayer),
-          ),
-        );
+        projectStore.tagHasPlayer(t, filterPlayer);
 
       const isAwayClip =
         t.teamSide === "away" ||
@@ -4562,11 +4620,28 @@
       <!-- MODE 3: FUTSAL ROSTER & LINEUP COURT (MOMEN SPORTS STYLE) -->
       <div class="lineup-fullscreen">
         <div class="lineup-header">
-          <h3>Susunan Pemain & Roster Futsal (Starting 5 & Cadangan)</h3>
-          <p>
-            Klik pemain untuk menyaring klip kejadian yang melibatkan pemain
-            tersebut.
-          </p>
+          <div>
+            <h3>Susunan Pemain & Roster Futsal (Starting 5 & Cadangan)</h3>
+            <p>
+              Klik pemain untuk menyaring klip kejadian yang melibatkan pemain
+              tersebut.
+            </p>
+          </div>
+          {#if unmappedSkuadTagsCount > 0}
+            <div class="skuad-unmapped-hint">
+              <span>{unmappedSkuadTagsCount} klip masih memakai nama pemain bawaan sebelum roster klub diterapkan</span>
+              <button
+                type="button"
+                class="btn-filter-player"
+                onclick={() => {
+                  filterPlayer = "ALL";
+                  workspaceSubTab = "tagging";
+                }}
+              >
+                Lihat Semua Klip
+              </button>
+            </div>
+          {/if}
         </div>
 
         <div class="lineup-grid-layout">
@@ -4577,67 +4652,20 @@
               <div class="pitch-center-line"></div>
               <div class="pitch-penalty-area"></div>
 
-              <!-- Posisi Pemain Futsal FIFA -->
-              <!-- Kiper -->
-              <button
-                type="button"
-                class="player-marker kiper-pos"
-                onclick={() => {
-                  filterPlayer = "#1 Kiper";
-                  workspaceSubTab = "tagging";
-                }}
-              >
-                <span class="pos-badge">#1</span>
-                <span class="pos-name">Kiper</span>
-              </button>
-              <!-- Anchor -->
-              <button
-                type="button"
-                class="player-marker anchor-pos"
-                onclick={() => {
-                  filterPlayer = "#4 Anchor";
-                  workspaceSubTab = "tagging";
-                }}
-              >
-                <span class="pos-badge">#4</span>
-                <span class="pos-name">Anchor</span>
-              </button>
-              <!-- Flank Kiri -->
-              <button
-                type="button"
-                class="player-marker flank-l-pos"
-                onclick={() => {
-                  filterPlayer = "#7 Flank Kiri";
-                  workspaceSubTab = "tagging";
-                }}
-              >
-                <span class="pos-badge">#7</span>
-                <span class="pos-name">Flank Kiri</span>
-              </button>
-              <!-- Flank Kanan -->
-              <button
-                type="button"
-                class="player-marker flank-r-pos"
-                onclick={() => {
-                  filterPlayer = "#11 Flank Kanan";
-                  workspaceSubTab = "tagging";
-                }}
-              >
-                <span class="pos-badge">#11</span>
-                <span class="pos-name">Flank Kanan</span>
-              </button>
-              <!-- Pivot -->
-              <button
-                type="button"
-                class="player-marker pivot-pos"
-                onclick={() => {
-                  filterPlayer = "#9 Pivot";
-                  workspaceSubTab = "tagging";
-                }}
-              >
-                <span class="pos-badge">#9</span>
-                <span class="pos-name">Pivot</span>
-              </button>
+              <!-- Posisi Pemain Futsal FIFA (Sinkron Roster Aktif) -->
+              {#each pitchSlots as slot}
+                <button
+                  type="button"
+                  class="player-marker {slot.cls}"
+                  onclick={() => {
+                    filterPlayer = slot.label;
+                    workspaceSubTab = "tagging";
+                  }}
+                >
+                  <span class="pos-badge">{slot.num}</span>
+                  <span class="pos-name">{slot.name}</span>
+                </button>
+              {/each}
             </div>
           </div>
 
@@ -4658,10 +4686,8 @@
                 <tbody>
                   {#each FUTSAL_ROSTER as p}
                     {@const label = projectStore.getPlayerDisplayLabel(p)}
-                    {@const count = projectStore.tags.filter(
-                      (t) =>
-                        projectStore.normalizePlayerLabel(t.playerLabel) ===
-                        label,
+                    {@const count = projectStore.tags.filter((t) =>
+                      projectStore.tagHasPlayer(t, label),
                     ).length}
                     <tr>
                       <td
@@ -6689,6 +6715,14 @@
     gap: 16px;
   }
 
+  .lineup-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
   .lineup-header h3 {
     margin: 0 0 4px;
     font-size: 14px;
@@ -6700,6 +6734,18 @@
     margin: 0;
     font-size: 11px;
     color: #94a3b8;
+  }
+
+  .skuad-unmapped-hint {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(245, 158, 11, 0.12);
+    border: 1px solid rgba(245, 158, 11, 0.35);
+    color: #fcd34d;
+    font-size: 10.5px;
+    padding: 5px 10px;
+    border-radius: 7px;
   }
 
   .lineup-grid-layout {

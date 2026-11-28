@@ -65,51 +65,106 @@
   ] as const;
 
   let matrixView = $state<'tag_player' | 'tag_label' | 'label_label' | 'charts'>('tag_player');
-  let activePhaseTab = $state<'all' | 'attack' | 'defense' | 'setpiece' | 'special'>('all');
+  let activePhaseTab = $state<'all' | 'used' | 'attack' | 'defense' | 'setpiece' | 'special'>('all');
   let crossTag = $state<string>('__all__');
   let crossRowGroup = $state<string>('descriptor');
   let crossColGroup = $state<string>('outcome');
   let comparePlayerA = $state<string>('');
   let comparePlayerB = $state<string>('');
 
-  const resolvedCategories = $derived.by(() => {
-    const base =
-      activePhaseTab === 'all'
-        ? [...ALL_CATEGORIES]
-        : ALL_CATEGORIES.filter((c) => c.phase === activePhaseTab);
+  const standardCatSet = new Set<string>(ALL_CATEGORIES.map((c) => c.cat));
+  const boardCatButtons = $derived(
+    projectStore.activeBoard.buttons.filter((b) => b.kind === 'category'),
+  );
+  const isCustomBoard = $derived(
+    boardCatButtons.some((b) => !standardCatSet.has(b.name)) ||
+      tags.some((t) => Boolean(t.category) && !standardCatSet.has(t.category)),
+  );
 
-    if (activePhaseTab === 'all') {
-      const seen = new Set(base.map((c) => c.cat));
-      for (const btn of projectStore.activeBoard.buttons) {
-        if (btn.kind === 'category' && !seen.has(btn.name)) {
-          seen.add(btn.name);
-          base.push({
-            id: btn.id,
-            label: btn.name,
-            shortLabel: btn.name,
-            icon: btn.continuous ? '●' : '🏷️',
-            cat: btn.name as TagCategory,
-            phase: 'special',
-            color: btn.color,
-          });
-        }
+  $effect(() => {
+    if (
+      isCustomBoard &&
+      (activePhaseTab === 'attack' ||
+        activePhaseTab === 'defense' ||
+        activePhaseTab === 'setpiece' ||
+        activePhaseTab === 'special')
+    ) {
+      activePhaseTab = 'all';
+    }
+  });
+
+  const allDynamicCategories = $derived.by<MatrixCategory[]>(() => {
+    const counts = new Map<string, number>();
+    const tagColors = new Map<string, string>();
+    for (const t of tags) {
+      if (!t.category) continue;
+      counts.set(t.category, (counts.get(t.category) || 0) + 1);
+      if (t.color && !tagColors.has(t.category)) tagColors.set(t.category, t.color);
+    }
+
+    const stdByCat = new Map(ALL_CATEGORIES.map((c) => [c.cat as string, c]));
+    const btnByName = new Map(boardCatButtons.map((b) => [b.name, b]));
+    const out: MatrixCategory[] = [];
+    const seen = new Set<string>();
+
+    const makeItem = (name: string): MatrixCategory => {
+      const std = stdByCat.get(name);
+      const btn = btnByName.get(name);
+      if (std && !btn) return std;
+      return {
+        id: btn?.id || std?.id || `cat-${name}`,
+        label: name,
+        shortLabel: name,
+        icon: btn ? (btn.continuous ? '●' : '🏷️') : std?.icon || '🏷️',
+        cat: name as TagCategory,
+        phase: std?.phase || 'special',
+        color: btn?.color || tagColors.get(name) || std?.color || '#38bdf8',
+      };
+    };
+
+    // 1. Put tagged categories first (most used first) so real clips always show leftmost
+    const taggedNames = Array.from(counts.keys()).sort(
+      (a, b) => (counts.get(b) || 0) - (counts.get(a) || 0) || a.localeCompare(b),
+    );
+    for (const name of taggedNames) {
+      seen.add(name);
+      out.push(makeItem(name));
+    }
+
+    // 2. Append remaining category buttons from the active coding board
+    for (const btn of boardCatButtons) {
+      if (!seen.has(btn.name)) {
+        seen.add(btn.name);
+        out.push(makeItem(btn.name));
       }
-      for (const t of tags) {
-        if (t.category && !seen.has(t.category)) {
-          seen.add(t.category);
-          base.push({
-            id: `cat-${t.category}`,
-            label: t.category,
-            shortLabel: t.category,
-            icon: '🏷️',
-            cat: t.category,
-            phase: 'special',
-            color: t.color || '#38bdf8',
-          });
+    }
+
+    // 3. Keep 13 standard presets only for default/standard boards
+    if (!isCustomBoard) {
+      for (const std of ALL_CATEGORIES) {
+        if (!seen.has(std.cat)) {
+          seen.add(std.cat);
+          out.push(std);
         }
       }
     }
-    return base;
+
+    return out;
+  });
+
+  const usedCategoriesCount = $derived(
+    allDynamicCategories.filter((c) => tags.some((t) => t.category === c.cat)).length,
+  );
+
+  const resolvedCategories = $derived.by(() => {
+    if (activePhaseTab === 'used') {
+      const used = allDynamicCategories.filter((c) => tags.some((t) => t.category === c.cat));
+      return used.length > 0 ? used : allDynamicCategories;
+    }
+    if (activePhaseTab === 'all') {
+      return allDynamicCategories;
+    }
+    return ALL_CATEGORIES.filter((c) => c.phase === activePhaseTab);
   });
 
   // Dynamically resolve roster: unified projectStore.roster + any custom/substitute players in tags
@@ -141,8 +196,7 @@
   }
 
   function matchesPlayer(tag: VideoTagEvent, player: string): boolean {
-    if (normalizePlayerLabel(tag.playerLabel || '') === player) return true;
-    return Boolean(tag.playersInvolved?.some((p) => normalizePlayerLabel(p) === player));
+    return projectStore.tagHasPlayer(tag, player);
   }
 
   function matchesCategory(tag: VideoTagEvent, catObj: MatrixCategory): boolean {
@@ -583,7 +637,7 @@
           <span class="match-pill">{projectStore.videoTitle || 'Pertandingan Aktif'}</span>
         </div>
         <p class="subtitle">
-          Distribusi frekuensi aksi setiap pemain vs kategori taktik futsal standar Once Sport & Momen Sports
+          Distribusi frekuensi aksi pemain × tag dari papan aktif ({projectStore.activeBoard.name})
         </p>
       </div>
 
@@ -645,15 +699,39 @@
           </button>
         </div>
         {#if matrixView === 'tag_player'}
-          {#each PHASES as ph}
+          {#if isCustomBoard}
             <button
               class="tab-pill"
-              class:active={activePhaseTab === ph.id}
-              onclick={() => (activePhaseTab = ph.id)}
+              class:active={activePhaseTab === 'all'}
+              onclick={() => (activePhaseTab = 'all')}
             >
-              <span>{ph.label}</span>
+              <span>Papan Aktif ({allDynamicCategories.length})</span>
             </button>
-          {/each}
+            <button
+              class="tab-pill"
+              class:active={activePhaseTab === 'used'}
+              onclick={() => (activePhaseTab = 'used')}
+            >
+              <span>Ada Klip ({usedCategoriesCount})</span>
+            </button>
+          {:else}
+            {#each PHASES as ph}
+              <button
+                class="tab-pill"
+                class:active={activePhaseTab === ph.id}
+                onclick={() => (activePhaseTab = ph.id)}
+              >
+                <span>{ph.id === 'all' ? `Semua Aksi (${allDynamicCategories.length})` : ph.label}</span>
+              </button>
+            {/each}
+            <button
+              class="tab-pill"
+              class:active={activePhaseTab === 'used'}
+              onclick={() => (activePhaseTab = 'used')}
+            >
+              <span>Ada Klip ({usedCategoriesCount})</span>
+            </button>
+          {/if}
         {:else if matrixView === 'label_label'}
           <div class="cross-controls">
             <label class="cross-field">
@@ -731,7 +809,7 @@
                     title="Klik untuk putar semua klip {cat.label}"
                   >
                     <div class="th-content">
-                      <span class="th-icon">{cat.icon}</span>
+                      <span class="th-icon" style={cat.icon === '●' ? `color: ${cat.color};` : ''}>{cat.icon}</span>
                       <span class="th-label">{cat.shortLabel}</span>
                     </div>
                   </th>

@@ -11,6 +11,7 @@
   } from '$lib/types';
   import {
     ArrowLeft,
+    ChevronDown,
     Copy,
     Download,
     Eye,
@@ -83,6 +84,7 @@
 
   let toolMode = $state<'select' | 'link'>('select');
   let showLinks = $state(true);
+  let showBoardMenu = $state(false);
   let selectedButtonId = $state<string | null>(null);
   let linkStartBtnId = $state<string | null>(null);
   let linkPointerSvg = $state<{ x: number; y: number } | null>(null);
@@ -532,71 +534,132 @@
         title={board.locked ? 'Papan terkunci — buka kunci untuk mengubah' : 'Ubah nama papan aktif'}
       />
 
-      <button type="button" class="vcb-btn" onclick={onCreateBoard} title="Buat Papan Tagging Kosong Baru">
-        <FolderPlus size={12} />
-        <span>+ Papan</span>
-      </button>
-
-      {#if onDuplicateBoard}
-        <button type="button" class="vcb-btn" onclick={onDuplicateBoard} title="Duplikat papan aktif menjadi salinan baru">
-          <Copy size={12} />
-          <span>Duplikat</span>
-        </button>
-      {/if}
-
-      {#if onSetDefaultBoard}
+      <div class="vcb-dropdown-wrap">
         <button
           type="button"
           class="vcb-btn"
-          class:vcb-btn-default={defaultBoardId === board.id}
-          onclick={() => onSetDefaultBoard(board.id)}
-          title={defaultBoardId === board.id
-            ? 'Papan ini adalah Coding Board default'
-            : 'Tetapkan papan ini sebagai Coding Board default'}
+          class:active={showBoardMenu}
+          onclick={() => (showBoardMenu = !showBoardMenu)}
+          title="Kelola Papan (Buat, Duplikat, Default, Kunci, Impor/Ekspor, Hapus)"
         >
-          <Star size={12} />
-          <span>{defaultBoardId === board.id ? 'Default' : 'Jadikan Default'}</span>
+          <span>Papan</span>
+          <ChevronDown size={11} />
         </button>
-      {/if}
 
-      {#if onToggleBoardLock}
-        <button
-          type="button"
-          class="vcb-btn"
-          class:vcb-btn-locked={Boolean(board.locked)}
-          onclick={onToggleBoardLock}
-          title={board.locked ? 'Papan terkunci (klik untuk membuka)' : 'Kunci papan agar tombol tidak tergeser'}
-        >
-          {#if board.locked}
-            <Lock size={12} />
-            <span>Terkunci</span>
-          {:else}
-            <Unlock size={12} />
-            <span>Kunci</span>
-          {/if}
-        </button>
-      {/if}
+        {#if showBoardMenu}
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div class="vcb-dd-backdrop" onclick={() => (showBoardMenu = false)}></div>
+          <div class="vcb-dropdown-menu" role="menu">
+            <button
+              type="button"
+              class="vcb-dd-item"
+              onclick={() => {
+                showBoardMenu = false;
+                onCreateBoard();
+              }}
+            >
+              <FolderPlus size={12} />
+              <span>+ Papan Baru</span>
+            </button>
 
-      {#if onDeleteBoard}
-        <button
-          type="button"
-          class="vcb-btn vcb-btn-danger"
-          disabled={boards.length <= 1 || Boolean(board.locked)}
-          onclick={() => {
-            if (confirm(`Hapus papan "${board.name}"?`)) {
-              onDeleteBoard(board.id);
-            }
-          }}
-          title={boards.length <= 1 ? 'Minimal 1 papan harus tersisa' : board.locked ? 'Buka kunci sebelum menghapus' : 'Hapus papan aktif'}
-        >
-          <Trash2 size={12} />
-        </button>
-      {/if}
+            {#if onDuplicateBoard}
+              <button
+                type="button"
+                class="vcb-dd-item"
+                onclick={() => {
+                  showBoardMenu = false;
+                  onDuplicateBoard();
+                }}
+              >
+                <Copy size={12} />
+                <span>Duplikat Papan</span>
+              </button>
+            {/if}
 
-      <button type="button" class="vcb-btn" onclick={handleImportClick} title="Impor Papan .momen.json">
-        <Upload size={12} />
-        <span>Impor</span>
-      </button>
+            {#if onSetDefaultBoard}
+              <button
+                type="button"
+                class="vcb-dd-item"
+                class:is-accent={defaultBoardId === board.id}
+                onclick={() => {
+                  showBoardMenu = false;
+                  onSetDefaultBoard(board.id);
+                }}
+              >
+                <Star size={12} />
+                <span>{defaultBoardId === board.id ? 'Default Aktif ✓' : 'Jadikan Default'}</span>
+              </button>
+            {/if}
+
+            {#if onToggleBoardLock}
+              <button
+                type="button"
+                class="vcb-dd-item"
+                class:is-accent={Boolean(board.locked)}
+                onclick={() => {
+                  showBoardMenu = false;
+                  onToggleBoardLock();
+                }}
+              >
+                {#if board.locked}
+                  <Lock size={12} />
+                  <span>Buka Kunci Papan</span>
+                {:else}
+                  <Unlock size={12} />
+                  <span>Kunci Papan</span>
+                {/if}
+              </button>
+            {/if}
+
+            <div class="vcb-dd-sep"></div>
+
+            <button
+              type="button"
+              class="vcb-dd-item"
+              onclick={() => {
+                showBoardMenu = false;
+                handleImportClick();
+              }}
+            >
+              <Upload size={12} />
+              <span>Impor (.momen.json)</span>
+            </button>
+
+            <button
+              type="button"
+              class="vcb-dd-item"
+              onclick={() => {
+                showBoardMenu = false;
+                onExportBoardJson();
+              }}
+            >
+              <Download size={12} />
+              <span>Ekspor (.momen.json)</span>
+            </button>
+
+            {#if onDeleteBoard}
+              <div class="vcb-dd-sep"></div>
+              <button
+                type="button"
+                class="vcb-dd-item danger"
+                disabled={boards.length <= 1 || Boolean(board.locked)}
+                onclick={() => {
+                  showBoardMenu = false;
+                  if (confirm(`Hapus papan "${board.name}"?`)) {
+                    onDeleteBoard(board.id);
+                  }
+                }}
+                title={boards.length <= 1 ? 'Minimal 1 papan harus tersisa' : board.locked ? 'Buka kunci sebelum menghapus' : 'Hapus papan aktif'}
+              >
+                <Trash2 size={12} />
+                <span>Hapus Papan</span>
+              </button>
+            {/if}
+          </div>
+        {/if}
+      </div>
+
       <input
         bind:this={fileInputEl}
         type="file"
@@ -604,11 +667,6 @@
         onchange={handleFileChange}
         style="display: none;"
       />
-
-      <button type="button" class="vcb-btn" onclick={onExportBoardJson} title="Ekspor Papan .momen.json">
-        <Download size={12} />
-        <span>Ekspor</span>
-      </button>
     </div>
 
     <div class="vcb-tl-center">
@@ -625,7 +683,7 @@
           title="Geser & Ubah Ukuran Tombol (V)"
         >
           <MousePointer size={12} />
-          <span>Geser & Ukuran (V)</span>
+          <span>Geser (V)</span>
         </button>
         <button
           type="button"
@@ -635,17 +693,17 @@
           title="Hubungkan Garis Antar Tag (Saling Mematikan) atau Label → Tag (L)"
         >
           <Link2 size={12} />
-          <span>Hubungkan Garis (L)</span>
+          <span>Garis (L)</span>
         </button>
       </div>
 
       <button type="button" class="vcb-btn add-tag" onclick={() => handleAddNewButton('category')}>
         <Plus size={12} />
-        <span>Tag Baru</span>
+        <span>+ Tag</span>
       </button>
       <button type="button" class="vcb-btn add-lbl" onclick={() => handleAddNewButton('descriptor')}>
         <Plus size={12} />
-        <span>Label Baru</span>
+        <span>+ Label</span>
       </button>
     </div>
 
@@ -1232,15 +1290,17 @@
   }
 
   .vcb-toolbar {
-    height: 40px;
     min-height: 40px;
-    padding: 0 10px;
+    height: auto;
+    padding: 5px 10px;
     background: #091322;
     border-bottom: 1px solid #1a355d;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 8px;
+    flex-wrap: wrap;
+    row-gap: 6px;
+    column-gap: 8px;
     flex-shrink: 0;
   }
 
@@ -1249,8 +1309,80 @@
   .vcb-tl-right {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 5px;
     min-width: 0;
+  }
+
+  .vcb-dropdown-wrap {
+    position: relative;
+  }
+
+  .vcb-dd-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 55;
+  }
+
+  .vcb-dropdown-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    min-width: 190px;
+    background: #091322;
+    border: 1px solid #1e3b68;
+    border-radius: 8px;
+    padding: 4px;
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.7);
+    z-index: 60;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .vcb-dd-item {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    border: none;
+    color: #e2e8f0;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 6px 8px;
+    border-radius: 5px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .vcb-dd-item:hover:not(:disabled) {
+    background: #102548;
+    color: #ffffff;
+  }
+
+  .vcb-dd-item:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .vcb-dd-item.is-accent {
+    color: #fbbf24;
+  }
+
+  .vcb-dd-item.danger {
+    color: #f87171;
+  }
+
+  .vcb-dd-item.danger:hover:not(:disabled) {
+    background: rgba(239, 68, 68, 0.16);
+  }
+
+  .vcb-dd-sep {
+    height: 1px;
+    background: #1a355d;
+    margin: 3px 4px;
   }
 
   .vcb-select,
@@ -1266,11 +1398,11 @@
   }
 
   .vcb-select {
-    max-width: 170px;
+    max-width: 165px;
   }
 
   .vcb-board-name-input {
-    width: 145px;
+    width: 130px;
   }
 
   .vcb-board-name-input:focus {
@@ -1889,25 +2021,8 @@
     line-height: 1.45;
   }
 
-  .vcb-btn-locked {
-    border-color: #f59e0b !important;
-    color: #fbbf24 !important;
-    background: rgba(245, 158, 11, 0.14) !important;
-  }
-
-  .vcb-btn-default {
-    border-color: #f59e0b !important;
-    color: #fcd34d !important;
-    background: rgba(245, 158, 11, 0.16) !important;
-  }
-
   .vcb-btn-danger:hover:not(:disabled) {
     border-color: #ef4444 !important;
     color: #fca5a5 !important;
-  }
-
-  .vcb-btn:disabled {
-    opacity: 0.35;
-    cursor: not-allowed;
   }
 </style>

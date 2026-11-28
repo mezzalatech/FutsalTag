@@ -921,6 +921,28 @@ class ProjectStore {
     return raw;
   }
 
+  tagHasPlayer(tag: VideoTagEvent, targetLabel: string): boolean {
+    const normTarget = this.normalizePlayerLabel(targetLabel);
+    const stripHash = (s: string) => s.replace(/^#/, '').trim().toLowerCase();
+    const targetNoHash = stripHash(normTarget);
+    const numNameMatch = normTarget.match(/^#?\d+\s+(.+)$/);
+    const targetNameOnly = numNameMatch ? numNameMatch[1].trim().toLowerCase() : null;
+
+    const candidates = [
+      ...(tag.playersInvolved ?? []),
+      ...(tag.playerLabel ? [tag.playerLabel] : []),
+    ];
+    for (const raw of candidates) {
+      const norm = this.normalizePlayerLabel(raw);
+      if (norm === normTarget) return true;
+      if (stripHash(norm) === targetNoHash) return true;
+      if (targetNameOnly && !/^#?\d+\b/.test(norm) && norm.toLowerCase() === targetNameOnly) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   addRosterPlayer(rawInput: string): string {
     const trimmed = rawInput.trim();
     if (!trimmed) return '';

@@ -115,7 +115,7 @@
     captureError = null;
     stopCameraStream();
     if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
-      captureError = "Perangkat browser/WebView ini tidak mendukung preview getUserMedia. Gunakan mode FFmpeg DirectShow.";
+      captureError = "Perangkat browser/WebView ini tidak mendukung preview getUserMedia. Gunakan mode FFmpeg Capture.";
       return false;
     }
     const { width, height, fps } = presetDims();
@@ -213,11 +213,11 @@
 
     if (captureEngine === "dshow") {
       if (!isTauriDesktop()) {
-        captureError = "Mode FFmpeg DirectShow hanya berjalan di aplikasi Desktop.";
+        captureError = "Mode FFmpeg Capture hanya berjalan di aplikasi Desktop.";
         return;
       }
       if (!selectedDshowVideo) {
-        captureError = "Pilih perangkat kamera / HDMI Capture Card DirectShow terlebih dahulu.";
+        captureError = "Pilih perangkat kamera / HDMI Capture Card terlebih dahulu.";
         return;
       }
       const targetOut = await ensureOutputTargetPath();
@@ -236,7 +236,7 @@
         currentTime = 0;
         projectStore.currentTime = 0;
         isRecording = true;
-        statusText = `Merekam DirectShow (${selectedDshowVideo})...`;
+        statusText = `Merekam FFmpeg (${selectedDshowVideo})...`;
       } catch (err: any) {
         captureError = String(err?.message || err);
       }
@@ -306,7 +306,7 @@
       if (captureEngine === "dshow") {
         const target = projectStore.liveCaptureTargetPath;
         if (!target) throw new Error("Path output MP4 tidak ditemukan.");
-        statusText = "Menutup & mengemas file MP4 DirectShow...";
+        statusText = "Menutup & mengemas file MP4 FFmpeg Capture...";
         const finalPath = await invoke<string>("stop_dshow_capture_ffmpeg", {
           outputPath: target,
         });
@@ -443,7 +443,7 @@
       {#if isTauriDesktop()}
         <select class="lc-select" bind:value={captureEngine} disabled={isRecording || isFinalizing}>
           <option value="browser">Mode Preview + Instant Replay (Webcam / GoPro / UVC)</option>
-          <option value="dshow">Mode FFmpeg DirectShow (Capture Card Pro)</option>
+          <option value="dshow">Mode FFmpeg Capture (Capture Card / AVFoundation)</option>
         </select>
       {/if}
 
@@ -469,7 +469,7 @@
       {:else}
         <select class="lc-select" bind:value={selectedDshowVideo} disabled={isRecording}>
           {#if dshowVideoDevices.length === 0}
-            <option value="">Tidak ada device DirectShow</option>
+            <option value="">Tidak ada device capture terdeteksi</option>
           {:else}
             {#each dshowVideoDevices as dev}
               <option value={dev}>{dev}</option>
@@ -518,7 +518,7 @@
     {:else}
       <div class="lc-placeholder">
         <Camera size={32} class="text-sky-400" />
-        <h4>{captureEngine === "dshow" ? "Capture Card DirectShow Siap" : "Preview Kamera Belum Dibuka"}</h4>
+        <h4>{captureEngine === "dshow" ? "Capture Card FFmpeg Siap" : "Preview Kamera Belum Dibuka"}</h4>
         <p>
           Sambungkan kamera, GoPro (mode webcam), atau HDMI Capture Card, lalu tekan <strong>Buka Preview</strong> atau langsung <strong>Mulai Rekam</strong>.
         </p>

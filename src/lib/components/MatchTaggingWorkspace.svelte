@@ -2125,6 +2125,19 @@
     return () => cancelAnimationFrame(rafId);
   });
 
+  async function handleDownloadYoutubeMp4() {
+    if (!isTauriDesktop() || projectStore.isDownloadingOnlineVideo) return;
+    ytError = null;
+    try {
+      const ok = await projectStore.downloadCurrentOnlineVideoToMp4();
+      if (ok) {
+        notifyUser("Video YouTube berhasil diunduh ke MP4 lokal! Telestrasi & Ekspor siap dipakai.");
+      }
+    } catch (err: any) {
+      ytError = `Gagal mengunduh MP4 YouTube: ${err?.message || err}`;
+    }
+  }
+
   // YouTube IFrame API controller & time sync when onlineSourceType === 'youtube'
   $effect(() => {
     const id = ytVideoId;
@@ -2136,10 +2149,23 @@
     }
     let cancelled = false;
     let pollId: ReturnType<typeof setInterval> | null = null;
+    let bridgeOrigin: string | null = null;
+    let latestYtTime = 0;
+    let onBridgeMessage: ((ev: MessageEvent) => void) | null = null;
     ytReady = false;
     ytError = null;
 
-    const mountPlayer = () => {
+    const handleYtError = (code: number) => {
+      ytError =
+        code === 101 || code === 150
+          ? "Pemilik video YouTube membatasi embed di aplikasi eksternal. Klik 'Unduh MP4 Lokal' atau 'Tautkan MP4'."
+          : code === 153
+            ? "YouTube menolak konfigurasi embed (Error 153). Klik 'Unduh MP4 Lokal' agar video tetap bisa dianalisis."
+            : `YouTube gagal memutar video (kode ${code}). Periksa koneksi internet atau unduh MP4 lokal.`;
+      isPlaying = false;
+    };
+
+    const mountDirectYtFallback = () => {
       if (cancelled || !host) return;
       const YT = (window as any).YT;
       if (!YT?.Player) return;
@@ -2177,7 +2203,9 @@
           onStateChange: (ev: any) => {
             if (cancelled) return;
             const st = ev.data;
-            isPlaying = st === 1;
+            if (reverseRate === 0 && !isSoftwareFastForward) {
+              isPlaying = st === 1;
+            }
             const d = Number(ev.target?.getDuration?.() || 0);
             if (d > 0 && d !== duration) {
               duration = d;
@@ -2186,24 +2214,128 @@
           },
           onError: (ev: any) => {
             if (cancelled) return;
-            const code = Number(ev.data);
-            ytError =
-              code === 101 || code === 150
-                ? "Pemilik video YouTube membatasi pemutaran di aplikasi eksternal. Gunakan 'Unduh MP4 Lokal' di Hub atau Tautkan MP4."
-                : `YouTube gagal memutar video (kode ${code}). Periksa koneksi internet atau tautan video.`;
-            isPlaying = false;
+            handleYtError(Number(ev.data));
           },
         },
       });
+
+      pollId = setInterval(() => {
+        if (
+          cancelled ||
+          !ytPlayer ||
+          !ytReady ||
+          reverseRate > 0 ||
+          isSoftwareFastForward
+        ) {
+          return;
+        }
+        const t = Number(ytPlayer.getCurrentTime?.() || 0);
+        if (Number.isFinite(t)) {
+          currentTime = t;
+          projectStore.currentTime = t;
+          syncSecondaryAngle(false);
+          checkSequentialQueueAdvance(t);
+        }
+      }, 100);
     };
 
-    if ((window as any).YT?.Player) {
-      mountPlayer();
+    if (isTauriDesktop()) {
+      invoke<string>("get_youtube_bridge_url")
+        .then((origin) => {
+          if (cancelled || !host) return;
+          bridgeOrigin = origin;
+          host.innerHTML = "";
+          const iframe = document.createElement("iframe");
+          iframe.src = `${origin}/yt-embed?v=${encodeURIComponent(id)}`;
+          iframe.allow =
+            "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share";
+          iframe.setAttribute("referrerpolicy", "strict-origin-when-cross-origin");
+          iframe.allowFullscreen = true;
+          host.appendChild(iframe);
+
+          const postCmd = (cmd: string, extra?: Record<string, unknown>) => {
+            if (!bridgeOrigin || !iframe.contentWindow) return;
+            iframe.contentWindow.postMessage(
+              { source: "futsaltag-yt-cmd", cmd, ...extra },
+              bridgeOrigin,
+            );
+          };
+
+          ytPlayer = {
+            playVideo: () => postCmd("play"),
+            pauseVideo: () => postCmd("pause"),
+            seekTo: (t: number) => {
+              latestYtTime = Number(t) || 0;
+              postCmd("seek", { time: latestYtTime });
+            },
+            setPlaybackRate: (rate: number) => postCmd("rate", { rate }),
+            setVolume: (volume: number) => postCmd("volume", { volume }),
+            mute: () => postCmd("mute"),
+            unMute: () => postCmd("unmute"),
+            getCurrentTime: () => latestYtTime,
+            destroy: () => {
+              iframe.src = "about:blank";
+            },
+          };
+
+          onBridgeMessage = (ev: MessageEvent) => {
+            if (cancelled || ev.origin !== bridgeOrigin) return;
+            const d = ev.data;
+            if (!d || d.source !== "futsaltag-yt") return;
+            if (d.type === "ready") {
+              ytReady = true;
+              const dur = Number(d.duration || 0);
+              if (dur > 0) {
+                duration = dur;
+                projectStore.duration = dur;
+              }
+              const saved = projectStore.currentTime;
+              if (!hasRestoredInitialTime && Number.isFinite(saved) && saved > 0) {
+                postCmd("seek", { time: saved });
+                latestYtTime = saved;
+                currentTime = saved;
+                syncSecondaryAngle(true);
+              }
+              hasRestoredInitialTime = true;
+              postCmd("volume", { volume: Math.round(projectStore.videoVolume * 100) });
+              if (projectStore.videoMuted) postCmd("mute");
+              else postCmd("unmute");
+            } else if (d.type === "state") {
+              if (reverseRate === 0 && !isSoftwareFastForward) {
+                isPlaying = d.state === 1;
+              }
+              const dur = Number(d.duration || 0);
+              if (dur > 0 && dur !== duration) {
+                duration = dur;
+                projectStore.duration = dur;
+              }
+            } else if (d.type === "time") {
+              if (reverseRate > 0 || isSoftwareFastForward) return;
+              const t = Number(d.currentTime || 0);
+              if (Number.isFinite(t)) {
+                latestYtTime = t;
+                currentTime = t;
+                projectStore.currentTime = t;
+                syncSecondaryAngle(false);
+                checkSequentialQueueAdvance(t);
+              }
+            } else if (d.type === "error") {
+              handleYtError(Number(d.code));
+            }
+          };
+
+          window.addEventListener("message", onBridgeMessage);
+        })
+        .catch(() => {
+          if (!cancelled) mountDirectYtFallback();
+        });
+    } else if ((window as any).YT?.Player) {
+      mountDirectYtFallback();
     } else {
       const prevReady = (window as any).onYouTubeIframeAPIReady;
       (window as any).onYouTubeIframeAPIReady = () => {
         prevReady?.();
-        mountPlayer();
+        mountDirectYtFallback();
       };
       if (!document.querySelector('script[data-yt-iframe-api="1"]')) {
         const s = document.createElement("script");
@@ -2213,30 +2345,12 @@
       }
     }
 
-    pollId = setInterval(() => {
-      if (cancelled || !ytPlayer || !ytReady) return;
-      const t = Number(ytPlayer.getCurrentTime?.() || 0);
-      if (Number.isFinite(t)) {
-        currentTime = t;
-        projectStore.currentTime = t;
-        syncSecondaryAngle(false);
-        if (activeClipQueue.length > 0 && activeQueueIndex < activeClipQueue.length) {
-          const cur = activeClipQueue[activeQueueIndex];
-          if (t >= cur.endTime) {
-            if (activeQueueIndex + 1 < activeClipQueue.length) {
-              activeQueueIndex += 1;
-              playQueueCurrentClip();
-            } else {
-              stopSequentialQueue();
-            }
-          }
-        }
-      }
-    }, 100);
-
     return () => {
       cancelled = true;
       if (pollId) clearInterval(pollId);
+      if (onBridgeMessage) {
+        window.removeEventListener("message", onBridgeMessage);
+      }
       try {
         ytPlayer?.destroy?.();
       } catch {
@@ -3712,17 +3826,48 @@
                     <div class="yt-error-overlay">
                       <p>{ytError}</p>
                       {#if isTauriDesktop()}
-                        <button type="button" class="btn-sw-sec relink" onclick={() => projectStore.relinkVideoFile()}>
-                          <Link2 size={12} />
-                          <span>Tautkan File MP4 Lokal</span>
-                        </button>
+                        <div class="yt-error-actions">
+                          <button
+                            type="button"
+                            class="btn-sw-sec dl-mp4"
+                            disabled={projectStore.isDownloadingOnlineVideo}
+                            onclick={handleDownloadYoutubeMp4}
+                          >
+                            <Download size={12} />
+                            <span>{projectStore.onlineDownloadStatus || "Unduh MP4 Lokal"}</span>
+                          </button>
+                          <button
+                            type="button"
+                            class="btn-sw-sec relink"
+                            disabled={projectStore.isDownloadingOnlineVideo}
+                            onclick={() => projectStore.relinkVideoFile()}
+                          >
+                            <Link2 size={12} />
+                            <span>Tautkan File MP4 Lokal</span>
+                          </button>
+                        </div>
                       {/if}
                     </div>
                   {/if}
                   <div class="yt-stream-pill">
                     <span>YOUTUBE STREAM · {ytReady ? "SIAP TAG" : "MEMUAT..."}</span>
                     {#if isTauriDesktop()}
-                      <button type="button" class="yt-pill-btn" onclick={() => projectStore.relinkVideoFile()} title="Pasangkan video MP4 lokal nanti untuk Telestrasi & Ekspor">
+                      <button
+                        type="button"
+                        class="yt-pill-btn dl"
+                        disabled={projectStore.isDownloadingOnlineVideo}
+                        onclick={handleDownloadYoutubeMp4}
+                        title="Unduh video YouTube ini ke MP4 lokal agar Telestrasi, AI Tracking & Ekspor MP4 aktif penuh"
+                      >
+                        {projectStore.isDownloadingOnlineVideo ? "Mengunduh..." : "Unduh MP4"}
+                      </button>
+                      <button
+                        type="button"
+                        class="yt-pill-btn"
+                        disabled={projectStore.isDownloadingOnlineVideo}
+                        onclick={() => projectStore.relinkVideoFile()}
+                        title="Pasangkan video MP4 lokal yang sudah ada untuk Telestrasi & Ekspor"
+                      >
                         Tautkan MP4
                       </button>
                     {/if}
@@ -8206,6 +8351,12 @@
     cursor: pointer;
   }
 
+  .yt-pill-btn.dl {
+    background: rgba(2, 132, 199, 0.25);
+    border-color: #38bdf8;
+    color: #e0f2fe;
+  }
+
   .yt-error-overlay {
     position: absolute;
     inset: 0;
@@ -8220,6 +8371,20 @@
     color: #fca5a5;
     font-size: 12px;
     z-index: 6;
+  }
+
+  .yt-error-actions {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .btn-sw-sec.dl-mp4 {
+    border-color: #38bdf8;
+    color: #ffffff;
+    background: #0284c7;
   }
 
   /* TAMPILAN / VIEW MENU (MOMEN SPORTS STYLE) */

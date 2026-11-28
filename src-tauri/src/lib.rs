@@ -7,6 +7,7 @@ mod remote_server;
 mod whistle_detector;
 mod whisper_asr;
 mod xlsx_export;
+mod yt_bridge;
 
 use base64::prelude::*;
 use serde::Serialize;
@@ -365,6 +366,7 @@ pub fn run() {
             remote_server::update_remote_server_state,
             remote_server::kick_remote_phone,
             open_projector_window,
+            yt_bridge::get_youtube_bridge_url,
             cloud_sync::upload_file_cloud,
             cloud_sync::upload_text_cloud,
             ffmpeg::burn_telestration_clip_ffmpeg,

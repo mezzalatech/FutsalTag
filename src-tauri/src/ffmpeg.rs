@@ -1898,6 +1898,33 @@ fn validate_online_url(url: &str) -> Result<String, String> {
     Ok(u.to_string())
 }
 
+fn enriched_tool_path() -> String {
+    let cur = std::env::var("PATH").unwrap_or_default();
+    if !cfg!(target_os = "macos") {
+        return cur;
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    let mut parts: Vec<String> = cur
+        .split(':')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect();
+    let mut extras = vec![
+        "/opt/homebrew/bin".to_string(),
+        "/usr/local/bin".to_string(),
+    ];
+    if !home.is_empty() {
+        extras.push(format!("{}/.bun/bin", home));
+        extras.push(format!("{}/.deno/bin", home));
+    }
+    for ex in extras {
+        if !parts.iter().any(|p| p == &ex) {
+            parts.push(ex);
+        }
+    }
+    parts.join(":")
+}
+
 fn resolve_yt_dlp(app: Option<&tauri::AppHandle>, custom_path: Option<&str>) -> Option<String> {
     use tauri::Manager;
     let bin_name = if cfg!(target_os = "windows") {
@@ -1936,7 +1963,20 @@ fn resolve_yt_dlp(app: Option<&tauri::AppHandle>, custom_path: Option<&str>) -> 
         }
     }
 
-    if silent_command(bin_name).arg("--version").output().map(|o| o.status.success()).unwrap_or(false) {
+    #[cfg(unix)]
+    for candidate in ["/opt/homebrew/bin/yt-dlp", "/usr/local/bin/yt-dlp"] {
+        if Path::new(candidate).is_file() {
+            return Some(candidate.to_string());
+        }
+    }
+
+    if silent_command(bin_name)
+        .env("PATH", enriched_tool_path())
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
         return Some(bin_name.to_string());
     }
     None
@@ -2120,6 +2160,7 @@ pub async fn download_online_video_ffmpeg(
         args.push(clean_url);
 
         let out = silent_command(&yt)
+            .env("PATH", enriched_tool_path())
             .args(&args)
             .output()
             .map_err(|e| format!("Gagal menjalankan yt-dlp ({}): {}", yt, e))?;
@@ -2201,6 +2242,50 @@ pub fn parse_dshow_devices_output(output: &str) -> CaptureDeviceList {
     }
 }
 
+pub fn parse_avfoundation_devices_output(output: &str) -> CaptureDeviceList {
+    let mut video_devices = Vec::new();
+    let mut audio_devices = Vec::new();
+    let mut section: Option<&str> = None;
+
+    for raw_line in output.lines() {
+        let line = raw_line.trim();
+        if line.contains("AVFoundation video devices:") {
+            section = Some("video");
+            continue;
+        }
+        if line.contains("AVFoundation audio devices:") {
+            section = Some("audio");
+            continue;
+        }
+        let Some(open_idx) = line.rfind('[') else {
+            continue;
+        };
+        let rest = &line[open_idx + 1..];
+        let Some(close_idx) = rest.find(']') else {
+            continue;
+        };
+        let idx_str = rest[..close_idx].trim();
+        if idx_str.is_empty() || !idx_str.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        let dev_name = rest[close_idx + 1..].trim();
+        if dev_name.is_empty() {
+            continue;
+        }
+        let entry = format!("{}: {}", idx_str, dev_name);
+        if section == Some("video") && !video_devices.contains(&entry) {
+            video_devices.push(entry);
+        } else if section == Some("audio") && !audio_devices.contains(&entry) {
+            audio_devices.push(entry);
+        }
+    }
+
+    CaptureDeviceList {
+        video_devices,
+        audio_devices,
+    }
+}
+
 #[tauri::command]
 pub fn list_capture_devices_ffmpeg() -> CaptureDeviceList {
     let ffmpeg = resolve_bin("ffmpeg");
@@ -2223,7 +2308,11 @@ pub fn list_capture_devices_ffmpeg() -> CaptureDeviceList {
                 String::from_utf8_lossy(&o.stdout),
                 String::from_utf8_lossy(&o.stderr)
             );
-            parse_dshow_devices_output(&combined)
+            if cfg!(target_os = "macos") {
+                parse_avfoundation_devices_output(&combined)
+            } else {
+                parse_dshow_devices_output(&combined)
+            }
         }
         Err(_) => CaptureDeviceList {
             video_devices: vec![],
@@ -2346,39 +2435,61 @@ pub fn start_dshow_capture_ffmpeg(
     width: Option<u32>,
     height: Option<u32>,
 ) -> Result<String, String> {
-    if !cfg!(target_os = "windows") {
-        return Err("Mode FFmpeg DirectShow hanya tersedia di Windows.".to_string());
+    if !cfg!(target_os = "windows") && !cfg!(target_os = "macos") {
+        return Err("Mode FFmpeg Capture saat ini tersedia di Windows dan macOS.".to_string());
     }
     let clean_v = video_device.trim();
     if clean_v.is_empty() {
-        return Err("Nama perangkat video DirectShow tidak boleh kosong.".to_string());
+        return Err("Nama perangkat video tidak boleh kosong.".to_string());
     }
     ensure_parent_dir(&output_path)?;
 
     let lock = DSHOW_CAPTURE_PROC.get_or_init(|| Mutex::new(None));
     let mut guard = lock
         .lock()
-        .map_err(|_| "Gagal mengunci status proses capture DirectShow.".to_string())?;
+        .map_err(|_| "Gagal mengunci status proses capture FFmpeg.".to_string())?;
     if guard.is_some() {
-        return Err("Rekaman FFmpeg DirectShow masih berjalan. Hentikan dulu sebelum memulai baru.".to_string());
+        return Err("Rekaman FFmpeg Capture masih berjalan. Hentikan dulu sebelum memulai baru.".to_string());
     }
 
-    let input_spec = match audio_device {
-        Some(ref a) if !a.trim().is_empty() => format!("video={}:audio={}", clean_v, a.trim()),
-        _ => format!("video={}", clean_v),
+    let (format_name, input_spec, use_audio) = if cfg!(target_os = "macos") {
+        let extract_idx = |raw: &str| -> String {
+            let trimmed = raw.trim();
+            if let Some((prefix, _)) = trimmed.split_once(':') {
+                let p = prefix.trim();
+                if !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) {
+                    return p.to_string();
+                }
+            }
+            trimmed.to_string()
+        };
+        let v_idx = extract_idx(clean_v);
+        match audio_device {
+            Some(ref a) if !a.trim().is_empty() => {
+                ("avfoundation", format!("{}:{}", v_idx, extract_idx(a)), true)
+            }
+            _ => ("avfoundation", format!("{}:none", v_idx), false),
+        }
+    } else {
+        match audio_device {
+            Some(ref a) if !a.trim().is_empty() => {
+                ("dshow", format!("video={}:audio={}", clean_v, a.trim()), true)
+            }
+            _ => ("dshow", format!("video={}", clean_v), false),
+        }
     };
+
     let fr = fps.unwrap_or(30).clamp(15, 60);
     let w = width.unwrap_or(1280).clamp(640, 3840);
     let h = height.unwrap_or(720).clamp(360, 2160);
     let (vcodec, _) = detect_video_encoder();
     let ffmpeg = resolve_bin("ffmpeg");
 
-    let mut args = vec![
-        "-y".into(),
-        "-f".into(),
-        "dshow".into(),
-        "-rtbufsize".into(),
-        "256M".into(),
+    let mut args = vec!["-y".into(), "-f".into(), format_name.into()];
+    if format_name == "dshow" {
+        args.extend(["-rtbufsize".into(), "256M".into()]);
+    }
+    args.extend([
         "-framerate".into(),
         fr.to_string(),
         "-video_size".into(),
@@ -2387,19 +2498,21 @@ pub fn start_dshow_capture_ffmpeg(
         input_spec,
         "-c:v".into(),
         vcodec.into(),
-    ];
+    ]);
     if vcodec == "h264_nvenc" {
         args.extend(["-preset".into(), "p4".into(), "-cq".into(), "22".into()]);
+    } else if vcodec == "h264_videotoolbox" {
+        args.extend(["-b:v".into(), "4500k".into(), "-allow_sw".into(), "1".into()]);
     } else {
         args.extend(["-preset".into(), "veryfast".into(), "-crf".into(), "22".into()]);
     }
+    args.extend(["-pix_fmt".into(), "yuv420p".into()]);
+    if use_audio {
+        args.extend(["-c:a".into(), "aac".into(), "-ar".into(), "44100".into()]);
+    } else {
+        args.push("-an".into());
+    }
     args.extend([
-        "-pix_fmt".into(),
-        "yuv420p".into(),
-        "-c:a".into(),
-        "aac".into(),
-        "-ar".into(),
-        "44100".into(),
         "-movflags".into(),
         "+frag_keyframe+empty_moov".into(),
         output_path.clone(),
@@ -3069,6 +3182,20 @@ DirectShow audio devices
             parsed.audio_devices,
             vec!["Microphone (USB Audio)", "Stereo Mix"]
         );
+
+        let sample_avf = r#"
+[AVFoundation indev @ 0x123] AVFoundation video devices:
+[AVFoundation indev @ 0x123] [0] FaceTime HD Camera
+[AVFoundation indev @ 0x123] [1] Capture screen 0
+[AVFoundation indev @ 0x123] AVFoundation audio devices:
+[AVFoundation indev @ 0x123] [0] MacBook Air Microphone
+"#;
+        let avf = parse_avfoundation_devices_output(sample_avf);
+        assert_eq!(
+            avf.video_devices,
+            vec!["0: FaceTime HD Camera", "1: Capture screen 0"]
+        );
+        assert_eq!(avf.audio_devices, vec!["0: MacBook Air Microphone"]);
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)

@@ -162,6 +162,8 @@ class ProjectStore {
   videoFilePath = $state<string | null>(null);
   onlineVideoUrl = $state<string | null>(null);
   onlineSourceType = $state<'youtube' | 'stream' | null>(null);
+  isDownloadingOnlineVideo = $state<boolean>(false);
+  onlineDownloadStatus = $state<string | null>(null);
   liveCaptureActive = $state<boolean>(false);
   liveCaptureTargetPath = $state<string | null>(null);
   videoTitle = $state<string>('Pertandingan Futsal');
@@ -2728,6 +2730,59 @@ class ProjectStore {
 
     this.markDirty();
     return true;
+  }
+
+  async downloadCurrentOnlineVideoToMp4(): Promise<boolean> {
+    if (!isTauriDesktop() || !this.onlineVideoUrl || this.isDownloadingOnlineVideo) {
+      return false;
+    }
+    const url = this.onlineVideoUrl.trim();
+    if (!url) return false;
+
+    this.isDownloadingOnlineVideo = true;
+    this.onlineDownloadStatus = 'Menyiapkan unduhan MP4...';
+    try {
+      const isDirect =
+        /^(rtsp|rtmp|rtmps):\/\//i.test(url) ||
+        /\.(mp4|mov|m4v|webm|mkv|m3u8|ts)(\?|#|$)/i.test(url);
+      if (!isDirect) {
+        const status = await invoke<{ yt_dlp_available: boolean }>('check_online_tools_status', {
+          customYtDlpPath: null,
+        });
+        if (!status?.yt_dlp_available) {
+          this.onlineDownloadStatus = 'Memasang yt-dlp otomatis...';
+          await invoke<string>('install_yt_dlp_tool');
+        }
+      }
+
+      const { save } = await import('@tauri-apps/plugin-dialog');
+      const safeName = (this.videoTitle || 'pertandingan_futsal')
+        .replace(/[^a-zA-Z0-9_-]/g, '_')
+        .toLowerCase();
+      const targetOut = await save({
+        title: 'Simpan Video MP4 Lokal untuk Tagging, Telestrasi & Ekspor',
+        defaultPath: `${safeName}.mp4`,
+        filters: [{ name: 'MP4 Video', extensions: ['mp4'] }],
+      });
+      if (!targetOut) return false;
+
+      this.onlineDownloadStatus = 'Mengunduh & mengonversi MP4...';
+      const savedPath = await invoke<string>('download_online_video_ffmpeg', {
+        url,
+        outputPath: targetOut,
+        customYtDlpPath: null,
+      });
+
+      this.videoFilePath = savedPath;
+      this.videoSrc = convertFileSrc(savedPath);
+      this.onlineSourceType = null;
+      this.videoMissing = false;
+      this.markDirty();
+      return true;
+    } finally {
+      this.isDownloadingOnlineVideo = false;
+      this.onlineDownloadStatus = null;
+    }
   }
 
   async relinkFolderMassal(): Promise<{

@@ -4,5 +4,7 @@
 <dict>
   <key>NSMicrophoneUsageDescription</key>
   <string>FutsalTag Pro memerlukan akses mikrofon untuk merekam instruksi suara pelatih (voiceover) dan transkripsi subtitle offline.</string>
+  <key>NSCameraUsageDescription</key>
+  <string>FutsalTag Pro memerlukan akses kamera atau HDMI capture card untuk fitur Kamera Live dan Live Tagging.</string>
 </dict>
 </plist>

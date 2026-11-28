@@ -1,6 +1,6 @@
 {
   "name": "futsaltag-pro",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "FutsalTag Pro - Professional Futsal Video Analyser, Telestrator & Tactical Board",
   "type": "module",
   "scripts": {

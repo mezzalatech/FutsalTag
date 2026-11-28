@@ -380,6 +380,11 @@
         "Mode stream langsung di pemutar membutuhkan URL diawali https:// atau http://.";
       return;
     }
+    if (detectedOnlineKind === "hls" || detectedOnlineKind === "web") {
+      onlineUrlError =
+        "Tautan halaman web/HLS ini tidak dapat diputar langsung sebagai stream HTML5. Klik 'Unduh MP4 Lokal (Penuh)' agar siap dianalisis.";
+      return;
+    }
     onlineUrlError = null;
     projectStore.loadOnlineVideo(
       url,
@@ -1223,7 +1228,7 @@
               {:else if detectedOnlineKind === "direct"}
                 Terdeteksi: File Video Direct HTTP/HTTPS
               {:else}
-                Tautan Web Video
+                Tautan Web Video (Google Drive / Medsos) — gunakan Unduh MP4 Lokal via yt-dlp
               {/if}
             </span>
           </div>
@@ -1274,7 +1279,7 @@
           <button
             type="button"
             class="om-btn primary"
-            disabled={!onlineUrlInput.trim() || isDownloadingOnline || detectedOnlineKind === "hls"}
+            disabled={!onlineUrlInput.trim() || isDownloadingOnline || detectedOnlineKind === "hls" || detectedOnlineKind === "web"}
             onclick={handleStreamOnlineVideo}
             title="Langsung putar & tagging tanpa mengunduh file MP4 (khusus YouTube / Direct MP4 HTTP)"
           >

@@ -93,6 +93,7 @@
     Shield,
     Volume2,
     VolumeX,
+    Link2,
   } from "lucide-svelte";
 
   // --- REFS & STATE ---
@@ -3801,6 +3802,46 @@
         </div>
       {/if}
 
+      {#if !projectStore.videoSrc && projectStore.onlineSourceType === "youtube" && isTauriDesktop()}
+        <div class="yt-telestrate-gate">
+          <h4>Video Masih Berupa Stream YouTube</h4>
+          <p>
+            Telestrasi frame, AI Tracking, dan Ekspor MP4 membutuhkan berkas MP4 lokal agar seluruh tag dan labelmu tetap sinkron.
+          </p>
+          <div class="yt-gate-actions">
+            <button
+              type="button"
+              class="yt-gate-btn primary"
+              disabled={projectStore.isDownloadingOnlineVideo}
+              onclick={async () => {
+                try {
+                  const ok = await projectStore.downloadCurrentOnlineVideoToMp4();
+                  if (ok) {
+                    exportNotice = "Video MP4 lokal siap digunakan untuk Telestrasi & Ekspor!";
+                    setTimeout(() => (exportNotice = null), 4000);
+                  }
+                } catch (err: any) {
+                  exportNotice = `Gagal unduh MP4: ${err?.message || err}`;
+                  setTimeout(() => (exportNotice = null), 6000);
+                }
+              }}
+            >
+              <Download size={13} />
+              <span>{projectStore.onlineDownloadStatus || "Unduh MP4 Lokal"}</span>
+            </button>
+            <button
+              type="button"
+              class="yt-gate-btn"
+              disabled={projectStore.isDownloadingOnlineVideo}
+              onclick={() => projectStore.relinkVideoFile()}
+            >
+              <Link2 size={13} />
+              <span>Tautkan File MP4</span>
+            </button>
+          </div>
+        </div>
+      {/if}
+
       <!-- BROADCAST FREEZE-FRAME COUNTDOWN OVERLAY -->
       {#if isFreezeActive}
         <div class="broadcast-freeze-hud">
@@ -5404,6 +5445,72 @@
     line-height: 1.5;
     margin: 0;
     color: #94a3b8;
+  }
+
+  .yt-telestrate-gate {
+    position: absolute;
+    z-index: 20;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: rgba(9, 19, 34, 0.94);
+    border: 1px solid #38bdf8;
+    border-radius: 12px;
+    padding: 18px 22px;
+    max-width: 440px;
+    text-align: center;
+    box-shadow: 0 18px 45px rgba(0, 0, 0, 0.7);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .yt-telestrate-gate h4 {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 800;
+    color: #7dd3fc;
+  }
+
+  .yt-telestrate-gate p {
+    margin: 0;
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: #cbd5e1;
+  }
+
+  .yt-gate-actions {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 2px;
+  }
+
+  .yt-gate-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: #0f172a;
+    border: 1px solid #334155;
+    color: #e2e8f0;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 7px 12px;
+    border-radius: 7px;
+    cursor: pointer;
+  }
+
+  .yt-gate-btn.primary {
+    background: #0284c7;
+    border-color: #38bdf8;
+    color: #ffffff;
+  }
+
+  .yt-gate-btn:disabled {
+    opacity: 0.6;
+    cursor: wait;
   }
 
   .telestrator-canvas {

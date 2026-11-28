@@ -91,6 +91,8 @@
     TrendingUp,
     Map as MapIcon,
     Shield,
+    Volume2,
+    VolumeX,
   } from "lucide-svelte";
 
   // --- REFS & STATE ---
@@ -98,9 +100,38 @@
   let canvasEl = $state<HTMLCanvasElement | null>(null);
   let videoContainer = $state<HTMLDivElement | null>(null);
 
-  let activeClip = $derived(
-    projectStore.activeClipForDrawing || projectStore.tags[0] || null,
-  );
+  let activeClip = $derived.by(() => {
+    const sel = projectStore.activeClipForDrawing;
+    if (sel) return projectStore.tags.find((t) => t.id === sel.id) ?? sel;
+    return projectStore.tags[0] ?? null;
+  });
+
+  function formatClipClock(sec: number): string {
+    const safe = Math.max(0, sec);
+    const m = Math.floor(safe / 60);
+    const s = Math.floor(safe % 60);
+    return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+  }
+
+  function getClipPlayers(tag: VideoTagEvent): string[] {
+    const raw =
+      tag.playersInvolved && tag.playersInvolved.length > 0
+        ? tag.playersInvolved
+        : tag.playerLabel
+          ? [tag.playerLabel]
+          : [];
+    return Array.from(
+      new Set(raw.map((p) => projectStore.normalizePlayerLabel(p)).filter(Boolean)),
+    );
+  }
+
+  function getClipDisplayTitle(tag: VideoTagEvent): string {
+    if (/^.+ - .+ \(\d+:\d+(?:\.\d+)? - \d+:\d+(?:\.\d+)?\)$/.test(tag.title)) {
+      const players = getClipPlayers(tag);
+      return players.length > 0 ? `${tag.category} · ${players.join(", ")}` : tag.category;
+    }
+    return tag.title;
+  }
 
   let currentTime = $state(0);
   let duration = $state(120);
@@ -136,8 +167,21 @@
   let selectedElementId = $state<string | null>(null);
   let activeCurveControl = $state<string | null>(null);
   let isDraggingSelected = $state(false);
+  let activePointDragIdx = $state<number | null>(null);
+  let isResizingSingle = $state(false);
+  let resizeStartScale = 1.0;
+  let resizeStartDist = 0.05;
   let dragStartPos = $state<Point2D | null>(null);
   let dragAnchorStart = $state<Point2D | null>(null);
+
+  $effect(() => {
+    const vol = projectStore.videoVolume;
+    const muted = projectStore.videoMuted;
+    if (videoEl) {
+      videoEl.volume = vol;
+      videoEl.muted = muted;
+    }
+  });
 
   const SINGLE_PLAYER_TOOLS: DrawingToolType[] = [
     "spotlight-3d",
@@ -515,6 +559,13 @@
     const clip = activeClip;
     if (clip && clip.id !== loadedClipId) {
       loadClipState(clip, true);
+    } else if (clip && clip.id === loadedClipId) {
+      if (currentTime < clip.startTime - 0.05 || currentTime > clip.endTime + 0.05) {
+        currentTime = clip.startTime;
+        if (videoEl && videoEl.paused) {
+          videoEl.currentTime = clip.startTime;
+        }
+      }
     }
   });
 
@@ -580,7 +631,10 @@
         !e.metaKey &&
         !e.altKey
       ) {
-        if (e.key === "f" || e.key === "F") {
+        if (e.code === "Space" || e.key === " ") {
+          e.preventDefault();
+          togglePlay();
+        } else if (e.key === "f" || e.key === "F") {
           e.preventDefault();
           addFreezeStopAtPlayhead();
         } else if (selectedElement && (e.key === "i" || e.key === "I")) {
@@ -816,6 +870,7 @@
       if (activeClip && currentTime >= activeClip.endTime) {
         if (isPreviewing && appendCleanReplay && !isReplayPass) {
           isReplayPass = true;
+          videoEl.playbackRate = 1.0;
           videoEl.currentTime = activeClip.startTime;
           currentTime = activeClip.startTime;
         } else {
@@ -888,6 +943,39 @@
     const start = activeClip ? activeClip.startTime : 0;
     const end = activeClip ? activeClip.endTime : Math.max(duration, start + 1);
     return { start, end: Math.max(start + 0.2, end) };
+  }
+
+  function getNewElementTimeRange(): { timeStart: number; timeEnd: number } {
+    if (activeClip) {
+      const end = Math.max(activeClip.startTime + 0.2, activeClip.endTime);
+      const start = Math.max(
+        activeClip.startTime,
+        Math.min(end - 0.2, Number(currentTime.toFixed(2))),
+      );
+      return { timeStart: start, timeEnd: end };
+    }
+    return {
+      timeStart: Number(currentTime.toFixed(2)),
+      timeEnd: Number((currentTime + 5).toFixed(2)),
+    };
+  }
+
+  function getSingleResizeHandlePos(
+    el: DrawingElement,
+    w: number,
+    anchor: Point2D,
+  ): Point2D {
+    const basePx =
+      el.type === "spotlight-3d"
+        ? 80 * (el.spotlightRadius ?? 1.0)
+        : el.type === "magnifier"
+          ? 68
+          : el.type === "player-circle"
+            ? 38
+            : 48;
+    const px = basePx * (w / 1280) * (el.sizeScale ?? 1.0);
+    const dxNorm = Math.max(0.03, Math.min(0.28, px / Math.max(1, w)));
+    return { x: Math.min(0.98, anchor.x + dxNorm), y: anchor.y };
   }
 
   function updateElementLifespan(
@@ -1009,6 +1097,45 @@
       !isFreezeActive
     ) {
       drawPlayerPickerOverlay(ctx, w, h);
+    }
+
+    // Render direct vertex / size resize handles for selected element in Select mode
+    if (
+      activeTool === "select" &&
+      selectedElement &&
+      isElementVisibleAtTime(selectedElement, currentTime) &&
+      !isFreezeActive
+    ) {
+      const effPts = getElementPointsAtTime(selectedElement, currentTime);
+      if (effPts.length >= 2 && selectedElement.type !== "freehand") {
+        for (const ep of effPts) {
+          ctx.beginPath();
+          ctx.arc(ep.x * w, ep.y * h, 5.5, 0, Math.PI * 2);
+          ctx.fillStyle = "#ffffff";
+          ctx.fill();
+          ctx.strokeStyle = "#38bdf8";
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        }
+      } else if (effPts.length === 1) {
+        const anchor = effPts[0];
+        const hp = getSingleResizeHandlePos(selectedElement, w, anchor);
+        ctx.save();
+        ctx.setLineDash([4, 3]);
+        ctx.beginPath();
+        ctx.moveTo(anchor.x * w, anchor.y * h);
+        ctx.lineTo(hp.x * w, hp.y * h);
+        ctx.strokeStyle = "rgba(251, 191, 36, 0.85)";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = "#fbbf24";
+        ctx.strokeStyle = "#0f172a";
+        ctx.lineWidth = 1.5;
+        ctx.fillRect(hp.x * w - 5, hp.y * h - 5, 10, 10);
+        ctx.strokeRect(hp.x * w - 5, hp.y * h - 5, 10, 10);
+        ctx.restore();
+      }
     }
 
     ctx.restore();
@@ -1338,33 +1465,15 @@
             },
           ],
           isTracking: true,
-          timeStart: activeClip ? activeClip.startTime : currentTime,
-          timeEnd: activeClip ? activeClip.endTime : currentTime + 5,
+          ...getNewElementTimeRange(),
           isChromaFloor: isFloorBlend || isFloorElType(activeTool),
           animationStyle: "none",
-          label: hit
-            ? activeTool === "player-circle"
-              ? undefined
-              : activeTool === "spotlight-3d"
-                ? `#P${hit.idx + 1} Fokus`
-                : activeTool === "magnifier"
-                  ? "1.8x Zoom"
-                  : activeTool === "player-cross"
-                    ? "Evaluasi"
-                    : activeTool === "speed-tag"
-                      ? `#P${hit.idx + 1}`
-                      : undefined
-            : activeTool === "player-circle"
-              ? undefined
-              : activeTool === "spotlight-3d"
-                ? "Fokus Pemain"
-                : activeTool === "magnifier"
-                  ? "1.8x Zoom"
-                  : activeTool === "player-cross"
-                    ? "Evaluasi"
-                    : activeTool === "speed-tag"
-                      ? "Sprint"
-                      : undefined,
+          label:
+            activeTool === "magnifier"
+              ? "1.8x Zoom"
+              : activeTool === "player-cross"
+                ? "Evaluasi"
+                : undefined,
           zoomScale: activeTool === "magnifier" ? 1.8 : undefined,
         };
         drawings = [...drawings, newEl];
@@ -1399,17 +1508,36 @@
         }
       }
 
-      // 2. Check if clicking near any existing element to select it
+      // 1b. Check vertex handle (arrows/zones/lines) or size resize handle (1-point tools)
+      if (selectedElement && isElementVisibleAtTime(selectedElement, currentTime)) {
+        const effPts = getElementPointsAtTime(selectedElement, currentTime);
+        if (effPts.length >= 2 && selectedElement.type !== "freehand") {
+          for (let pi = 0; pi < effPts.length; pi++) {
+            if (Math.hypot(pt.x - effPts[pi].x, pt.y - effPts[pi].y) < 0.035) {
+              activePointDragIdx = pi;
+              return;
+            }
+          }
+        } else if (effPts.length === 1 && canvasEl) {
+          const wCss = canvasEl.width / (window.devicePixelRatio || 1);
+          const hp = getSingleResizeHandlePos(selectedElement, wCss, effPts[0]);
+          if (Math.hypot(pt.x - hp.x, pt.y - hp.y) < 0.04) {
+            isResizingSingle = true;
+            resizeStartScale = selectedElement.sizeScale ?? 1.0;
+            resizeStartDist = Math.max(0.02, Math.hypot(pt.x - effPts[0].x, pt.y - effPts[0].y));
+            return;
+          }
+        }
+      }
+
+      // 2. Check if clicking near any point of an existing element to select it
       let found: DrawingElement | null = null;
       for (const d of drawings) {
         if (!isElementVisibleAtTime(d, currentTime)) continue;
         const effPts = getElementPointsAtTime(d, currentTime);
-        if (effPts.length > 0) {
-          const dist = Math.hypot(pt.x - effPts[0].x, pt.y - effPts[0].y);
-          if (dist < 0.08) {
-            found = d;
-            break;
-          }
+        if (effPts.some((ep) => Math.hypot(pt.x - ep.x, pt.y - ep.y) < 0.08)) {
+          found = d;
+          break;
         }
       }
 
@@ -1443,8 +1571,7 @@
         type: activeTool,
         color: activeColor,
         points: [snapped.point],
-        timeStart: activeClip ? activeClip.startTime : currentTime,
-        timeEnd: activeClip ? activeClip.endTime : currentTime + 5,
+        ...getNewElementTimeRange(),
         isChromaFloor: isFloorBlend || isFloorElType(activeTool),
         animationStyle: "none",
         label:
@@ -1479,8 +1606,7 @@
           type: activeTool,
           color: activeColor,
           points: [snapped.point],
-          timeStart: activeClip ? activeClip.startTime : currentTime,
-          timeEnd: activeClip ? activeClip.endTime : currentTime + 5,
+          ...getNewElementTimeRange(),
           isChromaFloor: isFloorBlend || isFloorElType(activeTool),
           label:
             activeTool === "pressing-zone"
@@ -1544,8 +1670,7 @@
       type: activeTool,
       color: activeColor,
       points: [startSnap.point],
-      timeStart: activeClip ? activeClip.startTime : currentTime,
-      timeEnd: activeClip ? activeClip.endTime : currentTime + 5,
+      ...getNewElementTimeRange(),
       isChromaFloor: isFloorBlend || isFloorElType(activeTool),
       animationStyle: "none",
       label:
@@ -1598,6 +1723,37 @@
     if (activeCurveControl && selectedElement) {
       selectedElement.controlPoint = pt;
       drawings = [...drawings];
+      return;
+    }
+
+    // If dragging a vertex handle (resize arrow / zone / angle / line):
+    if (
+      activePointDragIdx !== null &&
+      selectedElement &&
+      selectedElement.points[activePointDragIdx]
+    ) {
+      selectedElement.points[activePointDragIdx] = { ...pt };
+      if (selectedElement.pointTracks?.[activePointDragIdx]) {
+        const nextTracks = { ...selectedElement.pointTracks };
+        delete nextTracks[activePointDragIdx];
+        selectedElement.pointTracks = nextTracks;
+      }
+      drawings = [...drawings];
+      return;
+    }
+
+    // If dragging the single-point resize handle:
+    if (isResizingSingle && selectedElement) {
+      const anchor =
+        getElementPointsAtTime(selectedElement, currentTime)[0] ??
+        selectedElement.points[0];
+      if (anchor) {
+        const currDist = Math.max(0.015, Math.hypot(pt.x - anchor.x, pt.y - anchor.y));
+        selectedElement.sizeScale = Number(
+          Math.max(0.4, Math.min(2.5, resizeStartScale * (currDist / resizeStartDist))).toFixed(2),
+        );
+        drawings = [...drawings];
+      }
       return;
     }
 
@@ -1679,6 +1835,8 @@
 
     activeCornerDrag = null;
     activeCurveControl = null;
+    activePointDragIdx = null;
+    isResizingSingle = false;
     isDraggingSelected = false;
     dragStartPos = null;
     dragAnchorStart = null;
@@ -1808,8 +1966,27 @@
   // --- VIDEO TRANSPORT CONTROLS ---
   function togglePlay() {
     if (!videoEl) return;
+    if (isFreezeActive) {
+      if (freezeInterval) {
+        clearInterval(freezeInterval);
+        freezeInterval = null;
+      }
+      isFreezeActive = false;
+      isPreviewing = false;
+      videoEl.pause();
+      isPlaying = false;
+      return;
+    }
     if (videoEl.paused) {
-      videoEl.play();
+      if (
+        activeClip &&
+        (videoEl.currentTime < activeClip.startTime - 0.05 ||
+          videoEl.currentTime >= activeClip.endTime - 0.05)
+      ) {
+        videoEl.currentTime = activeClip.startTime;
+        currentTime = activeClip.startTime;
+      }
+      videoEl.play().catch(() => {});
       isPlaying = true;
     } else {
       videoEl.pause();
@@ -3035,8 +3212,8 @@
           >
             {activeClip.category}
           </span>
-          <span class="clip-name-text" title={activeClip.title}
-            >{activeClip.title}</span
+          <span class="clip-name-text" title={getClipDisplayTitle(activeClip)}
+            >{getClipDisplayTitle(activeClip)}</span
           >
           <span class="clip-time-text">
             [{activeClip.startTime.toFixed(1)}s - {activeClip.endTime.toFixed(
@@ -3725,12 +3902,14 @@
             {@const gfxCount = isCurr
               ? drawings.length
               : (tag.drawings?.length ?? 0)}
+            {@const clipPlayers = getClipPlayers(tag)}
+            {@const clipTitle = getClipDisplayTitle(tag)}
             <button
               type="button"
               class="tag-clip-card"
               class:active={isCurr}
               onclick={() => selectClipInTelestrator(tag)}
-              title="Buka klip {tag.title} di Telestration Studio"
+              title="Buka klip {clipTitle} di Telestration Studio"
             >
               <span
                 class="tag-clip-accent"
@@ -3751,14 +3930,17 @@
                     {gfxCount > 0 ? `${gfxCount} grafis` : "Kosong"}
                   </span>
                 </div>
-                <div class="tag-clip-title">{tag.title}</div>
+                <div class="tag-clip-title">{clipTitle}</div>
                 <div class="tag-clip-meta">
                   <span class="tag-clip-time"
-                    >{tag.startTime.toFixed(1)}s–{tag.endTime.toFixed(1)}s</span
+                    >{formatClipClock(tag.startTime)}–{formatClipClock(tag.endTime)}</span
                   >
-                  {#if tag.playerLabel}
-                    <span class="tag-clip-player">{tag.playerLabel}</span>
-                  {/if}
+                  {#each clipPlayers as pl}
+                    <span class="tag-clip-player">{pl}</span>
+                  {/each}
+                  {#each (tag.labels ?? []).slice(0, 2) as lbl (lbl.id)}
+                    <span class="tag-clip-lbl" style="border-color: {lbl.color}55; color: {lbl.color};">{lbl.name}</span>
+                  {/each}
                 </div>
               </div>
             </button>
@@ -3878,7 +4060,48 @@
               type="text"
               class="prop-input"
               bind:value={selectedElement.label}
-              placeholder="#10 / Catatan..."
+              placeholder="Label opsional (kosongkan jika polos)..."
+            />
+          </div>
+
+          <div class="prop-row">
+            <div class="prop-zoom-hdr">
+              <span class="prop-label">Ukuran Tool:</span>
+              <div style="display:flex;align-items:center;gap:5px;">
+                <span class="kf-count-pill">
+                  {Math.round((selectedElement.sizeScale ?? 1.0) * 100)}%
+                </span>
+                {#if Math.abs((selectedElement.sizeScale ?? 1.0) - 1.0) > 0.02}
+                  <button
+                    type="button"
+                    class="btn-chroma-sample"
+                    style="padding:1px 6px;font-size:9px;"
+                    onclick={() => {
+                      if (!selectedElement) return;
+                      selectedElement.sizeScale = 1.0;
+                      drawings = [...drawings];
+                    }}
+                  >
+                    Reset
+                  </button>
+                {/if}
+              </div>
+            </div>
+            <input
+              type="range"
+              min="0.4"
+              max="2.5"
+              step="0.05"
+              value={selectedElement.sizeScale ?? 1.0}
+              oninput={(e) => {
+                if (!selectedElement) return;
+                selectedElement.sizeScale = parseFloat(
+                  (e.currentTarget as HTMLInputElement).value,
+                );
+                drawings = [...drawings];
+              }}
+              class="pause-slider"
+              style="width: 100%;"
             />
           </div>
 
@@ -4503,6 +4726,35 @@
         </div>
       {/if}
     </div>
+
+    <div class="vol-ctrl-box" title="Volume & Bisukan Audio Video">
+      <button
+        type="button"
+        class="vol-mute-btn"
+        class:muted={projectStore.videoMuted || projectStore.videoVolume === 0}
+        onclick={() => projectStore.toggleVideoMute()}
+        aria-label={projectStore.videoMuted ? "Bunyikan Audio" : "Bisukan Audio"}
+      >
+        {#if projectStore.videoMuted || projectStore.videoVolume === 0}
+          <VolumeX size={14} />
+        {:else}
+          <Volume2 size={14} />
+        {/if}
+      </button>
+      <input
+        type="range"
+        min="0"
+        max="1"
+        step="0.05"
+        value={projectStore.videoMuted ? 0 : projectStore.videoVolume}
+        oninput={(e) =>
+          projectStore.setVideoVolume(
+            parseFloat((e.currentTarget as HTMLInputElement).value),
+          )}
+        class="vol-range-slider"
+        aria-label="Volume Video"
+      />
+    </div>
   </div>
 
   {#if (drawings.length > 0 || freezeStops.length > 0 || speedSegments.length > 0) && activeClip}
@@ -4621,7 +4873,18 @@
         class:active={appendCleanReplay}
         title="Tambahkan pemutaran ulang klip utuh tanpa jeda & tanpa grafis di akhir video (Once Sport style)"
       >
-        <input type="checkbox" bind:checked={appendCleanReplay} />
+        <input
+          type="checkbox"
+          bind:checked={appendCleanReplay}
+          onchange={() => {
+            handleSave(true);
+            if (appendCleanReplay) {
+              exportNotice =
+                "Replay Bersih aktif — klik Preview Siaran atau Ekspor MP4 (Putaran 1: Grafis/Jeda → Putaran 2: 1.0x Polos)";
+              setTimeout(() => (exportNotice = null), 3500);
+            }
+          }}
+        />
         <span>+ Replay Bersih</span>
       </label>
 
@@ -5551,6 +5814,38 @@
     cursor: pointer;
   }
 
+  .vol-ctrl-box {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: #081223;
+    border: 1px solid #1a355d;
+    border-radius: 6px;
+    padding: 3px 8px;
+    flex-shrink: 0;
+  }
+
+  .vol-mute-btn {
+    background: transparent;
+    border: none;
+    color: #93c5fd;
+    padding: 1px;
+    display: inline-flex;
+    align-items: center;
+    cursor: pointer;
+  }
+
+  .vol-mute-btn.muted {
+    color: #f87171;
+  }
+
+  .vol-range-slider {
+    width: 68px;
+    height: 4px;
+    accent-color: #38bdf8;
+    cursor: pointer;
+  }
+
   .keyframe-pips-overlay {
     position: absolute;
     top: 50%;
@@ -5961,8 +6256,8 @@
   .tag-clip-meta {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 6px;
+    flex-wrap: wrap;
+    gap: 4px;
     font-size: 9.5px;
   }
 
@@ -5974,9 +6269,23 @@
 
   .tag-clip-player {
     color: #cbd5e1;
+    background: rgba(15, 23, 42, 0.75);
+    border: 1px solid #1e3a5f;
+    padding: 1px 5px;
+    border-radius: 4px;
     white-space: nowrap;
+    max-width: 100%;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  .tag-clip-lbl {
+    font-size: 8.5px;
+    font-weight: 700;
+    border: 1px solid;
+    padding: 0 4px;
+    border-radius: 4px;
+    white-space: nowrap;
   }
 
   .hybrid-step-row {

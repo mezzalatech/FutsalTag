@@ -101,6 +101,7 @@ export interface DrawingElement {
   color: string;
   secondaryColor?: string;
   lineWidth?: number;
+  sizeScale?: number; // Universal visual size multiplier 0.4..2.5 (default 1.0)
   label?: string;
   isFilled?: boolean;
   opacity?: number;

@@ -494,7 +494,8 @@ function drawSingleElement(
   const pts = getElementPointsAtTime(el, currentTime);
   if (pts.length === 0) return;
 
-  const scaleFactor = width / 1280;
+  const sizeScale = Math.max(0.4, Math.min(2.5, el.sizeScale ?? 1.0));
+  const scaleFactor = (width / 1280) * sizeScale;
   const animStyle = el.animationStyle ?? 'none';
   const elapsed =
     options.animElapsedSec ?? Math.max(0, currentTime - (el.timeStart ?? options.clipStartTime ?? 0));
@@ -613,30 +614,32 @@ function drawSingleElement(
         ctx.stroke();
       }
 
-      const badgeY = cy - beamHeight - 16 * scaleFactor;
-      const labelText = el.label || '#10 Pivot';
-      ctx.font = `bold ${Math.round(14 * scaleFactor)}px system-ui, sans-serif`;
-      const tm = ctx.measureText(labelText);
-      const pw = tm.width + 32 * scaleFactor;
-      const ph = 28 * scaleFactor;
+      const cleanLabel = (el.label || '').trim();
+      if (cleanLabel && !/^#P\d+(?:\s+Fokus)?$/i.test(cleanLabel)) {
+        const badgeY = cy - beamHeight - 16 * scaleFactor;
+        ctx.font = `bold ${Math.round(14 * scaleFactor)}px system-ui, sans-serif`;
+        const tm = ctx.measureText(cleanLabel);
+        const pw = tm.width + 32 * scaleFactor;
+        const ph = 28 * scaleFactor;
 
-      ctx.fillStyle = 'rgba(11, 23, 42, 0.95)';
-      ctx.beginPath();
-      ctx.roundRect(cx - pw / 2, badgeY - ph / 2, pw, ph, ph / 2);
-      ctx.fill();
-      ctx.strokeStyle = el.color || '#00f0ff';
-      ctx.lineWidth = 2 * scaleFactor;
-      ctx.stroke();
+        ctx.fillStyle = 'rgba(11, 23, 42, 0.95)';
+        ctx.beginPath();
+        ctx.roundRect(cx - pw / 2, badgeY - ph / 2, pw, ph, ph / 2);
+        ctx.fill();
+        ctx.strokeStyle = el.color || '#00f0ff';
+        ctx.lineWidth = 2 * scaleFactor;
+        ctx.stroke();
 
-      ctx.beginPath();
-      ctx.arc(cx - pw / 2 + 12 * scaleFactor, badgeY, 4.5 * scaleFactor, 0, Math.PI * 2);
-      ctx.fillStyle = el.color || '#00f0ff';
-      ctx.fill();
+        ctx.beginPath();
+        ctx.arc(cx - pw / 2 + 12 * scaleFactor, badgeY, 4.5 * scaleFactor, 0, Math.PI * 2);
+        ctx.fillStyle = el.color || '#00f0ff';
+        ctx.fill();
 
-      ctx.fillStyle = '#ffffff';
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(labelText, cx - pw / 2 + 22 * scaleFactor, badgeY);
+        ctx.fillStyle = '#ffffff';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(cleanLabel, cx - pw / 2 + 22 * scaleFactor, badgeY);
+      }
       break;
     }
 
@@ -775,7 +778,7 @@ function drawSingleElement(
       }
 
       const cleanLabel = el.label?.trim();
-      if (cleanLabel && !/^#P\d+$/i.test(cleanLabel)) {
+      if (cleanLabel && !/^#P\d+(?:\s+Fokus)?$/i.test(cleanLabel)) {
         ctx.font = `bold ${Math.round(13 * scaleFactor)}px system-ui`;
         ctx.fillStyle = '#ffffff';
         ctx.textAlign = 'center';
@@ -1682,7 +1685,9 @@ function drawSingleElement(
       const speedRatio = Math.min(1, kmh / 28);
       const speedTxt =
         kfs && kfs.length >= 2 ? `${kmh.toFixed(1)} km/h` : '0.0 km/h (Track)';
-      const titleTxt = el.label?.trim() ? `${el.label.trim()} · ${speedTxt}` : speedTxt;
+      const rawLabel = el.label?.trim() || '';
+      const cleanSpeedLabel = /^#P\d+(?:\s+Fokus)?$/i.test(rawLabel) ? '' : rawLabel;
+      const titleTxt = cleanSpeedLabel ? `${cleanSpeedLabel} · ${speedTxt}` : speedTxt;
       ctx.font = `bold ${Math.round(12.5 * scaleFactor)}px monospace`;
       const tw = ctx.measureText(titleTxt).width;
       const bw = Math.max(96 * scaleFactor, tw + 22 * scaleFactor);

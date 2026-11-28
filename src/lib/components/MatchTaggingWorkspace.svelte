@@ -82,12 +82,17 @@
     ThumbsDown,
     Timer,
     Volume2,
+    VolumeX,
     Keyboard,
     Camera,
     Columns2,
     Smartphone,
     Clock,
     GitMerge,
+    SlidersHorizontal,
+    Layout,
+    Grid,
+    List,
   } from "lucide-svelte";
 
   // --- REFS & STATE ---
@@ -140,6 +145,13 @@
   } | null>(null);
   let videoOsdTimer: ReturnType<typeof setTimeout> | null = null;
   const SPEED_STEPS = [0.25, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0];
+  const NATIVE_MAX_RATE = 2.0;
+  const isSoftwareFastForward = $derived(
+    isPlaying &&
+      reverseRate === 0 &&
+      playbackRate > NATIVE_MAX_RATE &&
+      Boolean(videoEl || ytReady),
+  );
 
   // Workspace subtab: 'tagging' | 'coding_board' | 'minutes' | 'lineup'
   let workspaceSubTab = $state<
@@ -155,9 +167,174 @@
   let exportingQuickClipId = $state<string | null>(null);
   let quickExportModalClip = $state<VideoTagEvent | null>(null);
 
-  // 2-Tier Momen Layout State
-  let showSpatialCanvas = $state<boolean>(true);
-  let spatialCanvasHeight = $state<number>(155);
+  // 2-Tier Momen Layout & View Preferences (Momen Sports style)
+  type CanvasViewMode = "canvas" | "grid" | "list";
+  type CanvasScaleOption = "fit" | 0.5 | 0.75 | 1 | 1.25;
+  type CanvasPosition = "bottom" | "right";
+  const VIEW_PREFS_KEY = "futsaltag_tagging_view_v1";
+  const SCALE_OPTIONS: Array<{ value: CanvasScaleOption; label: string }> = [
+    { value: "fit", label: "Pas" },
+    { value: 0.5, label: "50%" },
+    { value: 0.75, label: "75%" },
+    { value: 1, label: "100%" },
+    { value: 1.25, label: "125%" },
+  ];
+
+  function loadTaggingViewPrefs() {
+    const defaults = {
+      canvasViewMode: "canvas" as CanvasViewMode,
+      canvasScale: 1 as CanvasScaleOption,
+      canvasPosition: "bottom" as CanvasPosition,
+      canvasSideWidth: 380,
+      spatialCanvasHeight: 155,
+      showSpatialCanvas: true,
+      showLeftPanel: true,
+      showRightPanel: true,
+      showLinimasa: true,
+      hasSavedHeight: false,
+    };
+    if (typeof localStorage === "undefined") return defaults;
+    try {
+      const raw = localStorage.getItem(VIEW_PREFS_KEY);
+      if (!raw) return defaults;
+      const p = JSON.parse(raw);
+      const validMode =
+        p.canvasViewMode === "canvas" ||
+        p.canvasViewMode === "grid" ||
+        p.canvasViewMode === "list"
+          ? p.canvasViewMode
+          : defaults.canvasViewMode;
+      const validScale: CanvasScaleOption =
+        p.canvasScale === "fit" ||
+        p.canvasScale === 0.5 ||
+        p.canvasScale === 0.75 ||
+        p.canvasScale === 1 ||
+        p.canvasScale === 1.25
+          ? p.canvasScale
+          : defaults.canvasScale;
+      const validPos: CanvasPosition =
+        p.canvasPosition === "bottom" || p.canvasPosition === "right"
+          ? p.canvasPosition
+          : defaults.canvasPosition;
+      const hasSavedHeight =
+        typeof p.spatialCanvasHeight === "number" &&
+        Number.isFinite(p.spatialCanvasHeight);
+      return {
+        canvasViewMode: validMode,
+        canvasScale: validScale,
+        canvasPosition: validPos,
+        canvasSideWidth:
+          typeof p.canvasSideWidth === "number"
+            ? Math.max(240, Math.min(720, p.canvasSideWidth))
+            : defaults.canvasSideWidth,
+        spatialCanvasHeight: hasSavedHeight
+          ? Math.max(95, Math.min(460, p.spatialCanvasHeight))
+          : defaults.spatialCanvasHeight,
+        showSpatialCanvas:
+          typeof p.showSpatialCanvas === "boolean"
+            ? p.showSpatialCanvas
+            : defaults.showSpatialCanvas,
+        showLeftPanel:
+          typeof p.showLeftPanel === "boolean"
+            ? p.showLeftPanel
+            : defaults.showLeftPanel,
+        showRightPanel:
+          typeof p.showRightPanel === "boolean"
+            ? p.showRightPanel
+            : defaults.showRightPanel,
+        showLinimasa:
+          typeof p.showLinimasa === "boolean"
+            ? p.showLinimasa
+            : defaults.showLinimasa,
+        hasSavedHeight,
+      };
+    } catch {
+      return defaults;
+    }
+  }
+
+  const savedViewPrefs = loadTaggingViewPrefs();
+  let canvasViewMode = $state<CanvasViewMode>(savedViewPrefs.canvasViewMode);
+  let canvasScale = $state<CanvasScaleOption>(savedViewPrefs.canvasScale);
+  let canvasPosition = $state<CanvasPosition>(savedViewPrefs.canvasPosition);
+  let canvasSideWidth = $state<number>(savedViewPrefs.canvasSideWidth);
+  let showLeftPanel = $state<boolean>(savedViewPrefs.showLeftPanel);
+  let showRightPanel = $state<boolean>(savedViewPrefs.showRightPanel);
+  let showLinimasa = $state<boolean>(savedViewPrefs.showLinimasa);
+  let showSpatialCanvas = $state<boolean>(savedViewPrefs.showSpatialCanvas);
+  let spatialCanvasHeight = $state<number>(savedViewPrefs.spatialCanvasHeight);
+  let showViewMenu = $state<boolean>(false);
+  let viewBtnEl = $state<HTMLButtonElement | undefined>(undefined);
+  let viewMenuPos = $state<{ top: number; right: number }>({
+    top: 76,
+    right: 16,
+  });
+
+  $effect(() => {
+    if (typeof localStorage === "undefined") return;
+    try {
+      localStorage.setItem(
+        VIEW_PREFS_KEY,
+        JSON.stringify({
+          canvasViewMode,
+          canvasScale,
+          canvasPosition,
+          canvasSideWidth,
+          spatialCanvasHeight,
+          showSpatialCanvas,
+          showLeftPanel,
+          showRightPanel,
+          showLinimasa,
+        }),
+      );
+    } catch {
+      // Ignore storage quota errors
+    }
+  });
+
+  const topTierGridColumns = $derived(
+    [
+      showLeftPanel ? "196px" : null,
+      "minmax(0, 1fr)",
+      showRightPanel ? "250px" : null,
+    ]
+      .filter(Boolean)
+      .join(" "),
+  );
+
+  const isCustomViewActive = $derived(
+    canvasViewMode !== "canvas" ||
+      canvasScale !== 1 ||
+      canvasPosition !== "bottom" ||
+      !showLeftPanel ||
+      !showRightPanel ||
+      !showLinimasa ||
+      !showSpatialCanvas,
+  );
+
+  function toggleViewMenu() {
+    if (!showViewMenu && viewBtnEl) {
+      const rect = viewBtnEl.getBoundingClientRect();
+      viewMenuPos = {
+        top: Math.round(rect.bottom + 6),
+        right: Math.max(10, Math.round(window.innerWidth - rect.right)),
+      };
+    }
+    showViewMenu = !showViewMenu;
+  }
+
+  function resetTaggingViewPrefs() {
+    canvasViewMode = "canvas";
+    canvasScale = 1;
+    canvasPosition = "bottom";
+    canvasSideWidth = 380;
+    spatialCanvasHeight = window.innerHeight <= 760 ? 122 : 155;
+    showSpatialCanvas = true;
+    showLeftPanel = true;
+    showRightPanel = true;
+    showLinimasa = true;
+  }
+
   let isResizingCanvas = $state<boolean>(false);
   let linimasaHeight = $state<number>(200);
   let isResizingLinimasa = $state<boolean>(false);
@@ -1194,17 +1371,30 @@
 
   function startCanvasResize(e: PointerEvent) {
     e.preventDefault();
+    const isRightDock = canvasPosition === "right";
+    const startX = e.clientX;
     const startY = e.clientY;
+    const startW = canvasSideWidth;
     const startH = spatialCanvasHeight;
     isResizingCanvas = true;
 
     function onMove(ev: PointerEvent) {
-      const next = startH + (startY - ev.clientY);
-      if (next < 65) {
-        showSpatialCanvas = false;
+      if (isRightDock) {
+        const nextW = startW + (startX - ev.clientX);
+        if (nextW < 180) {
+          showSpatialCanvas = false;
+        } else {
+          showSpatialCanvas = true;
+          canvasSideWidth = Math.max(240, Math.min(720, nextW));
+        }
       } else {
-        showSpatialCanvas = true;
-        spatialCanvasHeight = Math.max(95, Math.min(280, next));
+        const nextH = startH + (startY - ev.clientY);
+        if (nextH < 65) {
+          showSpatialCanvas = false;
+        } else {
+          showSpatialCanvas = true;
+          spatialCanvasHeight = Math.max(95, Math.min(460, nextH));
+        }
       }
     }
 
@@ -1242,7 +1432,9 @@
   onMount(() => {
     if (window.innerHeight <= 760) {
       linimasaHeight = 160;
-      spatialCanvasHeight = 122;
+      if (!savedViewPrefs.hasSavedHeight) {
+        spatialCanvasHeight = 122;
+      }
     }
     let unlistenRemoteTap: (() => void) | null = null;
     if (isTauriDesktop()) {
@@ -1303,6 +1495,10 @@
       }
 
       if (e.key === "Escape") {
+        if (showViewMenu) {
+          showViewMenu = false;
+          return;
+        }
         if (showKickoffMenu) {
           showKickoffMenu = false;
         } else if (activeClipQueue.length > 0) {
@@ -1530,7 +1726,11 @@
         : target;
       angle2VideoEl.currentTime = Math.min(target, maxDur);
     }
-    angle2VideoEl.playbackRate = playbackRate;
+    if (isSoftwareFastForward) {
+      if (!angle2VideoEl.paused) angle2VideoEl.pause();
+      return;
+    }
+    angle2VideoEl.playbackRate = Math.min(NATIVE_MAX_RATE, playbackRate);
     if (isPlaying && angle2VideoEl.paused) {
       angle2VideoEl.play().catch(() => {});
     } else if (!isPlaying && !angle2VideoEl.paused) {
@@ -1604,18 +1804,31 @@
     activeClipQueue = [];
     reverseRate = 0;
     playbackRate = nextRate;
+    const useSoftware = nextRate > NATIVE_MAX_RATE;
     if (videoEl) {
-      videoEl.playbackRate = nextRate;
-      if (autoPlay) {
-        videoEl.play().catch(() => {});
-        isPlaying = true;
+      if (useSoftware) {
+        // WKWebView/AVFoundation stalls above 2.0x; pause native element so RAF fast-forward drives seeks
+        videoEl.pause();
+        videoEl.playbackRate = 1.0;
+        if (autoPlay) isPlaying = true;
+      } else {
+        videoEl.playbackRate = nextRate;
+        if (autoPlay) {
+          videoEl.play().catch(() => {});
+          isPlaying = true;
+        }
       }
     } else if (ytPlayer && ytReady) {
       try {
-        ytPlayer.setPlaybackRate?.(nextRate);
-        if (autoPlay) {
-          ytPlayer.playVideo?.();
-          isPlaying = true;
+        if (useSoftware) {
+          ytPlayer.pauseVideo?.();
+          if (autoPlay) isPlaying = true;
+        } else {
+          ytPlayer.setPlaybackRate?.(nextRate);
+          if (autoPlay) {
+            ytPlayer.playVideo?.();
+            isPlaying = true;
+          }
         }
       } catch {
         // Ignore rate unsupported
@@ -1731,6 +1944,14 @@
       showVideoOsd("⏸", "Jeda", "Putar Mundur Berhenti", "emerald");
       return;
     }
+    if (!isPlaying && playbackRate > NATIVE_MAX_RATE && (videoEl || (ytPlayer && ytReady))) {
+      videoEl?.pause();
+      if (videoEl) videoEl.playbackRate = 1.0;
+      ytPlayer?.pauseVideo?.();
+      isPlaying = true;
+      syncSecondaryAngle(true);
+      return;
+    }
     if (ytPlayer && ytReady) {
       if (isPlaying) {
         ytPlayer.pauseVideo?.();
@@ -1756,6 +1977,24 @@
     isPlaying = !isPlaying;
     syncSecondaryAngle(true);
   }
+
+  $effect(() => {
+    const vol = projectStore.videoVolume;
+    const muted = projectStore.videoMuted;
+    if (videoEl) {
+      videoEl.volume = vol;
+      videoEl.muted = muted;
+    }
+    if (ytPlayer && ytReady) {
+      try {
+        ytPlayer.setVolume?.(Math.round(vol * 100));
+        if (muted) ytPlayer.mute?.();
+        else ytPlayer.unMute?.();
+      } catch {
+        // Ignore YT audio API failure
+      }
+    }
+  });
 
   // Smooth Backward / Reverse Playback loop (Momen Sports style)
   $effect(() => {
@@ -1799,6 +2038,90 @@
     };
 
     rafId = requestAnimationFrame(tickReverse);
+    return () => cancelAnimationFrame(rafId);
+  });
+
+  function checkSequentialQueueAdvance(posSec: number): boolean {
+    if (
+      activeClipQueue.length > 0 &&
+      activeQueueIndex < activeClipQueue.length
+    ) {
+      const currentQueueClip = activeClipQueue[activeQueueIndex];
+      if (posSec >= currentQueueClip.endTime) {
+        if (activeQueueIndex + 1 < activeClipQueue.length) {
+          activeQueueIndex += 1;
+          playQueueCurrentClip();
+        } else {
+          stopSequentialQueue();
+        }
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Smooth Forward Playback loop for speeds > 2.0x (WKWebView/AVFoundation caps native audio playback at 2.0x)
+  $effect(() => {
+    if (!isSoftwareFastForward) return;
+    videoEl?.pause();
+    if (videoEl) videoEl.playbackRate = 1.0;
+    angle2VideoEl?.pause();
+    ytPlayer?.pauseVideo?.();
+
+    let lastMs = performance.now();
+    let lastSeekMs = 0;
+    let virtualTime = untrack(() => currentTime);
+    let rafId = 0;
+
+    const tickFastForward = (now: number) => {
+      const extTime = untrack(() => currentTime);
+      if (Math.abs(extTime - virtualTime) > 0.35) {
+        virtualTime = extTime;
+      }
+      const rate = Math.max(NATIVE_MAX_RATE, untrack(() => playbackRate));
+      const maxDur = Math.max(
+        untrack(() => duration),
+        videoEl && Number.isFinite(videoEl.duration) ? videoEl.duration : 0,
+        0.1,
+      );
+      const dt = Math.min(0.15, Math.max(0, (now - lastMs) / 1000));
+      lastMs = now;
+      virtualTime = Math.min(maxDur, virtualTime + dt * rate);
+
+      if (videoEl) {
+        if (now - lastSeekMs >= 40 && !videoEl.seeking) {
+          videoEl.currentTime = virtualTime;
+          lastSeekMs = now;
+        }
+      } else if (ytPlayer && ytReady) {
+        if (now - lastSeekMs >= 140) {
+          ytPlayer.seekTo?.(virtualTime, true);
+          lastSeekMs = now;
+        }
+      }
+
+      currentTime = virtualTime;
+      projectStore.currentTime = virtualTime;
+      syncSecondaryAngle(true);
+
+      if (untrack(() => checkSequentialQueueAdvance(virtualTime))) {
+        virtualTime = untrack(() => currentTime);
+        lastMs = performance.now();
+        if (!untrack(() => isPlaying)) return;
+      }
+
+      if (virtualTime >= maxDur - 0.02) {
+        if (videoEl) videoEl.currentTime = maxDur;
+        currentTime = maxDur;
+        projectStore.currentTime = maxDur;
+        isPlaying = false;
+        showVideoOsd("⏭", "Selesai", "Akhir Video", "emerald");
+        return;
+      }
+      rafId = requestAnimationFrame(tickFastForward);
+    };
+
+    rafId = requestAnimationFrame(tickFastForward);
     return () => cancelAnimationFrame(rafId);
   });
 
@@ -1947,25 +2270,13 @@
   function handleTimeUpdate() {
     if (!videoEl) return;
     if (!hasRestoredInitialTime) return;
+    if (isSoftwareFastForward || reverseRate > 0) return;
     currentTime = videoEl.currentTime;
     projectStore.currentTime = currentTime;
     syncSecondaryAngle(false);
 
     // Sequential Queue Playback (e.g. from Cross-Tabulation Matrix)
-    if (
-      activeClipQueue.length > 0 &&
-      activeQueueIndex < activeClipQueue.length
-    ) {
-      const currentQueueClip = activeClipQueue[activeQueueIndex];
-      if (currentTime >= currentQueueClip.endTime) {
-        if (activeQueueIndex + 1 < activeClipQueue.length) {
-          activeQueueIndex += 1;
-          playQueueCurrentClip();
-        } else {
-          stopSequentialQueue();
-        }
-      }
-    }
+    checkSequentialQueueAdvance(currentTime);
   }
 
   function handleLoadedMetadata() {
@@ -2607,17 +2918,27 @@
     hasRestoredInitialTime = true;
     activeClipQueue = [];
     const start = Math.max(0, Math.min(tag.startTime, duration || tag.startTime));
+    const useSoftware = playbackRate > NATIVE_MAX_RATE;
     if (videoEl) {
       videoEl.currentTime = start;
-      videoEl.playbackRate = playbackRate;
-      videoEl.play().catch(() => {});
+      if (useSoftware) {
+        videoEl.pause();
+        videoEl.playbackRate = 1.0;
+      } else {
+        videoEl.playbackRate = playbackRate;
+        videoEl.play().catch(() => {});
+      }
       currentTime = start;
       projectStore.currentTime = start;
       syncSecondaryAngle(true);
     } else if (ytPlayer && ytReady) {
       ytPlayer.seekTo?.(start, true);
-      ytPlayer.setPlaybackRate?.(playbackRate);
-      ytPlayer.playVideo?.();
+      if (useSoftware) {
+        ytPlayer.pauseVideo?.();
+      } else {
+        ytPlayer.setPlaybackRate?.(playbackRate);
+        ytPlayer.playVideo?.();
+      }
       currentTime = start;
       projectStore.currentTime = start;
     } else {
@@ -2638,13 +2959,27 @@
   function playQueueCurrentClip() {
     if ((!videoEl && !(ytPlayer && ytReady)) || activeQueueIndex >= activeClipQueue.length) return;
     const clip = activeClipQueue[activeQueueIndex];
+    const useSoftware = playbackRate > NATIVE_MAX_RATE;
     if (videoEl) {
       videoEl.currentTime = clip.startTime;
-      videoEl.play();
+      if (useSoftware) {
+        videoEl.pause();
+        videoEl.playbackRate = 1.0;
+      } else {
+        videoEl.playbackRate = playbackRate;
+        videoEl.play().catch(() => {});
+      }
     } else if (ytPlayer && ytReady) {
       ytPlayer.seekTo?.(clip.startTime, true);
-      ytPlayer.playVideo?.();
+      if (useSoftware) {
+        ytPlayer.pauseVideo?.();
+      } else {
+        ytPlayer.setPlaybackRate?.(playbackRate);
+        ytPlayer.playVideo?.();
+      }
     }
+    currentTime = clip.startTime;
+    projectStore.currentTime = clip.startTime;
     isPlaying = true;
     notifyUser(
       `[${activeQueueIndex + 1}/${activeClipQueue.length}] ${clip.title}`,
@@ -2954,6 +3289,21 @@
     {/if}
 
     <div class="header-right">
+      {#if workspaceSubTab === "tagging"}
+        <button
+          bind:this={viewBtnEl}
+          type="button"
+          class="btn-view-menu"
+          class:active={showViewMenu || isCustomViewActive}
+          onclick={toggleViewMenu}
+          title="Pengaturan Tampilan Papan & Panel (Momen Sports View)"
+        >
+          <SlidersHorizontal size={12} />
+          <span>Tampilan</span>
+          <ChevronDown size={10} />
+        </button>
+      {/if}
+
       <!-- DEDICATED EDIT KLIP INSPECTOR (USES ACTIVE BOARD TAGS, NEVER CREATES DUMMY) -->
       <button
         class="btn-label-menu"
@@ -2996,11 +3346,179 @@
     </div>
   </header>
 
+  {#if showViewMenu && workspaceSubTab === "tagging"}
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <div
+      class="view-menu-backdrop"
+      onclick={() => (showViewMenu = false)}
+      role="presentation"
+    ></div>
+    <div
+      class="view-menu-popover"
+      style="top: {viewMenuPos.top}px; right: {viewMenuPos.right}px;"
+      role="dialog"
+      aria-label="Pengaturan Tampilan Tagging"
+    >
+      <div class="vm-section">
+        <div class="vm-label">Mode Action Board</div>
+        <div class="vm-seg-group">
+          <button
+            type="button"
+            class="vm-seg-btn"
+            class:active={canvasViewMode === "canvas"}
+            onclick={() => {
+              canvasViewMode = "canvas";
+              showSpatialCanvas = true;
+            }}
+          >
+            <Layout size={11} />
+            <span>Kanvas</span>
+          </button>
+          <button
+            type="button"
+            class="vm-seg-btn"
+            class:active={canvasViewMode === "grid"}
+            onclick={() => {
+              canvasViewMode = "grid";
+              showSpatialCanvas = true;
+            }}
+          >
+            <Grid size={11} />
+            <span>Grid</span>
+          </button>
+          <button
+            type="button"
+            class="vm-seg-btn"
+            class:active={canvasViewMode === "list"}
+            onclick={() => {
+              canvasViewMode = "list";
+              showSpatialCanvas = true;
+            }}
+          >
+            <List size={11} />
+            <span>Daftar</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="vm-section" class:vm-muted={canvasViewMode !== "canvas"}>
+        <div class="vm-label">Skala Kanvas</div>
+        <div class="vm-seg-group">
+          {#each SCALE_OPTIONS as opt (opt.label)}
+            <button
+              type="button"
+              class="vm-seg-btn"
+              class:active={canvasScale === opt.value}
+              onclick={() => {
+                canvasScale = opt.value;
+                canvasViewMode = "canvas";
+                showSpatialCanvas = true;
+              }}
+            >
+              <span>{opt.label}</span>
+            </button>
+          {/each}
+        </div>
+        <div class="vm-hint">
+          {canvasScale === "fit"
+            ? "Semua tombol & label otomatis pas layar tanpa scroll."
+            : `Skala ${Math.round(canvasScale * 100)}% (geser scroll untuk tombol lain).`}
+        </div>
+      </div>
+
+      <div class="vm-section">
+        <div class="vm-label">Posisi Papan</div>
+        <div class="vm-seg-group">
+          <button
+            type="button"
+            class="vm-seg-btn"
+            class:active={canvasPosition === "bottom"}
+            onclick={() => {
+              canvasPosition = "bottom";
+              showSpatialCanvas = true;
+            }}
+          >
+            <span>Bawah Video</span>
+          </button>
+          <button
+            type="button"
+            class="vm-seg-btn"
+            class:active={canvasPosition === "right"}
+            onclick={() => {
+              canvasPosition = "right";
+              showSpatialCanvas = true;
+            }}
+          >
+            <Columns2 size={11} />
+            <span>Samping Video</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="vm-section">
+        <div class="vm-label">Panel Tampilan</div>
+        <div class="vm-toggles-grid">
+          <button
+            type="button"
+            class="vm-toggle-row"
+            class:on={showLeftPanel}
+            onclick={() => (showLeftPanel = !showLeftPanel)}
+          >
+            <span>Panel Tag Kiri</span>
+            <span class="vm-check">{#if showLeftPanel}<Check size={11} />{/if}</span>
+          </button>
+          <button
+            type="button"
+            class="vm-toggle-row"
+            class:on={showSpatialCanvas}
+            onclick={() => (showSpatialCanvas = !showSpatialCanvas)}
+          >
+            <span>Kanvas Papan</span>
+            <span class="vm-check">{#if showSpatialCanvas}<Check size={11} />{/if}</span>
+          </button>
+          <button
+            type="button"
+            class="vm-toggle-row"
+            class:on={showRightPanel}
+            onclick={() => (showRightPanel = !showRightPanel)}
+          >
+            <span>Panel Klip Kanan</span>
+            <span class="vm-check">{#if showRightPanel}<Check size={11} />{/if}</span>
+          </button>
+          <button
+            type="button"
+            class="vm-toggle-row"
+            class:on={showLinimasa}
+            onclick={() => (showLinimasa = !showLinimasa)}
+          >
+            <span>Linimasa Bawah</span>
+            <span class="vm-check">{#if showLinimasa}<Check size={11} />{/if}</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="vm-footer">
+        <button
+          type="button"
+          class="vm-reset-btn"
+          onclick={resetTaggingViewPrefs}
+        >
+          <RotateCcw size={11} />
+          <span>Reset Default</span>
+        </button>
+      </div>
+    </div>
+  {/if}
+
   <!-- WORKSPACE BODY (KEEP VIDEO MOUNTED ACROSS SUB-TABS SO TIME NEVER RESETS & AVOID WKWEBVIEW STREAM ABORT) -->
   <main class="workspace-main">
       <!-- MODE 1: MOMEN SPORTS 2-TIER WORKSPACE (LEFT TAG/LABEL · CENTER VIDEO/PLAYERS/CANVAS · RIGHT CLIPS · BOTTOM 100% LINIMASA) -->
       <div class="tagging-two-tier" class:subtab-hidden={workspaceSubTab !== "tagging"}>
-        <div class="tagging-top-tier">
+        <div
+          class="tagging-top-tier"
+          style="grid-template-columns: {topTierGridColumns};"
+        >
+          {#if showLeftPanel}
           <!-- LEFT SIDEBAR: SEARCH + TAG + LABEL (196px) -->
           <aside class="left-momen-sidebar">
             <div class="left-search-box">
@@ -3156,9 +3674,14 @@
               {/if}
             </div>
           </aside>
+          {/if}
 
           <!-- CENTER COLUMN: CLEAN VIDEO + PINNED PLAYERS BAR + TRANSPORT + COLLAPSIBLE SPATIAL CANVAS -->
-          <div class="player-column">
+          <div
+            class="player-column"
+            class:canvas-side={canvasPosition === "right" && showSpatialCanvas}
+          >
+            <div class="player-video-pane">
             <!-- VIDEO CONTAINER (PURE VIDEO, NO OBSTRUCTIVE OVERLAY BAR) -->
             <div
               class="video-container"
@@ -3721,7 +4244,7 @@
                 </div>
 
                 <span class="play-status-pill" class:running={isPlaying || reverseRate > 0}>
-                  ● {reverseRate > 0 ? `◀ -${reverseRate}x` : isPlaying ? "jalan" : "jeda"}
+                  ● {reverseRate > 0 ? `◀ -${reverseRate}x` : isSoftwareFastForward ? `⏩ ${playbackRate}x` : isPlaying ? "jalan" : "jeda"}
                 </span>
               </div>
 
@@ -3835,6 +4358,35 @@
                   {/each}
                 </div>
 
+                <div class="vol-ctrl-box" title="Volume & Bisukan Audio Video">
+                  <button
+                    type="button"
+                    class="vol-mute-btn"
+                    class:muted={projectStore.videoMuted || projectStore.videoVolume === 0}
+                    onclick={() => projectStore.toggleVideoMute()}
+                    aria-label={projectStore.videoMuted ? "Bunyikan Audio" : "Bisukan Audio"}
+                  >
+                    {#if projectStore.videoMuted || projectStore.videoVolume === 0}
+                      <VolumeX size={12} />
+                    {:else}
+                      <Volume2 size={12} />
+                    {/if}
+                  </button>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={projectStore.videoMuted ? 0 : projectStore.videoVolume}
+                    oninput={(e) =>
+                      projectStore.setVideoVolume(
+                        parseFloat((e.currentTarget as HTMLInputElement).value),
+                      )}
+                    class="vol-range-slider"
+                    aria-label="Volume Video"
+                  />
+                </div>
+
                 <button
                   type="button"
                   class="btn-draw-quick"
@@ -3881,23 +4433,49 @@
               </div>
             </div>
 
-            <!-- OPEN / COLLAPSIBLE SPATIAL PITCH CANVAS UNDER TRANSPORT -->
+            {#if !showSpatialCanvas}
+              <button
+                type="button"
+                class="canvas-collapsed-bar"
+                onclick={() => (showSpatialCanvas = true)}
+              >
+                <ChevronUp size={12} />
+                <span
+                  >Papan kanvas disembunyikan. Klik di sini untuk menampilkan.
+                  Tombol kiri & keyboard tetap berjalan.</span
+                >
+                {#if activeContinuousList.length > 0}
+                  <span class="dock-live-pill"
+                    >● {activeContinuousList.length} Merekam</span
+                  >
+                {/if}
+              </button>
+            {/if}
+            </div>
+
+            <!-- OPEN / COLLAPSIBLE SPATIAL PITCH CANVAS UNDER TRANSPORT OR SIDE-DOCKED -->
             {#if showSpatialCanvas}
               <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
               <div
                 class="canvas-resize-handle"
+                class:vertical={canvasPosition === "right"}
                 class:dragging={isResizingCanvas}
                 onpointerdown={startCanvasResize}
                 ondblclick={() => (showSpatialCanvas = false)}
                 role="separator"
-                aria-orientation="horizontal"
-                title="Seret atas/bawah untuk atur tinggi kanvas · Double-click untuk sembunyi"
+                aria-orientation={canvasPosition === "right" ? "vertical" : "horizontal"}
+                title={canvasPosition === "right"
+                  ? "Seret kiri/kanan untuk atur lebar papan · Double-click untuk sembunyi"
+                  : "Seret atas/bawah untuk atur tinggi kanvas · Double-click untuk sembunyi"}
               >
                 <span class="resize-pill"></span>
               </div>
               <div
                 class="center-spatial-canvas"
-                style="height: {spatialCanvasHeight}px;"
+                class:side-mode={canvasPosition === "right"}
+                style={canvasPosition === "right"
+                  ? `width: ${canvasSideWidth}px;`
+                  : `height: ${spatialCanvasHeight}px;`}
               >
                 <MomenTaggingBoard
                   board={activeBoard}
@@ -3912,9 +4490,11 @@
                   {targetTagButtonId}
                   {targetAttachedDescriptorIds}
                   {targetAttachedPlayers}
-                  dockMode="bottom"
+                  dockMode={canvasPosition === "right" ? "right" : "bottom"}
                   hideToolbar={true}
                   hidePlayersBar={true}
+                  externalViewMode={canvasViewMode}
+                  {canvasScale}
                   onSelectBoard={(id) => projectStore.selectBoard(id)}
                   onImportBoardJson={handleImportBoardJson}
                   onExportBoardJson={handleExportBoardJson}
@@ -3934,26 +4514,10 @@
                     (workspaceSubTab = "coding_board")}
                 />
               </div>
-            {:else}
-              <button
-                type="button"
-                class="canvas-collapsed-bar"
-                onclick={() => (showSpatialCanvas = true)}
-              >
-                <ChevronUp size={12} />
-                <span
-                  >Papan kanvas disembunyikan. Klik di sini untuk menampilkan.
-                  Tombol kiri & keyboard tetap berjalan.</span
-                >
-                {#if activeContinuousList.length > 0}
-                  <span class="dock-live-pill"
-                    >● {activeContinuousList.length} Merekam</span
-                  >
-                {/if}
-              </button>
             {/if}
           </div>
 
+          {#if showRightPanel}
           <!-- RIGHT COLUMN: COMPACT CLIPS / PLAYLIST SIDEBAR (250px) -->
           <div class="panel-column right-clips-sidebar">
             <div class="right-tabs-bar">
@@ -4452,8 +5016,10 @@
               </div>
             {/if}
           </div>
+          {/if}
         </div>
 
+        {#if showLinimasa}
         <!-- BOTTOM TIER (100% FULL WIDTH): RESIZE HANDLE + ALL-CATEGORY LINIMASA -->
         <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
         <div
@@ -4529,6 +5095,7 @@
             onChangeLag={(sec) => (lagTimeSeconds = sec)}
           />
         </div>
+        {/if}
       </div>
     {#if workspaceSubTab === "coding_board"}
       <!-- MODE 2: FULLSCREEN MOMEN & ONCE SPORT ACTION PAD -->
@@ -5442,6 +6009,19 @@
     background-color: #060b14;
   }
 
+  .player-column.canvas-side {
+    flex-direction: row;
+  }
+
+  .player-video-pane {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
   .video-container {
     flex: 1;
     min-height: 170px;
@@ -6082,6 +6662,37 @@
     color: #060b14;
   }
 
+  .vol-ctrl-box {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: #081223;
+    border: 1px solid #1a355d;
+    border-radius: 5px;
+    padding: 2px 6px;
+  }
+
+  .vol-mute-btn {
+    background: transparent;
+    border: none;
+    color: #93c5fd;
+    padding: 1px;
+    display: inline-flex;
+    align-items: center;
+    cursor: pointer;
+  }
+
+  .vol-mute-btn.muted {
+    color: #f87171;
+  }
+
+  .vol-range-slider {
+    width: 52px;
+    height: 4px;
+    accent-color: #38bdf8;
+    cursor: pointer;
+  }
+
   .btn-draw-quick {
     display: inline-flex;
     align-items: center;
@@ -6153,10 +6764,31 @@
 
   .center-spatial-canvas {
     flex-shrink: 0;
-    max-height: 25vh;
+    max-height: 55vh;
     overflow: hidden;
     display: flex;
     flex-direction: column;
+  }
+
+  .center-spatial-canvas.side-mode {
+    height: 100%;
+    max-height: none;
+    border-left: 1px solid #162e54;
+  }
+
+  .canvas-resize-handle.vertical {
+    width: 5px;
+    height: 100%;
+    border-top: none;
+    border-bottom: none;
+    border-left: 1px solid #162e54;
+    border-right: 1px solid #162e54;
+    cursor: col-resize;
+  }
+
+  .canvas-resize-handle.vertical .resize-pill {
+    width: 2px;
+    height: 36px;
   }
 
   .canvas-collapsed-bar {
@@ -7331,7 +7963,7 @@
     }
 
     .tagging-top-tier {
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: 1fr 1fr !important;
       grid-template-rows: auto minmax(260px, 1fr);
       overflow: visible;
     }
@@ -7340,6 +7972,17 @@
       grid-column: 1 / -1;
       order: -1;
       min-height: 280px;
+    }
+
+    .player-column.canvas-side {
+      flex-direction: column;
+    }
+
+    .center-spatial-canvas.side-mode {
+      width: 100% !important;
+      height: 220px;
+      border-left: none;
+      border-top: 1px solid #162e54;
     }
 
     .left-momen-sidebar,
@@ -7372,7 +8015,7 @@
 
   @media (max-width: 720px) {
     .tagging-top-tier {
-      grid-template-columns: 1fr;
+      grid-template-columns: 1fr !important;
     }
 
     .mtb-left,
@@ -7577,5 +8220,185 @@
     color: #fca5a5;
     font-size: 12px;
     z-index: 6;
+  }
+
+  /* TAMPILAN / VIEW MENU (MOMEN SPORTS STYLE) */
+  .btn-view-menu {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: #0d1e38;
+    border: 1px solid #1e3b68;
+    color: #cbd5e1;
+    padding: 3px 9px;
+    border-radius: 5px;
+    font-size: 10px;
+    font-weight: 700;
+    white-space: nowrap;
+    flex-shrink: 0;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .btn-view-menu:hover,
+  .btn-view-menu.active {
+    background: #132d54;
+    border-color: #38bdf8;
+    color: #ffffff;
+    box-shadow: 0 0 10px rgba(56, 189, 248, 0.2);
+  }
+
+  .view-menu-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 155;
+    background: transparent;
+  }
+
+  .view-menu-popover {
+    position: fixed;
+    z-index: 160;
+    width: 286px;
+    background: #091426;
+    border: 1px solid #26487a;
+    border-radius: 10px;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.72);
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    color: #e2e8f0;
+  }
+
+  .vm-section {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .vm-section.vm-muted {
+    opacity: 0.55;
+  }
+
+  .vm-label {
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #7dd3fc;
+  }
+
+  .vm-seg-group {
+    display: flex;
+    gap: 3px;
+    background: #050b16;
+    border: 1px solid #1a355d;
+    border-radius: 6px;
+    padding: 2px;
+  }
+
+  .vm-seg-btn {
+    flex: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    background: transparent;
+    border: none;
+    color: #94a3b8;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 5px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.12s ease;
+  }
+
+  .vm-seg-btn:hover {
+    color: #ffffff;
+    background: rgba(56, 189, 248, 0.12);
+  }
+
+  .vm-seg-btn.active {
+    background: #0284c7;
+    color: #ffffff;
+  }
+
+  .vm-hint {
+    font-size: 9px;
+    color: #94a3b8;
+    line-height: 1.3;
+  }
+
+  .vm-toggles-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px;
+  }
+
+  .vm-toggle-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    background: #0b1930;
+    border: 1px solid #1a355d;
+    border-radius: 6px;
+    padding: 5px 7px;
+    color: #94a3b8;
+    font-size: 10px;
+    font-weight: 600;
+    cursor: pointer;
+    text-align: left;
+  }
+
+  .vm-toggle-row.on {
+    border-color: rgba(56, 189, 248, 0.55);
+    color: #f8fafc;
+    background: #0f2547;
+  }
+
+  .vm-check {
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+    border: 1px solid #335c94;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+
+  .vm-toggle-row.on .vm-check {
+    background: #0284c7;
+    border-color: #38bdf8;
+    color: #ffffff;
+  }
+
+  .vm-footer {
+    border-top: 1px solid #162e54;
+    padding-top: 8px;
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  .vm-reset-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: transparent;
+    border: 1px solid #1e3b68;
+    color: #93c5fd;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 4px 8px;
+    border-radius: 5px;
+    cursor: pointer;
+  }
+
+  .vm-reset-btn:hover {
+    border-color: #38bdf8;
+    color: #ffffff;
   }
 </style>

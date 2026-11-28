@@ -264,6 +264,53 @@ class ProjectStore {
   secondaryAngles = $state<SecondaryVideoAngle[]>([]);
   activeAngleId = $state<string>('main');
   angleViewMode = $state<'single' | 'split'>('single');
+  videoVolume = $state<number>(1.0);
+  videoMuted = $state<boolean>(false);
+
+  constructor() {
+    if (typeof localStorage !== 'undefined') {
+      try {
+        const raw = localStorage.getItem('futsaltag_video_audio_v1');
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (typeof parsed.volume === 'number' && Number.isFinite(parsed.volume)) {
+            this.videoVolume = Math.max(0, Math.min(1, parsed.volume));
+          }
+          if (typeof parsed.muted === 'boolean') {
+            this.videoMuted = parsed.muted;
+          }
+        }
+      } catch {
+        // Ignore corrupt audio pref
+      }
+    }
+  }
+
+  private persistVideoAudio() {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      localStorage.setItem(
+        'futsaltag_video_audio_v1',
+        JSON.stringify({ volume: this.videoVolume, muted: this.videoMuted })
+      );
+    } catch {
+      // Ignore storage quota
+    }
+  }
+
+  setVideoVolume(vol: number) {
+    const clamped = Math.max(0, Math.min(1, Number.isFinite(vol) ? vol : 1.0));
+    this.videoVolume = clamped;
+    if (clamped > 0 && this.videoMuted) {
+      this.videoMuted = false;
+    }
+    this.persistVideoAudio();
+  }
+
+  toggleVideoMute() {
+    this.videoMuted = !this.videoMuted;
+    this.persistVideoAudio();
+  }
 
   markDirty() {
     this.hasUnsavedChanges = true;
@@ -277,8 +324,6 @@ class ProjectStore {
   canRedo = $state(false);
   lastUndoLabel = $state<string | null>(null);
   lastRedoLabel = $state<string | null>(null);
-
-  constructor() {}
 
   private cloneTagsSnapshot(): VideoTagEvent[] {
     return JSON.parse(JSON.stringify(this.tags));
@@ -1297,10 +1342,26 @@ class ProjectStore {
     this.markDirty();
   }
 
+  private formatClipTitleTime(sec: number): string {
+    const safe = Math.max(0, sec);
+    const m = Math.floor(safe / 60);
+    const s = Math.floor(safe % 60);
+    const ms = Math.floor((safe % 1) * 10);
+    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}.${ms}`;
+  }
+
   updateTag(updated: VideoTagEvent) {
     this.pushTagUndoSnapshot(`Edit "${updated.category}"`);
     const norm = this.normalizeTagPlayers(updated);
     const idx = this.tags.findIndex((t) => t.id === norm.id);
+    const prev = idx !== -1 ? this.tags[idx] : null;
+    const isAutoTitle = /^.+ - .+ \(\d+:\d+(?:\.\d+)? - \d+:\d+(?:\.\d+)?\)$/.test(norm.title);
+    if (isAutoTitle && (!prev || norm.title === prev.title)) {
+      const generated = `${norm.category} - ${norm.playerLabel} (${this.formatClipTitleTime(norm.startTime)} - ${this.formatClipTitleTime(norm.endTime)})`;
+      if (generated !== norm.title) {
+        norm.title = generated;
+      }
+    }
     if (idx !== -1) {
       this.tags[idx] = norm;
     }

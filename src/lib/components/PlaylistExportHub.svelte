@@ -38,6 +38,8 @@
     Image as ImageIcon,
     Video,
     ChevronDown,
+    Volume2,
+    VolumeX,
   } from "lucide-svelte";
   import { exportInteractiveHtmlStatsReport } from "$lib/export/htmlStatsReport";
   import CloudExportModal from "$lib/components/CloudExportModal.svelte";
@@ -363,6 +365,15 @@
       seekAndPlay();
     }
   }
+
+  $effect(() => {
+    const vol = projectStore.videoVolume;
+    const muted = projectStore.videoMuted;
+    if (presentationVideoEl) {
+      presentationVideoEl.volume = vol;
+      presentationVideoEl.muted = muted;
+    }
+  });
 
   function handlePresentationTimeUpdate() {
     if (!presentationVideoEl) return;
@@ -1305,9 +1316,40 @@
             {/if}
           </button>
 
-          <span class="pres-counter">
-            {filteredClips.length} Klip Terfilter
-          </span>
+          <div class="pres-ctrl-right">
+            <div class="vol-ctrl-box" title="Volume & Bisukan Audio Video">
+              <button
+                type="button"
+                class="vol-mute-btn"
+                class:muted={projectStore.videoMuted || projectStore.videoVolume === 0}
+                onclick={() => projectStore.toggleVideoMute()}
+                aria-label={projectStore.videoMuted ? "Bunyikan Audio" : "Bisukan Audio"}
+              >
+                {#if projectStore.videoMuted || projectStore.videoVolume === 0}
+                  <VolumeX size={13} />
+                {:else}
+                  <Volume2 size={13} />
+                {/if}
+              </button>
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.05"
+                value={projectStore.videoMuted ? 0 : projectStore.videoVolume}
+                oninput={(e) =>
+                  projectStore.setVideoVolume(
+                    parseFloat((e.currentTarget as HTMLInputElement).value),
+                  )}
+                class="vol-range-slider"
+                aria-label="Volume Preview"
+              />
+            </div>
+
+            <span class="pres-counter">
+              {filteredClips.length} Klip Terfilter
+            </span>
+          </div>
         </div>
       </div>
     </div>
@@ -2252,7 +2294,45 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: 8px;
     border-top: 1px solid #1a355d;
+  }
+
+  .pres-ctrl-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .vol-ctrl-box {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: #081223;
+    border: 1px solid #1a355d;
+    border-radius: 5px;
+    padding: 3px 7px;
+  }
+
+  .vol-mute-btn {
+    background: transparent;
+    border: none;
+    color: #93c5fd;
+    padding: 1px;
+    display: inline-flex;
+    align-items: center;
+    cursor: pointer;
+  }
+
+  .vol-mute-btn.muted {
+    color: #f87171;
+  }
+
+  .vol-range-slider {
+    width: 64px;
+    height: 4px;
+    accent-color: #38bdf8;
+    cursor: pointer;
   }
 
   .btn-pres-play {

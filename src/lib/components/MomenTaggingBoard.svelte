@@ -45,6 +45,8 @@
     compact?: boolean;
     hideToolbar?: boolean;
     hidePlayersBar?: boolean;
+    externalViewMode?: 'canvas' | 'grid' | 'list';
+    canvasScale?: 'fit' | number;
     externalEditMode?: boolean;
     openNewButtonNonce?: number;
     editButtonTarget?: TaggingButton | null;
@@ -81,6 +83,8 @@
     compact = false,
     hideToolbar = false,
     hidePlayersBar = false,
+    externalViewMode,
+    canvasScale = 1,
     externalEditMode,
     openNewButtonNonce = 0,
     editButtonTarget = null,
@@ -109,7 +113,7 @@
     }
   });
   const viewMode = $derived(
-    userViewMode ?? (dockMode === 'left' || dockMode === 'right' ? 'list' : 'canvas')
+    externalViewMode ?? userViewMode ?? (dockMode === 'left' || dockMode === 'right' ? 'list' : 'canvas')
   );
   const isSideDock = $derived(dockMode === 'left' || dockMode === 'right');
   const isFullscreen = $derived(dockMode === 'fullscreen');
@@ -183,6 +187,35 @@
   const canvasH = $derived(
     Math.max(540, ...canvasButtons.map((b) => b.y + b.h + 20))
   );
+
+  let surfaceW = $state(0);
+  let surfaceH = $state(0);
+
+  const canvasMetrics = $derived.by(() => {
+    const availW = Math.max(200, (surfaceW || 880) - 20);
+    const availH = Math.max(84, (surfaceH || 140) - 16);
+    if (canvasScale === 'fit') {
+      const ratio = Math.min(availW / canvasW, availH / canvasH);
+      const w = Math.max(160, Math.floor(canvasW * ratio));
+      const h = Math.max(76, Math.floor(canvasH * ratio));
+      return {
+        w,
+        h,
+        btnScale: Math.max(0.42, Math.min(1.15, ratio)),
+        isFit: true,
+      };
+    }
+    const scaleNum = typeof canvasScale === 'number' && Number.isFinite(canvasScale) ? canvasScale : 1;
+    const baseW = Math.min(1120, availW);
+    const w = Math.max(220, Math.round(baseW * scaleNum));
+    const h = Math.max(110, Math.round(w * (canvasH / canvasW)));
+    return {
+      w,
+      h,
+      btnScale: Math.max(0.55, Math.min(1.2, w / 960)),
+      isFit: false,
+    };
+  });
 
   interface QuickMatchItem {
     id: string;
@@ -586,12 +619,17 @@
   {/if}
 
   <!-- BOARD SURFACE -->
-  <div class="board-surface-scroll">
+  <div
+    class="board-surface-scroll"
+    class:fit-mode={viewMode === 'canvas' && canvasMetrics.isFit}
+    bind:clientWidth={surfaceW}
+    bind:clientHeight={surfaceH}
+  >
     {#if viewMode === 'canvas'}
       <div class="canvas-stage-wrap">
         <div
           class="momen-canvas"
-          style="aspect-ratio: {canvasW} / {canvasH}; background-color: {board.color};"
+          style="width: {canvasMetrics.w}px; height: {canvasMetrics.h}px; background-color: {board.color}; --btn-scale: {canvasMetrics.btnScale};"
         >
           {#if board.background === 'pitch'}
             <svg
@@ -1375,23 +1413,28 @@
   .board-surface-scroll {
     flex: 1;
     min-height: 0;
-    overflow-y: auto;
+    overflow: auto;
     padding: 8px 10px;
     display: flex;
     flex-direction: column;
     gap: 8px;
   }
 
+  .board-surface-scroll.fit-mode {
+    justify-content: center;
+  }
+
   .canvas-stage-wrap {
-    width: 100%;
+    width: max-content;
+    min-width: 100%;
     display: flex;
     justify-content: center;
+    flex-shrink: 0;
   }
 
   .momen-canvas {
     position: relative;
-    width: 100%;
-    max-width: 1120px;
+    flex-shrink: 0;
     border-radius: 10px;
     border: 1px solid #1e3b68;
     overflow: hidden;
@@ -1459,7 +1502,7 @@
   }
 
   .canvas-btn-label {
-    font-size: clamp(9px, 1vw, 12px);
+    font-size: max(8px, calc(12px * var(--btn-scale, 1)));
     font-weight: 800;
     line-height: 1.1;
     text-align: center;
@@ -1478,6 +1521,8 @@
     align-items: center;
     padding: 1px;
     opacity: 0.85;
+    transform: scale(var(--btn-scale, 1));
+    transform-origin: top left;
   }
 
   .btn-switch i {
@@ -1505,7 +1550,7 @@
     right: 4px;
     background: rgba(15, 23, 42, 0.88);
     color: #f87171;
-    font-size: 9px;
+    font-size: max(7px, calc(9px * var(--btn-scale, 1)));
     font-weight: 900;
     padding: 1px 5px;
     border-radius: 999px;
@@ -1525,7 +1570,7 @@
     right: 4px;
     background: rgba(0, 0, 0, 0.35);
     color: #ffffff;
-    font-size: 9px;
+    font-size: max(7px, calc(9px * var(--btn-scale, 1)));
     font-weight: 800;
     padding: 1px 4px;
     border-radius: 3px;
@@ -1535,7 +1580,7 @@
   .btn-roll-micro,
   .desc-check-badge,
   .desc-auto-badge {
-    font-size: 8px;
+    font-size: max(7px, calc(8px * var(--btn-scale, 1)));
     font-weight: 700;
     opacity: 0.85;
     margin-top: 2px;
